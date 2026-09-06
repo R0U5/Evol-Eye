@@ -1416,22 +1416,23 @@ function projectionFrameSignature(runtime) {
  */
 function paintNextProjectionBuffer(runtime) {
   if (!runtime?.canvas) return null;
-  if (!runtime.buffers) {
-    runtime.buffers = [0, 1].map(() => {
-      const buffer = document.createElement('canvas');
-      buffer.width = PROJECTION_CANVAS_WIDTH;
-      buffer.height = PROJECTION_CANVAS_HEIGHT;
-      return buffer;
-    });
-    runtime.bufferIndex = 0;
+  // Single persistent offscreen buffer (not double-buffered). The SAME object
+  // reference is returned every call — Cesium only re-uploads the texture when
+  // the canvas content actually changed (canvasStamp !== lastSwappedCanvasStamp
+  // in refreshProjectionTextures). A new canvas object per call would force a
+  // texture re-upload on every swap and cause the periodic white flash that was
+  // observable on static scenes (owner field test 2026-07-04 and 2026-07-30).
+  if (!runtime._swapBuffer) {
+    const buffer = document.createElement('canvas');
+    buffer.width = PROJECTION_CANVAS_WIDTH;
+    buffer.height = PROJECTION_CANVAS_HEIGHT;
+    runtime._swapBuffer = buffer;
   }
-  runtime.bufferIndex = (runtime.bufferIndex + 1) % 2;
-  const buffer = runtime.buffers[runtime.bufferIndex];
-  const ctx = buffer.getContext('2d');
+  const ctx = runtime._swapBuffer.getContext('2d');
   if (!ctx) return null;
-  ctx.clearRect(0, 0, buffer.width, buffer.height);
+  ctx.clearRect(0, 0, runtime._swapBuffer.width, runtime._swapBuffer.height);
   ctx.drawImage(runtime.canvas, 0, 0);
-  return buffer;
+  return runtime._swapBuffer;
 }
 
 /**
@@ -1688,8 +1689,7 @@ function createProjectionRuntime(record) {
     labelPosition: new Cesium.Cartesian3(),
     overlayEntry: null,
     planeMaterial: null,
-    buffers: null,
-    bufferIndex: 0,
+    _swapBuffer: null,
     lastTextureSwapAt: 0,
     lastImageRefreshAt: 0,
     imageReady: false,
