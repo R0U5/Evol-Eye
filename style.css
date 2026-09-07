@@ -4568,6 +4568,18 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   max-height: 100%;
   pointer-events: auto;
 }
+/* The CCTV feed is the showpiece of the right rail — give it a dedicated,
+   wider stage when open (industry-standard CCTV viewport feel: big feed,
+   nameplate overlay). 20% wider than the default control rail. */
+#right-context-rail #cctv-panel:not(.collapsed) {
+  --cctv-panel-expanded-width: 396px;
+  width: var(--cctv-panel-expanded-width);
+}
+@media (max-width: 640px) {
+  #right-context-rail #cctv-panel:not(.collapsed) {
+    --cctv-panel-expanded-width: min(396px, calc(100vw - 24px));
+  }
+}
 #right-context-rail #cctv-panel.collapsed {
   width: var(--right-display-collapsed-width);
   margin-left: auto;
@@ -6113,6 +6125,24 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 7px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.cctv-calibration-header::-webkit-details-marker {
+  display: none;
+}
+
+.cctv-cal-header-chevron {
+  display: inline-block;
+  color: rgba(127, 216, 231, 0.75);
+  font-size: 10px;
+  transition: transform 0.18s ease;
+}
+
+.cctv-calibration-block[open] .cctv-cal-header-chevron {
+  transform: rotate(90deg);
 }
 
 .cctv-calibration-header .cctv-summary-label {
@@ -6247,12 +6277,108 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   background:
     radial-gradient(circle at 20% 20%, rgba(0, 244, 255, 0.09), transparent 44%),
     linear-gradient(180deg, rgba(8, 14, 19, 0.88), rgba(4, 7, 11, 0.96));
-  min-height: 150px;
+  min-height: 180px;
   /* .cctv-panel-inner is a scrolling column flex container, so the default
      flex-shrink:1 squeezed this wrap down to its 150px floor while the 16:9
      image inside is taller — and the wrap is overflow:hidden, which clipped
      the bottom of the frame right back off. Never shrink the preview. */
   flex-shrink: 0;
+}
+
+/* Feed nameplate: always-on overlay bar along the bottom of the frame,
+   industry CCTV look — camera name left, source state right. */
+.cctv-feed-nameplate {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  background: linear-gradient(180deg, transparent, rgba(2, 6, 12, 0.85));
+  color: rgba(220, 245, 255, 0.95);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  pointer-events: none;
+  z-index: 2;
+}
+.cctv-feed-nameplate[hidden] {
+  display: none;
+}
+.cctv-feed-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.cctv-feed-badge {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: rgba(127, 216, 231, 0.9);
+}
+.cctv-feed-badge[data-frame-state='error'] {
+  color: rgba(255, 90, 80, 0.95);
+}
+.cctv-feed-badge[data-frame-state='loading'] {
+  color: rgba(230, 200, 120, 0.95);
+}
+
+/* Organized toolbar rows — transport / layer / presentation. Buttons get
+   consistent sizing; the camera selector stretches; no more loose rows. */
+.cctv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  margin: 0;
+}
+.cctv-toolbar .scene-btn {
+  min-height: 26px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.cctv-toolbar-transport {
+  justify-content: stretch;
+}
+.cctv-toolbar-transport .scene-btn:first-child,
+.cctv-toolbar-transport .scene-btn:nth-child(3) {
+  flex: 0 0 auto;
+  min-width: 28px;
+}
+.cctv-camera-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(6, 12, 20, 0.78);
+  color: rgba(235, 245, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 6px;
+}
+.cctv-toolbar-layer {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+.cctv-toolbar-layer .cctv-power-btn[aria-pressed='true'],
+.cctv-toolbar-layer .cctv-power-btn.active {
+  filter: drop-shadow(0 0 6px rgba(255, 40, 40, 0.7));
+}
+.cctv-quality-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 /* Lightweight loading shimmer while the active frame is fetching */
@@ -6721,8 +6847,10 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 #global-context-panel.collapsed > .global-context-panel-inner > .context-mode-standby,
 #radio-panel.collapsed .radio-panel-inner > :not(.panel-header),
 #cctv-panel.collapsed .cctv-controls,
+#cctv-panel.collapsed .cctv-toolbar,
 #cctv-panel.collapsed .cctv-calibration-block,
 #cctv-panel.collapsed .cctv-frame-wrap,
+#cctv-panel.collapsed #cctv-feed-nameplate,
 #cctv-panel.collapsed #cctv-source-badge,
 #cctv-panel.collapsed #cctv-meta,
 #cctv-panel.collapsed .cctv-summary-label,

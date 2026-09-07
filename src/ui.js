@@ -6386,6 +6386,20 @@ export class StyleManager {
    */
   _syncCctvSourceBadge(activeCamera, enabled) {
     if (!this._cctvSourceBadge) return;
+    const nameplate = document.getElementById('cctv-feed-nameplate');
+    const nameEl = document.getElementById('cctv-feed-name');
+    // Show the overlay nameplate whenever a camera is committed to the feed
+    // (even while its first frame is still loading), and mirror the camera
+    // name next to the source badge — the industry-standard CCTV layout.
+    if (enabled && activeCamera) {
+      nameplate?.removeAttribute('hidden');
+      if (nameEl) {
+        const label = [activeCamera.name, activeCamera.city].filter(Boolean).join(' · ');
+        nameEl.textContent = label || activeCamera.id || 'CCTV';
+      }
+    } else {
+      nameplate?.setAttribute('hidden', '');
+    }
     if (!enabled || !activeCamera) {
       this._cctvSourceBadge.textContent = 'SOURCE · UNKNOWN';
       this._cctvSourceBadge.dataset.frameState = 'idle';

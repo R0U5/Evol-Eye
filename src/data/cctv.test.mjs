@@ -701,7 +701,7 @@ test('CCTV focus refuses camera flights while cockpit owns the view', () => {
   assert.equal(flyCalls, 0);
 });
 
-test('CCTV repeated in-world clicks dispatch focus only for the one real activation', () => {
+test('CCTV repeated in-world clicks dispatch focus for every click on a camera', () => {
   const target = new EventTarget();
   const activated = [];
   const requests = [];
@@ -716,14 +716,22 @@ test('CCTV repeated in-world clicks dispatch focus only for the one real activat
     activated.push(cameraId);
     return results.shift();
   };
+  // A re-click on the already-active camera (UNCHANGED) is still explicit
+  // intent to LOOK at it — the focus request fires every click so the view
+  // re-flies to the optimal position (owner report 2026-09-06). Only a
+  // NOT_FOUND suppresses the request.
   assert.deepEqual([
     activateCctvCameraFromWorldClick('atx-cam-3', activate, target),
     activateCctvCameraFromWorldClick('atx-cam-3', activate, target),
     activateCctvCameraFromWorldClick('atx-cam-3', activate, target),
-  ], [true, false, false]);
+  ], [true, true, true]);
 
   assert.deepEqual(activated, ['atx-cam-3', 'atx-cam-3', 'atx-cam-3']);
-  assert.deepEqual(requests, [{ cameraId: 'atx-cam-3' }]);
+  assert.deepEqual(requests, [
+    { cameraId: 'atx-cam-3' },
+    { cameraId: 'atx-cam-3' },
+    { cameraId: 'atx-cam-3' },
+  ]);
   assert.match(cctvLayer.init.toString(), /bindCctvWorldClickGesture\(_clickHandler/);
   assert.match(cctvLayer.init.toString(), /_cctvOverlayHost\.hitTest/);
   assert.match(cctvLayer.init.toString(), /sourceId: CCTV_OVERLAY_SOURCE_ID/);

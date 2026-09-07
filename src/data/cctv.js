@@ -4184,6 +4184,13 @@ export function maybeAutoHop(nowMs) {
       // probe, projection runtime, geometry rewrite) — previously bypassed
       // with a bare assignment
       setActiveCamera(nearest);
+      // Auto-hop must also MOVE THE VIEW to the new camera when its location
+      // is known — otherwise the feed switches but the globe stays put and
+      // the monitor plane is off-screen (owner report 2026-09-06).
+      const record = _recordById.get(nearest);
+      if (record?.position && Number.isFinite(record.camera?.lat)) {
+        focusCctvRecord(_viewer, record, 1.6);
+      }
       _lastHopAt = nowMs;
       return;
     }
@@ -4194,7 +4201,13 @@ export function maybeAutoHop(nowMs) {
     1,
     _records.length,
   );
-  setActiveCamera(_records[nextIdx].camera.id);
+  const nextRecord = _records[nextIdx];
+  if (!nextRecord) return;
+  setActiveCamera(nextRecord.camera.id);
+  // Same view-move contract as the view-changed branch: hop the camera too.
+  if (nextRecord.position && Number.isFinite(nextRecord.camera?.lat)) {
+    focusCctvRecord(_viewer, nextRecord, 1.6);
+  }
   _lastHopAt = nowMs;
 }
 
