@@ -313,6 +313,58 @@ export async function initKeySetup({ documentRef = globalThis.document, fetchImp
   chip.addEventListener('click', openDialog);
   closeButton?.addEventListener('click', close);
   applyButton?.addEventListener('click', onApply);
+
+  // Batch import: load keys from a .txt/.env file. Parses KEY=value lines
+  // and fills the matching input fields in the key setup rows.
+  const parseEnvText = (text) => {
+    const result = {};
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let value = trimmed.slice(eq + 1).trim();
+      // Strip surrounding quotes (single or double).
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (key) result[key] = value;
+    }
+    return result;
+  };
+  const importButton = root.querySelector('[data-key-setup-import]');
+  const fileInput = root.querySelector('[data-key-setup-file]');
+  if (importButton && fileInput) {
+    importButton.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const parsed = parseEnvText(text);
+        const inputs = [...root.querySelectorAll('input[data-env-var]')];
+        let filled = 0;
+        for (const input of inputs) {
+          const key = input.dataset.envVar;
+          if (key && Object.prototype.hasOwnProperty.call(parsed, key)) {
+            input.value = parsed[key];
+            filled += 1;
+          }
+        }
+        if (filled > 0) {
+          say(`Loaded ${filled} key${filled === 1 ? '' : 's'} from ${file.name}. Review and click SAVE KEYS.`);
+        } else {
+          say(`No matching keys found in ${file.name}. Expected KEY=value lines (e.g. OPENAI_API_KEY=sk-...).`);
+        }
+      } catch (error) {
+        say(`Import failed: ${error?.message || error}`);
+      } finally {
+        fileInput.value = '';
+      }
+    });
+  }
   // Remove buttons are rendered per row; delegate so re-renders stay wired.
   rowsHost?.addEventListener('click', (event) => {
     const button = event.target?.closest?.('[data-key-setup-remove]');

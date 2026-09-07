@@ -28,8 +28,11 @@ const RV_API_URL = 'https://api.rainviewer.com/public/weather-maps.json';
 /** Tile size in pixels. 512 is the max for the free personal-use tier. */
 const TILE_SIZE = 512;
 
-/** Color scheme suffix: 2_1 = universal blue (free-tier default). */
-const COLOR_SUFFIX = '2_1';
+/** Color scheme ID (2 = universal blue, RainViewer free-tier default). */
+const COLOR_SCHEME = '2';
+
+/** Options: {smooth}_{snow}. 1_1 = smoothed + show snow. */
+const SMOOTH_SNOW = '1_1';
 
 /** How long to cache the weather-maps response before refetching. */
 const MAPS_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -123,7 +126,12 @@ function buildTileUrl(frame, z, x, y) {
   const host = frame.host.endsWith('/') ? frame.host : `${frame.host}/`;
   // path always starts with a slash (e.g. "/v2/radar/d7dacfda7b52").
   const base = `${host}${frame.path.replace(/^\//, '')}`;
-  return `${base}/${TILE_SIZE}/${z}/${x}/${y}/${COLOR_SUFFIX}.png`;
+  // RainViewer tile URL format (per docs):
+  //   {host}{path}/{size}/{z}/{x}/{y}/{color}/{options}.png
+  // where color and options are SEPARATE path segments, not joined.
+  // e.g. .../512/2/2/1/2/1_1.png  (color=2, options=1_1)
+  // The old code merged them into one segment (2_1) → every tile 404.
+  return `${base}/${TILE_SIZE}/${z}/${x}/${y}/${COLOR_SCHEME}/${SMOOTH_SNOW}.png`;
 }
 
 // ─── Imagery provider ────────────────────────────────────────────────────────

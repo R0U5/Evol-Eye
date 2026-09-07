@@ -1607,38 +1607,9 @@ function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed
 
   const accent = state === 'error' ? '255, 60, 60' : '0, 220, 255';
   ctx.strokeStyle = `rgba(${accent}, 0.24)`;
-  ctx.lineWidth = state === 'error' ? 3 : 2;
   ctx.lineWidth = 2;
   ctx.strokeRect(18, 18, w - 36, h - 36);
   ctx.strokeRect(36, 36, w - 72, h - 72);
-
-  if (isLoading) {
-    // Static spy-esque "acquiring signal" treatment for a camera whose first
-    // frame has not landed yet — replaces the old flashing/blank frame with a
-    // stable tactical look: corner brackets, crosshair hint, and scanlines.
-    ctx.strokeStyle = `rgba(${accent}, 0.5)`;
-    ctx.lineWidth = 2;
-    const b = 40;
-    const len = 34;
-    // Four corner brackets.
-    [[b, b], [w - b, b], [b, h - b], [w - b, h - b]].forEach(([x, y]) => {
-      ctx.beginPath();
-      ctx.moveTo(x - len, y); ctx.lineTo(x + len, y);
-      ctx.moveTo(x, y - len); ctx.lineTo(x, y + len);
-      ctx.stroke();
-    });
-    // Scanlines — 3px every 18px, low alpha, over the dark gradient.
-    ctx.fillStyle = 'rgba(170, 242, 255, 0.05)';
-    for (let y = 96; y < h - 64; y += 18) {
-      ctx.fillRect(36, y, w - 72, 3);
-    }
-    // Center crosshair.
-    ctx.strokeStyle = `rgba(${accent}, 0.35)`;
-    ctx.beginPath();
-    ctx.moveTo(w / 2, h / 2 - 26); ctx.lineTo(w / 2, h / 2 + 26);
-    ctx.moveTo(w / 2 - 26, h / 2); ctx.lineTo(w / 2 + 26, h / 2);
-    ctx.stroke();
-  }
 
   ctx.fillStyle = 'rgba(170, 242, 255, 0.95)';
   ctx.font = '600 32px "JetBrains Mono", monospace';
