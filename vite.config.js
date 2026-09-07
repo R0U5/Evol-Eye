@@ -5144,7 +5144,7 @@ function cctvProxy() {
     return {
       id: cameraId,
       feedType,
-      mediaUrl: isVideoFeedType(feedType)
+      mediaUrl: isLiveStreamFeedType(feedType)
         ? `/api/cctv/media/${encodeURIComponent(cameraId)}`
         : null,
       frameUrl: `/api/cctv/frame/${encodeURIComponent(cameraId)}`,
@@ -5266,10 +5266,14 @@ function cctvProxy() {
                 // Do not follow redirects — a catalog URL that 302s to an
                 // internal host would otherwise be silently followed (SSRF).
                 redirect: 'manual',
-                // Snapshot/image media gets a hard timeout; live streams (HLS/
-                // MJPEG) are given a longer window but still bounded so a
-                // stalled camera can't hang the handler forever.
-                signal: AbortSignal.timeout(isVideoFeedType(feedType) ? 30000 : 10000),
+                // Snapshot/image media gets a hard timeout. Live streams
+                // (HLS/MJPEG) must NOT get a fixed wall-clock abort: a healthy
+                // MJPEG <img> stays connected indefinitely, and a 30 s abort
+                // would kill the feed every half-minute. They stream until the
+                // client disconnects (which tears the upstream down via
+                // proxyMediaResponse's res.on('close')), and a stalled camera
+                // is released by the client's own retry/placeholder path.
+                signal: isLiveStreamFeedType(feedType) ? null : AbortSignal.timeout(10000),
               });
               const contentType = upstream.headers.get('content-type') || '';
               if (!upstream.ok) {
@@ -5286,7 +5290,7 @@ function cctvProxy() {
                 return;
               }
 
-              if (isVideoFeedType(feedType) && !(contentType.startsWith('video/') || contentType.includes('mpegurl'))) {
+              if (isLiveStreamFeedType(feedType) && !(contentType.startsWith('video/') || contentType.includes('mpegurl') || contentType.includes('multipart/x-mixed-replace'))) {
                 setHealth(cameraId, {
                   status: 'degraded',
                   sourceKind: 'upstream',
@@ -5296,14 +5300,14 @@ function cctvProxy() {
               } else {
                 setHealth(cameraId, {
                   status: 'ok',
-                  sourceKind: isVideoFeedType(feedType) ? 'live' : 'snapshot',
+                  sourceKind: isLiveStreamFeedType(feedType) ? 'live' : 'snapshot',
                   label: source?.provider || 'Configured source',
-                  message: isVideoFeedType(feedType) ? 'Live stream connected' : 'Snapshot feed connected',
+                  message: isLiveStreamFeedType(feedType) ? 'Live stream connected' : 'Snapshot feed connected',
                 });
               }
 
               await proxyMediaResponse(res, upstream, {
-                sourceHeader: isVideoFeedType(feedType) ? 'live-media' : 'upstream-image',
+                sourceHeader: isLiveStreamFeedType(feedType) ? 'live-media' : 'upstream-image',
               });
               return;
             } catch (error) {

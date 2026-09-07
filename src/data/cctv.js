@@ -140,6 +140,8 @@ const GEO_PROGRESS_NOTIFY_BATCH_LIMIT = 10;
 // Throttle for placeholder repaints — the projection RAF loop must not
 // re-fill a 1080p canvas on every frame while a feed image is still loading.
 const PLACEHOLDER_REPAINT_MS = 750;
+/** Backoff before a live MJPEG <img> reconnects after its /media stream drops. */
+const LIVE_RETRY_BACKOFF_MS = 3000;
 // v1 key is retired dead data (owner decision #3, §9.3 — WIPE CLEAN, no
 // legacy import): kept here only as a documented constant so nothing ever
 // re-reads it by accident. Exported for the unit suite's "v1 is ignored"
@@ -1465,6 +1467,8 @@ function paintNextProjectionBuffer(runtime) {
  */
 function refreshProjectionTextures(record) {
   const runtime = record?.projection;
+  // live-jpeg draws into the canvas each RAF (like image) so it uses the
+  // double-buffer swap; only video (native element binding) is excluded.
   if (!runtime || runtime.mode === 'video') return;
   const now = Date.now();
   if (now - safeNumber(runtime.lastTextureSwapAt, 0) < PROJECTION_TEXTURE_SWAP_MS) return;
@@ -1556,9 +1560,10 @@ function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed
 
   const label = String(camera?.name || 'CCTV');
   const city = String(camera?.city || 'GLOBAL');
+  const isLoading = state === 'loading';
   const status = String(
-    state === 'loading'
-      ? 'LOADING…'
+    isLoading
+      ? 'SIGNAL ACQUIRING'
       : state === 'error'
         ? (health?.message || 'NO SIGNAL')
         : (health?.message || health?.status || camera?.feedType || 'NO FEED')
@@ -1570,6 +1575,34 @@ function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed
   ctx.lineWidth = 2;
   ctx.strokeRect(18, 18, w - 36, h - 36);
   ctx.strokeRect(36, 36, w - 72, h - 72);
+
+  if (isLoading) {
+    // Static spy-esque "acquiring signal" treatment for a camera whose first
+    // frame has not landed yet — replaces the old flashing/blank frame with a
+    // stable tactical look: corner brackets, crosshair hint, and scanlines.
+    ctx.strokeStyle = `rgba(${accent}, 0.5)`;
+    ctx.lineWidth = 2;
+    const b = 40;
+    const len = 34;
+    // Four corner brackets.
+    [[b, b], [w - b, b], [b, h - b], [w - b, h - b]].forEach(([x, y]) => {
+      ctx.beginPath();
+      ctx.moveTo(x - len, y); ctx.lineTo(x + len, y);
+      ctx.moveTo(x, y - len); ctx.lineTo(x, y + len);
+      ctx.stroke();
+    });
+    // Scanlines — 3px every 18px, low alpha, over the dark gradient.
+    ctx.fillStyle = 'rgba(170, 242, 255, 0.05)';
+    for (let y = 96; y < h - 64; y += 18) {
+      ctx.fillRect(36, y, w - 72, 3);
+    }
+    // Center crosshair.
+    ctx.strokeStyle = `rgba(${accent}, 0.35)`;
+    ctx.beginPath();
+    ctx.moveTo(w / 2, h / 2 - 26); ctx.lineTo(w / 2, h / 2 + 26);
+    ctx.moveTo(w / 2 - 26, h / 2); ctx.lineTo(w / 2 + 26, h / 2);
+    ctx.stroke();
+  }
 
   ctx.fillStyle = 'rgba(170, 242, 255, 0.95)';
   ctx.font = '600 32px "JetBrains Mono", monospace';
@@ -1724,7 +1757,11 @@ function createProjectionRuntime(record) {
   ctx.imageSmoothing = true;
 
   const feedType = normalizeFeedType(record.camera.feedType);
-  const mode = isVideoFeedType(feedType) ? 'video' : 'image';
+  // MJPG is a live stream browsers decode natively in an <img> (as
+  // multipart/x-mixed-replace) — NOT in <video>. Give it its own mode so the
+  // projection loop draws the advancing <img> each RAF instead of treating it
+  // as a static still fetched every N seconds.
+  const mode = feedType === 'mjpeg' ? 'live-jpeg' : (isVideoFeedType(feedType) ? 'video' : 'image');
   const runtime = {
     mode,
     canvas,
@@ -1743,6 +1780,11 @@ function createProjectionRuntime(record) {
     imageLoading: false,
     imageStamp: 0,
     drawnImageStamp: -1,
+    // live-jpeg only: monotonically increasing counter bumped whenever a new
+    // frame is drawn from the streaming <img> so the projection loop can tell
+    // fresh pixels from a stalled frame.
+    liveFrameCount: 0,
+    lastDrawnLiveFrame: 0,
     // True once ANY live frame has been drawn for this camera (used to pick
     // LOADING vs NO-SIGNAL placeholder text: a camera that once worked and
     // now fails reads NO SIGNAL; a camera that never returned a frame reads
@@ -1764,7 +1806,42 @@ function createProjectionRuntime(record) {
 
   paintProjectionPlaceholder(ctx, record.camera);
 
-  if (mode === 'video') {
+  if (mode === 'live-jpeg') {
+    // A live MJPEG stream: a single <img> bound to the long-lived /media
+    // connection. The browser decodes the multipart/x-mixed-replace body as
+    // JPEGs arrive, so the projection loop can draw the CURRENT frame every
+    // RAF — true realtime (5-15 fps on public Axis cams), no per-frame
+    // refetch, no periodic snapshot freeze.
+    const liveImg = new Image();
+    liveImg.decoding = 'async';
+    liveImg.crossOrigin = 'anonymous';
+    liveImg.onload = () => {
+      runtime.lastGoodFrameAt = Date.now();
+      runtime.feedError = null;
+      // Every multipart frame fires load on the same <img>; flag it so the
+      // draw loop picks up the new pixels.
+      runtime.liveFrameCount += 1;
+    };
+    let retryTimer = 0;
+    liveImg.onerror = () => {
+      runtime.feedError = 'live-stream-failed';
+      cctvLog(`live-jpeg LOAD FAILED for ${record.camera.id}`);
+      // Auto-reconnect: a dropped /media stream (server recycle, camera blip,
+      // transient network) self-heals after a short backoff. The timeout is
+      // cleared so a later geometry teardown never posts into a dead runtime.
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        if (!runtime.planeEntity) return; // teardown already ran
+        runtime.liveFrameCount = runtime.lastDrawnLiveFrame = 0;
+        const next = mediaUrlFor(record.camera);
+        liveImg.removeAttribute('src');
+        liveImg.src = next;
+      }, LIVE_RETRY_BACKOFF_MS);
+    };
+    runtime._liveRetryTimer = () => retryTimer;
+    liveImg.src = mediaUrlFor(record.camera);
+    runtime.image = liveImg;
+  } else if (mode === 'video') {
     const video = document.createElement('video');
     video.muted = true;
     video.loop = true;
@@ -1846,6 +1923,14 @@ function destroyProjectionRuntime(runtime) {
     runtime.video.pause();
     runtime.video.removeAttribute('src');
     runtime.video.load();
+  }
+  // Close the live MJPEG stream: dropping the src aborts the open /media
+  // connection (and the server's client-disconnect teardown releases upstream).
+  if (runtime.mode === 'live-jpeg' && runtime.image) {
+    runtime.image.removeAttribute('src');
+    if (typeof runtime._liveRetryTimer === 'function') {
+      clearTimeout(runtime._liveRetryTimer());
+    }
   }
   if (runtime.planeEntity && _viewer) {
     _viewer.entities.remove(runtime.planeEntity);
@@ -1939,6 +2024,26 @@ function drawProjectionFrame(record) {
   if (!runtime || !runtime.ctx) return;
 
   const health = _healthById.get(record.camera.id) || null;
+
+  if (runtime.mode === 'live-jpeg' && runtime.image) {
+    const live = runtime.image;
+    if (live.complete && live.naturalWidth > 0 && runtime.liveFrameCount > runtime.lastDrawnLiveFrame) {
+      // A fresh MJPEG frame landed since the last draw — blit the current
+      // pixels onto the projection canvas. The live <img> advances itself.
+      runtime.lastDrawnLiveFrame = runtime.liveFrameCount;
+      runtime.lastGoodFrameAt = Date.now();
+      runtime.feedError = null;
+      runtime.ctx.clearRect(0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
+      runtime.ctx.drawImage(live, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
+      runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
+      runtime.lastPlaceholderPaintAt = 0;
+      return;
+    }
+    // No live frame has landed yet (or the stream is stalled): show the
+    // static spy "SIGNAL ACQUIRING" placeholder instead of flashing.
+    paintPlaceholderThrottled(record, runtime, health);
+    return;
+  }
 
   if (runtime.mode === 'video' && runtime.video) {
     const video = runtime.video;

@@ -58,6 +58,18 @@ test('deriveAxisSnapshotUrls rewrites MJPG stream URLs to still endpoints', () =
   assert.deepEqual(deriveAxisSnapshotUrls('https://example.com/frame.jpg'), []);
 });
 
+test('deriveAxisSnapshotUrls honors a requested resolution for hi-res active reads', () => {
+  const hd = deriveAxisSnapshotUrls('http://85.4.30.236:8080/mjpg/video.mjpg', '1280x720');
+  assert.deepEqual(hd, [
+    'http://85.4.30.236:8080/mjpg/1/image.jpg?resolution=1280x720',
+    'http://85.4.30.236:8080/axis-cgi/jpg/image.cgi?resolution=1280x720',
+  ]);
+  assert.deepEqual(deriveAxisSnapshotUrls('http://x.local/mjpg/video.mjpg', ''), [
+    'http://x.local/mjpg/1/image.jpg?resolution=640x480',
+    'http://x.local/axis-cgi/jpg/image.cgi?resolution=640x480',
+  ]);
+});
+
 test('extractFirstJpegFromMjpg pulls the first frame out of a multipart body', () => {
   const multipart = Buffer.concat([
     Buffer.from('--frame\r\nContent-Type: image/jpeg\r\n\r\n'),
