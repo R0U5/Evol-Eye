@@ -2502,24 +2502,63 @@ function terrainHeightsProxy() {
 function adsbdbProxy() {
   const TTL_MS = 24 * 3600_000;
   const CACHE_PATH = path.join(process.cwd(), '.gev-cache', 'adsbdb.json');
-  let cache = { routes: {}, aircraft: {} };
+  // Bounded per-store caches: every distinct callsign/hex mints a persistent
+  // entry (404s negative-cached), so cap both stores with LRU eviction to keep
+  // memory and the on-disk JSON bounded. Maps preserve insertion order for all
+  // key shapes — integer-like hex keys ("123456") would reorder in a plain
+  // object and break oldest-first eviction.
+  const STORE_MAX_ENTRIES = 512;
+  /** @type {{routes: Map<string, {at:number, data:object|null}>, aircraft: Map<string, {at:number, data:object|null}>}} */
+  let cache = { routes: new Map(), aircraft: new Map() };
   let dirty = false;
   let loaded = false;
   const inflight = new Map();
+
+  /** LRU-ish insert into a store Map (Map preserves insertion order; evict the oldest). */
+  function storeSet(store, key, entry) {
+    if (!store.has(key) && store.size >= STORE_MAX_ENTRIES) {
+      const oldest = store.keys().next().value;
+      store.delete(oldest);
+    }
+    store.set(key, entry);
+  }
+
+  /** Drop entries older than TTL. @returns {boolean} true if any were removed. */
+  function pruneStore(store, now = Date.now()) {
+    let removed = false;
+    for (const [key, entry] of store) {
+      if (!entry || now - entry.at >= TTL_MS) {
+        store.delete(key);
+        removed = true;
+      }
+    }
+    return removed;
+  }
 
   async function loadOnce() {
     if (loaded) return;
     loaded = true;
     try {
       const parsed = JSON.parse(await fsp.readFile(CACHE_PATH, 'utf8'));
-      cache = { routes: parsed.routes ?? {}, aircraft: parsed.aircraft ?? {} };
+      cache = {
+        routes: new Map(Object.entries(parsed.routes ?? {})),
+        aircraft: new Map(Object.entries(parsed.aircraft ?? {})),
+      };
     } catch { /* first run */ }
     setInterval(async () => {
+      // Prune TTL-expired entries first; persist only when something changed
+      // (new entries, refreshes, or pruning removed entries).
+      const prunedRoutes = pruneStore(cache.routes);
+      const prunedAircraft = pruneStore(cache.aircraft);
+      if (prunedRoutes || prunedAircraft) dirty = true;
       if (!dirty) return;
       dirty = false;
       try {
         await fsp.mkdir(path.dirname(CACHE_PATH), { recursive: true });
-        await fsp.writeFile(CACHE_PATH, JSON.stringify(cache), 'utf8');
+        await fsp.writeFile(CACHE_PATH, JSON.stringify({
+          routes: Object.fromEntries(cache.routes),
+          aircraft: Object.fromEntries(cache.aircraft),
+        }), 'utf8');
       } catch { dirty = true; } // retry next tick
     }, 15_000).unref?.();
   }
@@ -2550,7 +2589,7 @@ function adsbdbProxy() {
 
   function lookup(kind, key) {
     const store = kind === 'route' ? cache.routes : cache.aircraft;
-    if (fresh(store[key])) return Promise.resolve(store[key].data);
+    if (fresh(store.get(key))) return Promise.resolve(store.get(key).data);
     const ik = `${kind}:${key}`;
     if (!inflight.has(ik)) {
       inflight.set(ik, (async () => {
@@ -2561,18 +2600,18 @@ function adsbdbProxy() {
           const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
           if (res.ok) {
             const data = kind === 'route' ? parseRoute(await res.json()) : parseAircraft(await res.json());
-            store[key] = { at: Date.now(), data }; // data may be null — negative cache
+            storeSet(store, key, { at: Date.now(), data }); // data may be null — negative cache
             dirty = true;
             return data;
           }
           if (res.status === 404) {
-            store[key] = { at: Date.now(), data: null }; // known-missing — cache the miss
+            storeSet(store, key, { at: Date.now(), data: null }); // known-missing — cache the miss
             dirty = true;
           }
           // other statuses: leave uncached so we retry later
-          return fresh(store[key]) ? store[key].data : null;
+          return fresh(store.get(key)) ? store.get(key).data : null;
         } catch {
-          return fresh(store[key]) ? store[key].data : null; // network error → stale if any
+          return fresh(store.get(key)) ? store.get(key).data : null; // network error → stale if any
         } finally {
           inflight.delete(ik);
         }
