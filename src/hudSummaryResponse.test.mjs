@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import {
   HUD_SUMMARY_UNCONFIGURED_CODE,
   isHudSummaryUnconfigured,
   keylessHudSummaryResponse,
 } from './hudSummaryResponse.js';
-import { openAiRealtimeProxy } from '../vite.config.js';
+import {
+  hudSummaryProvider,
+  openAiRealtimeProxy,
+  resetRateLimiterCacheForTests,
+} from '../vite.config.js';
 
 const UNCONFIGURED_PAYLOAD = {
   configured: false,
@@ -26,15 +31,21 @@ function installOpenAiRoutes() {
   return routes;
 }
 
-function invokeRoute(handler, { method = 'GET', url = '/', remoteAddress = '127.0.0.1' } = {}) {
+function invokeRoute(handler, { method = 'GET', url = '/', remoteAddress = '127.0.0.1', body } = {}) {
   return new Promise((resolve, reject) => {
     const headers = new Map();
-    const req = {
-      method,
-      url,
-      headers: {},
-      socket: { remoteAddress },
-    };
+    const req = new EventEmitter();
+    req.method = method;
+    req.url = url;
+    req.headers = {};
+    req.socket = { remoteAddress };
+    if (body !== undefined) {
+      req.destroy = () => {};
+      setImmediate(() => {
+        req.emit('data', Buffer.from(String(body), 'utf8'));
+        req.emit('end');
+      });
+    }
     const res = {
       statusCode: 200,
       setHeader(name, value) {
@@ -52,16 +63,34 @@ function invokeRoute(handler, { method = 'GET', url = '/', remoteAddress = '127.
   });
 }
 
-test('builds an HTTP-success capability response only for a blank key', () => {
+test('builds an HTTP-success capability response only when no provider is configured', () => {
   assert.deepEqual(keylessHudSummaryResponse(undefined), {
     statusCode: 200,
     payload: UNCONFIGURED_PAYLOAD,
   });
-  assert.deepEqual(keylessHudSummaryResponse('  '), {
+  assert.deepEqual(keylessHudSummaryResponse({}), {
     statusCode: 200,
     payload: UNCONFIGURED_PAYLOAD,
   });
-  assert.equal(keylessHudSummaryResponse('configured-key'), null);
+  assert.deepEqual(keylessHudSummaryResponse({ openAiKey: '  ', ollamaBaseUrl: ' ', ollamaModel: '' }), {
+    statusCode: 200,
+    payload: UNCONFIGURED_PAYLOAD,
+  });
+  assert.deepEqual(keylessHudSummaryResponse({ ollamaBaseUrl: 'http://localhost:11434' }), {
+    // A lone base URL is not a provider — the model still has to be named.
+    statusCode: 200,
+    payload: UNCONFIGURED_PAYLOAD,
+  });
+  assert.equal(keylessHudSummaryResponse({ openAiKey: 'configured-key' }), null);
+  assert.equal(keylessHudSummaryResponse({
+    openAiKey: 'configured-key',
+    ollamaBaseUrl: 'http://localhost:11434',
+    ollamaModel: 'qwen3:8b',
+  }), null);
+  assert.equal(keylessHudSummaryResponse({
+    ollamaBaseUrl: 'http://localhost:11434',
+    ollamaModel: 'qwen3:8b',
+  }), null);
 });
 
 test('recognizes only the exact deliberate no-key fallback response', () => {
@@ -98,9 +127,17 @@ test('does not hide real provider and HTTP failures', () => {
 
 test('the installed keyless HUD route stays successful after the voice quota is exhausted', async () => {
   const previousKey = process.env.OPENAI_API_KEY;
+  const previousBase = process.env.OPENAI_BASE_URL;
+  const previousOllamaBase = process.env.OLLAMA_BASE_URL;
+  const previousOllamaModel = process.env.OLLAMA_HUD_SUMMARY_MODEL;
   const previousLimit = process.env.GEV_RATELIMIT_OPENAI_PER_MIN;
   process.env.OPENAI_API_KEY = '';
+  process.env.OPENAI_BASE_URL = '';
+  process.env.OLLAMA_BASE_URL = '';
+  process.env.OLLAMA_HUD_SUMMARY_MODEL = '';
   process.env.GEV_RATELIMIT_OPENAI_PER_MIN = '1';
+  // Build the rate limiter inside the exact env the test intends it to see.
+  resetRateLimiterCacheForTests();
   try {
     const routes = installOpenAiRoutes();
     const token = routes.get('/api/realtime/token');
@@ -124,7 +161,160 @@ test('the installed keyless HUD route stays successful after the voice quota is 
   } finally {
     if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previousKey;
+    if (previousBase === undefined) delete process.env.OPENAI_BASE_URL;
+    else process.env.OPENAI_BASE_URL = previousBase;
+    if (previousOllamaBase === undefined) delete process.env.OLLAMA_BASE_URL;
+    else process.env.OLLAMA_BASE_URL = previousOllamaBase;
+    if (previousOllamaModel === undefined) delete process.env.OLLAMA_HUD_SUMMARY_MODEL;
+    else process.env.OLLAMA_HUD_SUMMARY_MODEL = previousOllamaModel;
     if (previousLimit === undefined) delete process.env.GEV_RATELIMIT_OPENAI_PER_MIN;
     else process.env.GEV_RATELIMIT_OPENAI_PER_MIN = previousLimit;
   }
 });
+
+const OPENAI_HUD_SUMMARY_MODEL_DEFAULT = 'gpt-5-nano';
+const HUD_PROVIDER_ENV_VARS = [
+  'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
+  'OPENAI_HUD_SUMMARY_MODEL',
+  'OLLAMA_BASE_URL',
+  'OLLAMA_HUD_SUMMARY_MODEL',
+  'GEV_RATELIMIT_OPENAI_PER_MIN',
+];
+
+/**
+ * Run the installed HUD route against a specific env + fetch stub, then fully
+ * restore process.env, the global fetch, and the lazily-built rate limiter so
+ * tests never leak provider state into each other.
+ */
+function withProviderRoute(env, fetchImpl, run) {
+  return async () => {
+    const prior = new Map(HUD_PROVIDER_ENV_VARS.map((name) => [name, process.env[name]]));
+    for (const name of HUD_PROVIDER_ENV_VARS) delete process.env[name];
+    for (const [name, value] of Object.entries(env)) process.env[name] = value;
+    resetRateLimiterCacheForTests();
+    const originalFetch = globalThis.fetch;
+    const fetchCalls = [];
+    globalThis.fetch = async (url, init) => {
+      fetchCalls.push({ url, init });
+      return fetchImpl(url, init);
+    };
+    try {
+      const routes = installOpenAiRoutes();
+      await run(routes.get('/api/openai/hud-summary'), fetchCalls);
+    } finally {
+      globalThis.fetch = originalFetch;
+      for (const [name, value] of prior) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      resetRateLimiterCacheForTests();
+    }
+  };
+}
+
+test('hudSummaryProvider selects LOCAL > OpenAI-compatible > OpenAI by environment', () => {
+  assert.equal(hudSummaryProvider({}), null);
+  assert.equal(hudSummaryProvider({ OPENAI_BASE_URL: 'http://x.local' }), null); // base alone is not a provider
+  assert.equal(hudSummaryProvider({ OLLAMA_BASE_URL: 'http://127.0.0.1:11434' }), null); // model still required
+
+  assert.deepEqual(hudSummaryProvider({
+    OLLAMA_BASE_URL: 'http://127.0.0.1:11434/',
+    OLLAMA_HUD_SUMMARY_MODEL: 'qwen3:8b',
+  }), {
+    source: 'local',
+    url: 'http://127.0.0.1:11434/api/chat',
+    model: 'qwen3:8b',
+  });
+
+  const localWins = hudSummaryProvider({
+    OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+    OLLAMA_HUD_SUMMARY_MODEL: 'qwen3:8b',
+    OPENAI_API_KEY: 'sk-x',
+  });
+  assert.equal(localWins.source, 'local');
+  assert.equal(localWins.apiKey, undefined); // local never carries a bearer
+
+  const openai = hudSummaryProvider({ OPENAI_API_KEY: 'sk-x' });
+  assert.equal(openai.source, 'openai');
+  assert.equal(openai.url, 'https://api.openai.com/v1/responses');
+  assert.equal(openai.model, OPENAI_HUD_SUMMARY_MODEL_DEFAULT);
+  assert.equal(openai.apiKey, 'sk-x');
+  assert.equal(hudSummaryProvider({ OPENAI_API_KEY: 'sk-x', OPENAI_HUD_SUMMARY_MODEL: 'gpt-4.1-mini' }).model, 'gpt-4.1-mini');
+
+  const compatible = hudSummaryProvider({ OPENAI_API_KEY: 'sk-x', OPENAI_BASE_URL: 'http://llm.local/' });
+  assert.equal(compatible.source, 'openai-compatible');
+  assert.equal(compatible.url, 'http://llm.local/v1/chat/completions');
+  assert.equal(compatible.apiKey, 'sk-x');
+});
+
+test('configured route calls the local Ollama /api/chat endpoint keylessly', withProviderRoute(
+  { OLLAMA_BASE_URL: 'http://127.0.0.1:11434', OLLAMA_HUD_SUMMARY_MODEL: 'qwen3:8b' },
+  async () => ({ ok: true, status: 200, json: async () => ({ message: { content: 'Fog over the Golden Gate' } }) }),
+  async (hud, fetchCalls) => {
+    const response = await invokeRoute(hud, {
+      method: 'POST',
+      body: JSON.stringify({ placeLabels: [] }),
+    });
+    assert.equal(fetchCalls.length, 1);
+    const [call] = fetchCalls;
+    assert.equal(call.url, 'http://127.0.0.1:11434/api/chat');
+    assert.equal(call.init.headers.Authorization, undefined);
+    const sent = JSON.parse(call.init.body);
+    assert.equal(sent.model, 'qwen3:8b');
+    assert.equal(sent.stream, false);
+    assert.deepEqual(sent.options, { num_predict: 100, temperature: 0.3 });
+    assert.equal(sent.messages[0].role, 'system');
+    assert.equal(sent.messages[1].role, 'user');
+    assert.deepEqual(JSON.parse(sent.messages[1].content), { placeLabels: [] });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, { summary: 'Fog over the Golden Gate', source: 'local', error: null });
+  },
+));
+
+test('configured route forwards an OpenAI-compatible chat-completions request with the bearer key', withProviderRoute(
+  { OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: 'http://llm.local:8000' },
+  async () => ({ ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'Fog over the Golden Gate' } }] }) }),
+  async (hud, fetchCalls) => {
+    const response = await invokeRoute(hud, { method: 'POST', body: '{}' });
+    assert.equal(fetchCalls.length, 1);
+    const [call] = fetchCalls;
+    assert.equal(call.url, 'http://llm.local:8000/v1/chat/completions');
+    assert.equal(call.init.headers.Authorization, 'Bearer sk-test');
+    const sent = JSON.parse(call.init.body);
+    assert.equal(sent.max_tokens, 100);
+    assert.equal(sent.stream, undefined);
+    assert.equal(sent.instructions, undefined); // chat-completions shape, not Responses shape
+    assert.equal(sent.model, OPENAI_HUD_SUMMARY_MODEL_DEFAULT);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, { summary: 'Fog over the Golden Gate', source: 'openai-compatible', error: null });
+  },
+));
+
+test('configured route passes an upstream provider failure through with its HTTP status', withProviderRoute(
+  { OPENAI_API_KEY: 'sk-test' },
+  async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'invalid api key' } }) }),
+  async (hud) => {
+    const response = await invokeRoute(hud, { method: 'POST', body: '{}' });
+    assert.equal(response.statusCode, 401);
+    assert.deepEqual(response.body, { summary: null, source: 'openai', error: 'invalid api key' });
+  },
+));
+
+test('configured route keeps calling the OpenAI Responses API when no base URL is set', withProviderRoute(
+  { OPENAI_API_KEY: 'sk-test', OPENAI_HUD_SUMMARY_MODEL: 'gpt-4.1-mini' },
+  async () => ({ ok: true, status: 200, json: async () => ({ output_text: 'Fog over the Golden Gate' }) }),
+  async (hud, fetchCalls) => {
+    const response = await invokeRoute(hud, { method: 'POST', body: '{}' });
+    assert.equal(fetchCalls.length, 1);
+    const [call] = fetchCalls;
+    assert.equal(call.url, 'https://api.openai.com/v1/responses');
+    assert.equal(call.init.headers.Authorization, 'Bearer sk-test');
+    const sent = JSON.parse(call.init.body);
+    assert.equal(sent.model, 'gpt-4.1-mini');
+    assert.equal(sent.max_output_tokens, 100);
+    assert.equal(typeof sent.instructions, 'string');
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.body, { summary: 'Fog over the Golden Gate', source: 'openai', error: null });
+  },
+));

@@ -82,6 +82,55 @@ test('whitespace-only env values do not count as configured', () => {
   assert.equal(status.keys.find((key) => key.id === 'openai').set, false);
 });
 
+test('the LOCAL INTEL and OpenAI-compatible providers are registered', () => {
+  const ollama = KEY_SETUP_KEYS.find((key) => key.id === 'ollama');
+  assert.ok(ollama, 'ollama provider must be in the registry');
+  assert.equal(ollama.title, 'LOCAL INTEL');
+  assert.equal(ollama.unlocks, 'On-premise HUD summarizer — no network egress, no API bill');
+  assert.equal(ollama.getUrl, 'https://ollama.com');
+  assert.deepEqual(ollama.envVars, ['OLLAMA_BASE_URL', 'OLLAMA_HUD_SUMMARY_MODEL']);
+  assert.equal(ollama.tier, 'free');
+  assert.equal(ollama.clientExposed, undefined, 'the browser never sees the Ollama base URL');
+
+  const compatible = KEY_SETUP_KEYS.find((key) => key.id === 'openai-compatible');
+  assert.ok(compatible, 'OpenAI-compatible provider must be in the registry');
+  assert.equal(compatible.title, 'OPENAI-COMPATIBLE');
+  assert.deepEqual(compatible.envVars, ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_HUD_SUMMARY_MODEL']);
+  assert.equal(compatible.tier, 'metered');
+  assert.equal(compatible.clientExposed, undefined);
+
+  assert.ok(Object.isFrozen(KEY_SETUP_KEYS));
+  assert.ok(Object.isFrozen(ollama));
+  assert.ok(Object.isFrozen(compatible));
+
+  assert.equal(keySetupRequirement('ollama'), 'Needs OLLAMA_BASE_URL + OLLAMA_HUD_SUMMARY_MODEL — add it in Provider Settings');
+});
+
+test('the local provider only counts as configured when both Ollama vars are set', () => {
+  const both = keySetupStatus({
+    OLLAMA_BASE_URL: 'http://127.0.0.1:11434',
+    OLLAMA_HUD_SUMMARY_MODEL: 'qwen3:8b',
+  });
+  assert.equal(both.keys.find((key) => key.id === 'ollama').set, true);
+  assert.equal(both.setCount, 1);
+
+  const half = keySetupStatus({ OLLAMA_BASE_URL: 'http://127.0.0.1:11434' });
+  assert.equal(half.keys.find((key) => key.id === 'ollama').set, false, 'a base URL without a model is not configured');
+  assert.equal(half.setCount, 0);
+
+  const compatible = keySetupStatus({
+    OPENAI_API_KEY: 'sk-x',
+    OPENAI_BASE_URL: 'http://llm.local',
+    OPENAI_HUD_SUMMARY_MODEL: 'gpt-4.1-mini',
+  });
+  assert.equal(compatible.keys.find((key) => key.id === 'openai-compatible').set, true);
+  const compatiblePartial = keySetupStatus({
+    OPENAI_API_KEY: 'sk-x',
+    OPENAI_BASE_URL: 'http://llm.local',
+  });
+  assert.equal(compatiblePartial.keys.find((key) => key.id === 'openai-compatible').set, false, 'the panel wants all three vars before it calls the key configured');
+});
+
 test('subprocess success requires a clean zero exit', () => {
   assert.equal(commandCompletedSuccessfully({ status: 0, signal: null }), true);
   assert.equal(commandCompletedSuccessfully({ status: 1, signal: null }), false);

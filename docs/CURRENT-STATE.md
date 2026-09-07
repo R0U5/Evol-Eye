@@ -2198,7 +2198,7 @@ silently demoting every later lookup for the session.
 
 ### AI HUD Summary (June 2026)
 
-- HUD `SUMMARY` readout requests a five-word intelligence-style summary from `/api/openai/hud-summary` (model `OPENAI_HUD_SUMMARY_MODEL`, default `gpt-5-nano`, minimal reasoning).
+- HUD `SUMMARY` readout requests a five-word intelligence-style summary from `/api/openai/hud-summary`. The server picks the active provider by environment precedence — **LOCAL (Ollama) > OpenAI-compatible > OpenAI** — each sharing a 30s timeout, the same five-word output contract, and the same fail-soft error handling. Local mode calls `{OLLAMA_BASE_URL}/api/chat` (model `OLLAMA_HUD_SUMMARY_MODEL`, e.g. `qwen3:8b`) with no auth; OpenAI-compatible mode calls `{OPENAI_BASE_URL}/v1/chat/completions` with `OPENAI_API_KEY` as bearer; the default OpenAI mode hits the Responses API (model `OPENAI_HUD_SUMMARY_MODEL`, default `gpt-5-nano`, minimal reasoning). With no provider configured the endpoint returns the keyless capability response instead of failing.
 - Input is the live basemap label context (place/street/nearby-place labels + enabled layers) — the model is instructed not to infer from coordinates.
 - Output is sanitized to exactly five words; falls back to the deterministic telemetry summary on error/timeout (5s abort); typewriter animation on update.
 
