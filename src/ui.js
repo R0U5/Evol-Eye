@@ -6752,15 +6752,12 @@ export class StyleManager {
         // storage unavailable
       }
     }
-    // DISPLAY starts COLLAPSED for a first-time visitor, then respects the
-    // user's persisted choice like every other panel.
-    //
-    // It used to start expanded, to advertise the HUD / DETECT / 3D toggles.
-    // That reason expired when those became ON by default: the rail now opens
-    // to offer controls for things already happening, while competing with the
-    // first-run mission card for the one first impression there is. A stored
-    // choice still wins in both directions, so anyone who opens it keeps it.
-    if (panelId === 'pp-toggles' && stored === null) collapsed = true;
+    // DISPLAY starts EXPANDED for a first-time visitor so the overlay
+    // toggles (incl. the RainViewer Radar overlay) are immediately visible,
+    // then respects the user's persisted choice like every other panel.
+    // A stored choice wins in both directions, so anyone who collapses it
+    // keeps it collapsed.
+    if (panelId === 'pp-toggles' && stored === null) collapsed = false;
     panelEl.classList.toggle('collapsed', collapsed);
     this._syncPanelCollapseButton(panelEl);
   }

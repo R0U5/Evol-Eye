@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════
-   GOD'S EYE VIEW — Dark Sci-Fi UI
-   Apple meets Blade Runner
+   DEVIL'S EYE — Dark Intelligence UI
+   Red steel, spy-tool aesthetic
    ═══════════════════════════════════════════════ */
 
 :root {
@@ -8,9 +8,9 @@
   --glass-bg: rgba(12, 12, 20, 0.72);
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-border-hover: rgba(255, 255, 255, 0.15);
-  --accent: #00d4ff;
-  --accent-dim: rgba(0, 212, 255, 0.15);
-  --accent-glow: rgba(0, 212, 255, 0.4);
+  --accent: #ff3c3c;
+  --accent-dim: rgba(255, 60, 60, 0.15);
+  --accent-glow: rgba(255, 60, 60, 0.4);
   --text-primary: #e8eaed;
   --text-secondary: rgba(232, 234, 237, 0.5);
   --text-dim: rgba(232, 234, 237, 0.3);
@@ -1999,7 +1999,7 @@ body.ui-clean-view #scene-runtime.active {
   min-width: 34px;
   max-width: min(220px, 38vw);
   overflow: hidden;
-  color: #00e1ff;
+  color: #ff3c3c;
   font-weight: 600;
   letter-spacing: 1.6px;
   text-align: right;
@@ -2077,7 +2077,7 @@ body.ui-clean-view #scene-runtime.active {
 
 #traffic-sync-progress,
 #cctv-sync-progress {
-  color: #00e1ff;
+  color: #ff3c3c;
   font-weight: 600;
   letter-spacing: 1.6px;
   min-width: 34px;
@@ -2269,11 +2269,11 @@ body.ui-clean-view #scene-runtime.active {
 
 #cockpit-entry[hidden], #cockpit-hud[hidden] { display: none; }
 #cockpit-entry:hover, #cockpit-entry:focus-visible {
-  border-color: #00dcff;
+  border-color: #ff3c3c;
   color: #fff;
   outline: none;
 }
-#cockpit-entry .material-symbols-outlined { color: #00dcff; font-size: 18px; }
+#cockpit-entry .material-symbols-outlined { color: #ff3c3c; font-size: 18px; }
 #cockpit-entry kbd {
   padding: 3px 5px;
   border: 1px solid rgba(220, 238, 255, 0.25);
@@ -2283,7 +2283,7 @@ body.ui-clean-view #scene-runtime.active {
 }
 
 #cockpit-hud {
-  --cockpit-accent: #00dcff;
+  --cockpit-accent: #ff3c3c;
   --cockpit-side-panel-width: min(340px, 28vw);
   /* HUD bottom offset + tallest scaled telemetry block + 20px clear border. */
   --cockpit-bottom-rail-safe: calc(clamp(84px, 11vh, 118px) + 100px);
