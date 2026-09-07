@@ -1,6 +1,7 @@
 import * as Cesium from 'cesium';
 import { governorRequestRender } from './renderGovernor.js';
 import { keySetupRequirement } from './keySetupCore.mjs';
+import { RainViewerOverlayController } from './data/rainViewerOverlay.js';
 
 /**
  * Why Google 3D is unavailable, phrased so the tooltip and toast recommend the
@@ -128,6 +129,12 @@ export class MapStackController {
     // captures a generation and aborts its own commit once superseded.
     this._switchGen = 0;
 
+    // RainViewer radar overlay — lives for the session, starts hidden, toggled
+    // via setRadarOverlayEnabled(). Restored to its last persisted state when a
+    // globe stack is activated so the overlay is visible whenever the user wants
+    // it on a non-photoreal globe.
+    this._radarOverlay = new RainViewerOverlayController(viewer);
+
     if (!this.getStack(this._activeId) || !this.isStackAvailable(this._activeId)) {
       this._activeId = googleTileset ? 'photoreal' : 'esri-imagery';
     }
@@ -164,6 +171,32 @@ export class MapStackController {
   _hasPhotorealCredentials() {
     const googleKey = typeof window !== 'undefined' ? window.__GOOGLE_MAPS_API_KEY__ : '';
     return Boolean(String(googleKey || '').trim()) || Boolean(String(this.cesiumToken || '').trim());
+  }
+
+  /**
+   * Show or hide the RainViewer radar overlay.
+   *
+   * On photoreal stacks the overlay is always hidden regardless of `enabled`,
+   * because Google 3D Tiles render a complete, opaque scene — a radar overlay
+   * would be visually incoherent against the 3D buildings/terrain. On globe
+   * stacks (OSM, Esri, Bing) the overlay is shown/hidden per the user's
+   * preference.
+   *
+   * The radar controller persists its own enabled state in localStorage, so a
+   * page reload restores the last setting.
+   *
+   * @param {boolean} enabled
+   */
+  setRadarOverlayEnabled(enabled) {
+    // Never show the overlay on the photoreal globe — it doesn't make sense over
+    // 3D tiles and would introduce visual artifacts at building edges.
+    const onGlobeStack = !this.getStack(this._activeId)?.kind?.startsWith('photoreal');
+    this._radarOverlay.setEnabled(enabled && onGlobeStack);
+  }
+
+  /** Toggle the radar overlay. Returns the new visibility state. */
+  toggleRadarOverlay() {
+    return this._radarOverlay.toggle();
   }
 
   getStack(id) {
@@ -271,6 +304,9 @@ export class MapStackController {
     this._syncEsriAttribution(null); // Esri is no longer on screen.
     if (this.googleTileset) this.googleTileset.show = true;
     this.viewer.scene.globe.show = false;
+    // Radar overlay is never shown over photoreal — it has its own sky/atmosphere
+    // and 3D terrain that a flat radar image doesn't make sense on.
+    this._radarOverlay.setEnabled(false);
     // Terrain is left UNTOUCHED here. The photoreal globe is hidden
     // (`globe.show = false`), so the terrain provider is inert — it renders and
     // streams nothing. Routing this through `_setWorldTerrainEnabled(false)`
@@ -301,6 +337,13 @@ export class MapStackController {
     if (this.googleTileset) this.googleTileset.show = false;
     this.viewer.scene.globe.show = true;
     await this._setWorldTerrainEnabled(!!this.cesiumToken, gen);
+
+    // Restore the radar overlay to its last persisted state when entering a
+    // globe stack. On the photoreal stack the overlay is always hidden (see
+    // setRadarOverlayEnabled). Radar state is NOT tied to map stack switches —
+    // the user may have had radar on before switching away and back.
+    this._radarOverlay.setEnabled(this._radarOverlay._enabled);
+
     return resolution;
   }
 
