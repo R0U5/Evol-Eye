@@ -2223,6 +2223,7 @@ export class StyleManager {
     this._bloomSlider = document.getElementById('bloom-intensity-slider');
     this._bloomSliderValue = document.getElementById('bloom-intensity-value');
     this._sharpenBtn = document.getElementById('sharpen-toggle');
+    this._radarBtn = document.getElementById('radar-toggle');
     this._sharpenSliderRow = document.getElementById('sharpen-slider-row');
     this._sharpenSlider = document.getElementById('sharpen-intensity-slider');
     this._sharpenSliderValue = document.getElementById('sharpen-intensity-value');
@@ -2616,6 +2617,7 @@ export class StyleManager {
 
     this._initStages();
     this._initBloomSharpen();
+    this._initRadarToggle();
     this._initUI();
     this._initMapStackControl();
     this._initPanelChrome();
@@ -3207,6 +3209,32 @@ export class StyleManager {
   }
 
   /**
+   * Wire the RainViewer radar overlay toggle to the MapStackController.
+   * The controller owns the overlay and persists its enabled state.
+   */
+  _initRadarToggle() {
+    this._radarBtn?.addEventListener('click', () => {
+      if (!this.mapStackController) return;
+      this.mapStackController.toggleRadarOverlay();
+      this._updateRadarButtonState();
+    });
+    this._updateRadarButtonState();
+  }
+
+  /**
+   * Sync the radar toggle button's active state from the MapStackController's
+   * overlay state. Called at init and after every toggle.
+   */
+  _updateRadarButtonState() {
+    const controller = this.mapStackController?._radarOverlay;
+    if (!controller || !this._radarBtn) return;
+    const visible = controller.isVisible;
+    this._radarBtn.classList.toggle('active', visible);
+    this._radarBtn.setAttribute('aria-pressed', String(visible));
+    this._radarBtn.title = visible ? 'Disable RainViewer Radar Overlay' : 'Enable RainViewer Radar Overlay';
+  }
+
+  /**
    * Reads the current bloom intensity percentage from the UI slider.
    * @returns {number} Clamped bloom intensity (0-200).
    */
@@ -3549,6 +3577,8 @@ export class StyleManager {
       this._mapStackStatus.textContent = label;
       this._mapStackStatus.classList.toggle('warn', !!state.lastError);
     }
+    // Radar overlay state may have changed: photoreal always hides it.
+    this._updateRadarButtonState();
   }
 
   /**

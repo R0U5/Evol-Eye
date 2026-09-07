@@ -95,6 +95,13 @@ export const DATA_CREDITS = [
       '(CC BY 4.0)',
   },
   {
+    key: 'rainviewer',
+    html:
+      'Radar overlay: ' +
+      '<a href="https://www.rainviewer.com/" target="_blank" rel="noopener">Weather data by RainViewer</a> ' +
+      '(free for personal/educational use)',
+  },
+  {
     key: 'google-news-rss',
     html:
       'Cockpit regional headlines: ' +

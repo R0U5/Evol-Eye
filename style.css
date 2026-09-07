@@ -1047,6 +1047,11 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   box-shadow: 0 0 12px rgba(0, 212, 255, 0.15);
 }
 
+/* RainViewer radar overlay toggle — accent color on active */
+#radar-toggle.active .pp-icon {
+  color: var(--accent);
+}
+
 .pp-icon {
   font-size: 14px;
   line-height: 1;
