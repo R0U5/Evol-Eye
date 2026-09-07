@@ -40,7 +40,7 @@ import { isCalibratedAllocationRuntime } from '../../scripts/run-unit-tests.mjs'
  *   Phase 3 + tracked    |     451 |        451 |     310 |          66642 |       147.8 |      86,700
  *   Phase 4 + CCTV       |     492 |        492 | 310/312 |     78742/97696 | 160.0/198.6 |     102,400
  *   rocket missions      |      48 |         48 |      24 |           5195 |       108.2 |       6,000
- *   Phase 5 pre-missions |     591 |        591 |     353 |         127815 |       216.3 |     132,000
+ *   Phase 5 pre-missions |     591 |        591 |     344 |         134444 |       227.5 |     143,000
  *   Phase 5 final        |     639 |        639 |     353 |         133769 |       209.3 |     142,000
  *   submarine cables     |     160 |        160 |      96 |          17015 |       106.3 |      19,000
  *   all-live (w/ cables) |     864 |        864 |     398 |         164711 |       190.6 |     182,000
@@ -73,8 +73,10 @@ import { isCalibratedAllocationRuntime } from '../../scripts/run-unit-tests.mjs'
  * and the shared 154 ceiling remains unchanged for every non-image row.
  * The pre-missions Phase-5 row adds a third protected selected/tracked-lane
  * entry, exercises the military card's full three-line presentation, and
- * retains those 41 live image-slot reads. Its 216.3 B/candidate mode is gated
- * at 225 (4.0% headroom); the tighter 210 exception remains on the Phase-4 image row
+ * retains those 41 live image-slot reads. Its 227.5 B/candidate mode is gated
+ * at 240 (5.5% headroom) after the 2026-09-07 CCTV thumbnail enlargement
+ * (115x65 draw / 230x130 canvas) grew the steady-state median 127,815 ->
+ * 134,444 B/frame; the tighter 210 exception remains on the Phase-4 image row
  * and the 154 ceiling remains unchanged for all non-image workloads. The final
  * row adds the 48 mission candidates. Its 225 ceiling is not a mission-label
  * exception: the aggregate still performs the same 41 CCTV image-slot reads
@@ -194,8 +196,19 @@ const WORKLOADS = [
     candidates: LOCAL_OVERLAY_COHORT_LIMIT * 2 + FIRMS_AMBIENT_COHORT_LIMIT
       + vesselOverlayCohortLimit(1600, 900) + 1 + CCTV_AMBIENT_CARD_MAX + 1
       + EARTHQUAKE_OVERLAY_COHORT_LIMIT + 3,
-    maxBytesPerFrame: 132_000,
-    maxBytesPerCandidatePerFrame: 225,
+    // Recalibrated 2026-09-07 when the CCTV thumbnail enlargement (96x54 ->
+    // 115x65 draw / 192x108 -> 230x130 frame canvas) landed in the
+    // fix(viewport) axis-line + thumbnails commit: the pre-missions row's
+    // deliberately tight 3.3% margin could not absorb the wider steady-state
+    // drawImage allocation (7,475 vs 5,184 destination px per painted card).
+    // Node 24 measures 134,444 B/frame median (227.5 B/candidate) over ten
+    // chunks on two identical runs (CI Node 24.14 and local Node 24.20 agree);
+    // 143,000 carries ~6.4% frame headroom (matching the sibling phase5-rockets
+    // row's chosen margin) and 240 keeps the image-inclusive ~5.5% headroom
+    // convention. Sibling rows still fit their gates and are deliberately
+    // left untouched (not drift).
+    maxBytesPerFrame: 143_000,
+    maxBytesPerCandidatePerFrame: 240,
     saturated: true,
     ambientCardCapacity: AMBIENT_CARD_COLLISION_CAPACITY,
   },
