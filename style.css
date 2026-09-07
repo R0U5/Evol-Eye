@@ -4576,16 +4576,18 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   max-height: 100%;
   pointer-events: auto;
 }
-/* The CCTV feed is the showpiece of the right rail — give it a dedicated,
-   wider stage when open (industry-standard CCTV viewport feel: big feed,
-   nameplate overlay). 20% wider than the default control rail. */
+/* The CCTV feed is the showpiece of the right rail — and since the 3D
+   projected monitor plane was demoted to opt-in (owner directive 2026-09-07),
+   this flat 2D panel is now the PRIMARY camera viewer. Give it a large,
+   dedicated stage: notably wider than the default control rail (~1.7x) so
+   the 16:9 feed reads clearly. */
 #right-context-rail #cctv-panel:not(.collapsed) {
-  --cctv-panel-expanded-width: 396px;
+  --cctv-panel-expanded-width: 560px;
   width: var(--cctv-panel-expanded-width);
 }
-@media (max-width: 640px) {
+@media (max-width: 800px) {
   #right-context-rail #cctv-panel:not(.collapsed) {
-    --cctv-panel-expanded-width: min(396px, calc(100vw - 24px));
+    --cctv-panel-expanded-width: min(560px, calc(100vw - 24px));
   }
 }
 #right-context-rail #cctv-panel.collapsed {
