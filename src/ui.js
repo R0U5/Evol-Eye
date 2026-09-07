@@ -9915,9 +9915,9 @@ export class StyleManager {
    * @returns {void}
    */
   _initShareButton() {
-    this._shareBtn.addEventListener('click', async () => {
-      // A disposed manager rejects copyLink() — guard + catch so a stale click
-      // can never surface as an unhandled async exception.
+    // L8: guard + catch so a stale click can never surface an unhandled async
+    // exception, even after dispose (the handler ref is removed in dispose).
+    const handler = async () => {
       if (this._disposed) return;
       let success = false;
       try {
@@ -9926,7 +9926,9 @@ export class StyleManager {
         success = false;
       }
       this._showToast(success ? 'Link copied!' : 'Copy failed');
-    });
+    };
+    this._shareBtn.addEventListener('click', handler);
+    this._shareBtnHandler = handler;
   }
 
   /**
@@ -10386,6 +10388,10 @@ export class StyleManager {
     if (this._dataLayersToggleHandler && this._dataLayersToggleBtn) {
       this._dataLayersToggleBtn.removeEventListener('click', this._dataLayersToggleHandler);
       this._dataLayersToggleHandler = null;
+    }
+    if (this._shareBtnHandler && this._shareBtn) {
+      this._shareBtn.removeEventListener('click', this._shareBtnHandler);
+      this._shareBtnHandler = null;
     }
     this._dataPanelSyncHandler = null;
     if (this._poiKeydownHandler) {
