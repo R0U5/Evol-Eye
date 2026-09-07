@@ -47,7 +47,26 @@ test('admitInstallerRequest blocks non-loopback peers, spoofed hosts, and cross-
     host: loopbackHost,
     origin: 'file:///C:/x/index.html',
   }).allowed, true);
-  assert.equal(admitInstallerRequest({ remoteAddress: '10.0.0.5', host: loopbackHost, hostOverride: '0.0.0.0' }).allowed, true);
+  // Non-loopback host override admits non-mutating requests from any peer…
+  assert.equal(admitInstallerRequest({ remoteAddress: '10.0.0.5', host: loopbackHost, hostOverride: '0.0.0.0', path: '/api/health', method: 'GET' }).allowed, true);
+  // …but mutating endpoints require a server token.
+  assert.equal(admitInstallerRequest({ remoteAddress: '10.0.0.5', host: loopbackHost, hostOverride: '0.0.0.0', path: '/api/install', method: 'POST' }).allowed, false);
+  assert.equal(admitInstallerRequest({ remoteAddress: '10.0.0.5', host: loopbackHost, hostOverride: '0.0.0.0', path: '/api/launch', method: 'POST' }).allowed, false);
+});
+
+test('loopback default admits mutating endpoints without a token', () => {
+  const loopbackHost = '127.0.0.1:8787';
+  assert.equal(admitInstallerRequest({ remoteAddress: '127.0.0.1', host: loopbackHost, path: '/api/install', method: 'POST' }).allowed, true);
+  assert.equal(admitInstallerRequest({ remoteAddress: '127.0.0.1', host: loopbackHost, path: '/api/launch', method: 'POST' }).allowed, true);
+});
+
+test('non-loopback host with a server token requires a matching request token', () => {
+  const base = { remoteAddress: '10.0.0.5', host: '127.0.0.1:8787', hostOverride: '0.0.0.0', serverToken: 's3cret' };
+  assert.equal(admitInstallerRequest({ ...base, path: '/api/install', method: 'POST', requestToken: 's3cret' }).allowed, true);
+  assert.equal(admitInstallerRequest({ ...base, path: '/api/launch', method: 'POST', requestToken: 's3cret' }).allowed, true);
+  assert.equal(admitInstallerRequest({ ...base, path: '/api/install', method: 'POST', requestToken: 'wrong' }).allowed, false);
+  assert.equal(admitInstallerRequest({ ...base, path: '/api/install', method: 'POST' }).allowed, false);
+  assert.equal(admitInstallerRequest({ ...base, path: '/api/launch', method: 'POST', requestToken: '' }).allowed, false);
 });
 
 async function bootServer(t, manifest, options = {}) {
@@ -148,6 +167,56 @@ test('launch rejects an install dir without a launcher', async (t) => {
   assert.equal(res.status, 400);
   const payload = await res.json();
   assert.equal(payload.code, 'NO_LAUNCHER');
+});
+
+test('non-loopback server without a token refuses mutating endpoints', async (t) => {
+  const started = await bootServer(t, {}, { host: '0.0.0.0' });
+  const dir = await tempDir('gev-launch-');
+
+  const install = await fetch(`${started.baseUrl}/api/install`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(install.status, 403);
+  const installPayload = await install.json();
+  assert.equal(installPayload.reason, 'non-loopback host requires a server token');
+
+  const launch = await fetch(`${started.baseUrl}/api/launch`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ installDir: dir }),
+  });
+  assert.equal(launch.status, 403);
+
+  // Non-mutating endpoints stay reachable so the operator can diagnose.
+  const health = await fetch(`${started.baseUrl}/api/health`);
+  assert.equal(health.status, 200);
+});
+
+test('non-loopback server with a token admits mutating endpoints only with the token', async (t) => {
+  const started = await bootServer(t, {}, { host: '0.0.0.0', token: 's3cret' });
+  const dir = await tempDir('gev-launch-');
+
+  const refused = await fetch(`${started.baseUrl}/api/launch`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ installDir: dir }),
+  });
+  assert.equal(refused.status, 403);
+  const refusedPayload = await refused.json();
+  assert.equal(refusedPayload.reason, 'invalid or missing token');
+
+  // Correct token → admitted; the request proceeds and fails later with
+  // NO_LAUNCHER (400), proving the gate let it through.
+  const accepted = await fetch(`${started.baseUrl}/api/launch`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token: 's3cret', installDir: dir }),
+  });
+  assert.equal(accepted.status, 400);
+  const acceptedPayload = await accepted.json();
+  assert.equal(acceptedPayload.code, 'NO_LAUNCHER');
 });
 
 test('malformed bodies and unknown api routes are rejected', async (t) => {
