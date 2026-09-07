@@ -4040,6 +4040,11 @@ const flightsLayer = {
       _moveEndRemove();
       _moveEndRemove = null;
     }
+    // Clear the adsbdb enrichment drip timer + queue so a disabled layer
+    // stops issuing /api/adsbdb/type/<icao> requests for already-queued
+    // aircraft. destroy() also does this, but disable() is the normal toggle.
+    if (_enrichDripTimer) { clearTimeout(_enrichDripTimer); _enrichDripTimer = null; }
+    _enrichQueue.length = 0;
   },
 
   /**

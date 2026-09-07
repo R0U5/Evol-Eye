@@ -1608,6 +1608,8 @@ const satellitesLayer = {
     }
     document.removeEventListener('keydown', _onKeyDown);
     unregisterPickOwner('satellites');
+    _denseLoadController?.abort();
+    _denseLoadController = null;
     if (_preRenderListener) {
       _preRenderListener();
       _preRenderListener = null;

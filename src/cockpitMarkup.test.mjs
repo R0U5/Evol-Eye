@@ -307,7 +307,7 @@ test('Clear Selected Layers uses one adopted batch and discards Context restorat
   assert.match(ui, /this\._contextModeGeneration[\s\S]*?this\._contextSessionSnapshot = null;[\s\S]*?this\._contextRestoreState = null;/);
   assert.match(ui, /if \(this\._contextRestoreState\) this\._contextRestoreState\.cancelled = true/);
   assert.match(ui, /if \(restoreState\.cancelled\) return;[\s\S]*?settleContextIntentReplay/);
-  assert.match(ui, /!this\._preservePanelStateDuringLayerClear[\s\S]*?this\.setPanelCollapsed\('radio-panel', true\)/);
+  assert.match(ui, /!this\._preservePanelStateDuringLayerClear[\s\S]*?this\.setPanelCollapsed\('radio-panel', true,\s*\{\s*persist:\s*false\s*\}\)/);
   assert.match(ui, /this\._userFacingContextNotificationTokens\.add\(notificationToken\)/);
 });
 

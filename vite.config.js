@@ -1438,6 +1438,11 @@ async function getOpenSkyToken() {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`,
+          // A dead auth endpoint must not wedge every OpenSky request forever:
+          // the shared token promise would otherwise stay pending indefinitely
+          // (the finally-reset only runs once the promise settles). 10 s is
+          // plenty for an OAuth token exchange.
+          signal: AbortSignal.timeout(10_000),
         }
       );
 
@@ -3109,8 +3114,13 @@ function openSkyProxy() {
             }
           }
 
-          let upstream = await fetch('https://opensky-network.org/api/states/all?extended=1', { headers });
-          // Auto-mode fallback: if OAuth was rejected, retry with Basic credentials
+          let upstream = await fetch('https://opensky-network.org/api/states/all?extended=1', {
+            headers,
+            // A stalled upstream must never hang every client request forever;
+            // fall through to the serve-stale / adsb.lol paths instead.
+            signal: AbortSignal.timeout(20000),
+          });
+          // Auto-mode fallback: if OAuth was rejected, retry with Basic
           if (
             (upstream.status === 401 || upstream.status === 403) &&
             requestedMode === 'auto' &&
@@ -3121,12 +3131,23 @@ function openSkyProxy() {
               Accept: 'application/json',
               Authorization: `Basic ${Buffer.from(`${basicUser}:${basicPass}`).toString('base64')}`,
             };
-            upstream = await fetch('https://opensky-network.org/api/states/all?extended=1', { headers: retryHeaders });
+            upstream = await fetch('https://opensky-network.org/api/states/all?extended=1', {
+              headers: retryHeaders,
+              signal: AbortSignal.timeout(20000),
+            });
             usedMode = 'basic';
             reason = 'oauth_rejected_fallback_basic';
           }
 
-          let body = await upstream.text();
+          // Cap the read: extended=1 returns every aircraft with extended
+          // fields and can run tens of MB; a broken upstream must not OOM the
+          // dev server. 16 MB is well past the largest real snapshot.
+          let body = await readResponseTextCapped(upstream, 16 * 1024 * 1024).catch((err) => {
+            if (err?.code === 'RESPONSE_TOO_LARGE') {
+              upstream.body?.cancel?.().catch?.(() => {});
+            }
+            throw err;
+          });
           const sourceEpochMs = upstream.ok ? openSkySourceEpochMs(body) : null;
           if (
             upstream.ok
@@ -3421,15 +3442,25 @@ function gbfsProxy() {
           const GBFS_MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB
           const contentLength = Number(upstream.headers.get('content-length'));
           if (Number.isFinite(contentLength) && contentLength > GBFS_MAX_BODY_BYTES) {
+            try { await upstream.body?.cancel(); } catch { /* no-op */ }
             res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
             res.end(JSON.stringify({ error: 'GBFS upstream response too large' }));
             return;
           }
-          const body = await upstream.text();
-          if (Buffer.byteLength(body, 'utf8') > GBFS_MAX_BODY_BYTES) {
-            res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-            res.end(JSON.stringify({ error: 'GBFS upstream response too large' }));
-            return;
+          // Enforce the cap WHILE streaming (chunked/lying Content-Length would
+          // otherwise be fully buffered before the check, letting a malicious
+          // upstream OOM the dev server). readResponseTextCapped cancels the
+          // reader and throws RESPONSE_TOO_LARGE past the limit.
+          let body;
+          try {
+            body = await readResponseTextCapped(upstream, GBFS_MAX_BODY_BYTES);
+          } catch (error) {
+            if (error?.code === 'RESPONSE_TOO_LARGE') {
+              res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+              res.end(JSON.stringify({ error: 'GBFS upstream response too large' }));
+              return;
+            }
+            throw error;
           }
           const contentType = upstream.headers.get('content-type') || 'application/json';
           res.writeHead(upstream.status, {
@@ -4898,9 +4929,17 @@ function cctvProxy() {
               cctvLog(`media ${cameraId}: fetching ${mediaUrl}`);
               const upstream = await fetch(mediaUrl, {
                 headers: upstreamHeaders,
+                // Do not follow redirects — a catalog URL that 302s to an
+                // internal host would otherwise be silently followed (SSRF).
+                redirect: 'manual',
+                // Snapshot/image media gets a hard timeout; live streams (HLS/
+                // MJPEG) are given a longer window but still bounded so a
+                // stalled camera can't hang the handler forever.
+                signal: AbortSignal.timeout(isVideoFeedType(feedType) ? 30000 : 10000),
               });
               const contentType = upstream.headers.get('content-type') || '';
               if (!upstream.ok) {
+                try { await upstream.body?.cancel(); } catch { /* no-op */ }
                 cctvLog(`media ${cameraId}: upstream HTTP ${upstream.status}`);
                 setHealth(cameraId, {
                   status: 'degraded',
@@ -5065,8 +5104,22 @@ function adsbLolProxy() {
           }
           const upstream = await fetch('https://api.adsb.lol/v2/mil', {
             headers: { 'User-Agent': 'devils-eye-adsblol-proxy/1.0' },
+            // A hung upstream must not hang the client; the stale-cache fallback
+            // below is the reason this proxy exists.
+            signal: AbortSignal.timeout(20000),
           });
-          const body = await upstream.text();
+          // Cap the read (military list is small; a broken upstream must not
+          // buffer unbounded memory).
+          let body;
+          try {
+            body = await readResponseTextCapped(upstream, 4 * 1024 * 1024);
+          } catch (error) {
+            if (error?.code === 'RESPONSE_TOO_LARGE') {
+              try { await upstream.body?.cancel(); } catch { /* no-op */ }
+              throw error;
+            }
+            throw error;
+          }
           if (upstream.ok) {
             _cache = body;
             _cacheAt = now;
@@ -5331,6 +5384,9 @@ export function openAiRealtimeProxy() {
             Authorization: `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
           },
+          // A hung upstream would otherwise leave the HUD summary hanging with
+          // no fallback (this is a paid call — bound it).
+          signal: AbortSignal.timeout(30000),
           body: JSON.stringify({
             model: process.env.OPENAI_HUD_SUMMARY_MODEL || OPENAI_HUD_SUMMARY_MODEL_DEFAULT,
             instructions: [
@@ -5372,11 +5428,14 @@ export function openAiRealtimeProxy() {
       try {
         const body = await readRequestBody(req, REALTIME_DEBUG_LOG_MAX_BYTES);
         const record = JSON.parse(body || '{}');
-        fs.mkdirSync(REALTIME_DEBUG_LOG_DIR, { recursive: true });
+        fs.mkdirSync(REALTIME_DEBUG_LOG_DIR, { recursive: true, mode: 0o700 });
+        // Write owner-only (0600): this file contains raw transcribed speech.
+        // The directory was created with 0700 above; enforce the file too.
+        try { fs.chmodSync(REALTIME_DEBUG_LOG_FILE, 0o600); } catch { /* may not exist yet */ }
         fs.appendFileSync(REALTIME_DEBUG_LOG_FILE, `${JSON.stringify({
           loggedAt: new Date().toISOString(),
           ...record,
-        })}\n`);
+        })}\n`, { mode: 0o600 });
         res.statusCode = 204;
         res.end();
       } catch (error) {
@@ -5534,6 +5593,9 @@ export function openAiRealtimeProxy() {
             'Content-Type': 'application/json',
             'OpenAI-Safety-Identifier': 'gev-local-dev',
           },
+          // This is on the mic path — a hang here is a dead voice feature and a
+          // stuck client request. Bound it.
+          signal: AbortSignal.timeout(30000),
           body: JSON.stringify(sessionConfig),
         });
         const body = await response.text();
@@ -5691,6 +5753,9 @@ export function googlePlacesContextProxy() {
               'places.types',
             ].join(','),
           },
+          // Paid call — bound it so a hung upstream doesn't strand the request
+          // (contrast with the data proxies, which have serve-stale fallbacks).
+          signal: AbortSignal.timeout(30000),
           body: JSON.stringify({
             maxResultCount: 20,
             rankPreference: 'DISTANCE',
@@ -5810,6 +5875,8 @@ export function googlePlacesContextProxy() {
               'places.types',
             ].join(','),
           },
+          // Paid call — bound so a hung upstream doesn't strand the request.
+          signal: AbortSignal.timeout(30000),
           body: JSON.stringify({
             textQuery,
             locationBias: {
