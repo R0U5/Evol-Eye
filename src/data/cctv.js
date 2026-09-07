@@ -152,6 +152,14 @@ export const CCTV_CALIBRATION_STORAGE_KEY_V2 = 'devilsEyeView.cctv.calibration.v
 // object reference).
 const PROJECTION_TEXTURE_SWAP_MS = 1000;
 const PROJECTION_VERT_ASPECT = PROJECTION_CANVAS_WIDTH / PROJECTION_CANVAS_HEIGHT;
+// CCTV client debug gate: set `window.__CCTV_DEBUG__ = true` (or run the dev
+// server with VITE_CCTV_DEBUG=1) for per-camera fetch/load traces in the
+// console. Mirrors the proxy-side gate (CCTV_PROXY_DEBUG=1).
+const CCTV_DEBUG = typeof window !== 'undefined'
+  ? (window.__CCTV_DEBUG__ === true
+    || String(import.meta.env?.VITE_CCTV_DEBUG || '').trim() === '1')
+  : false;
+const cctvLog = (...args) => { if (CCTV_DEBUG) console.warn('[CCTV]', ...args); };
 // V2 frustum geometry (design §2a/§6): the far-cap center + corners never sink
 // below groundAlt + this clearance, so a fabricated pitch (-24°) cannot bury
 // the monitor plane in the 3D tiles. Exported for the unit suite.
@@ -1512,13 +1520,26 @@ function mediaUrlFor(camera) {
 
 /**
  * Paints a placeholder frame onto the projection canvas when no live feed
- * image or video is available. Shows camera name, city, and status text
- * over a dark gradient with tactical border lines.
+ * image or video is available. Shows camera name, city, and a distinct
+ * status state over a dark gradient with tactical border lines.
+ *
+ * The state is one of:
+ *   - 'loading'   — a first frame is in flight and none has ever landed
+ *                   (cyan "LOADING…" text, thin cyan border)
+ *   - 'live'      — at least one real frame has been drawn (used only when a
+ *                   refresh is in flight but the last good frame is kept;
+ *                   this branch is normally skipped because the canvas keeps
+ *                   the last frame)
+ *   - 'error'     — the last fetch failed and no prior frame exists
+ *                   (red "NO SIGNAL" text, red border)
+ *   - 'no-feed'   — explicit availability message (default)
+ *
  * @param {CanvasRenderingContext2D} ctx - 2D context for the projection canvas.
  * @param {Object} camera - Camera object for label info.
  * @param {Object|null} [health=null] - Health state for status message.
+ * @param {string} [state='no-feed'] - Placeholder state, see above.
  */
-function paintProjectionPlaceholder(ctx, camera, health = null) {
+function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed') {
   if (!ctx) return;
   const w = PROJECTION_CANVAS_WIDTH;
   const h = PROJECTION_CANVAS_HEIGHT;
@@ -1531,9 +1552,17 @@ function paintProjectionPlaceholder(ctx, camera, health = null) {
 
   const label = String(camera?.name || 'CCTV');
   const city = String(camera?.city || 'GLOBAL');
-  const status = String(health?.message || health?.status || camera?.feedType || 'NO FEED').toUpperCase();
+  const status = String(
+    state === 'loading'
+      ? 'LOADING…'
+      : state === 'error'
+        ? (health?.message || 'NO SIGNAL')
+        : (health?.message || health?.status || camera?.feedType || 'NO FEED')
+  ).toUpperCase();
 
-  ctx.strokeStyle = 'rgba(0, 220, 255, 0.24)';
+  const accent = state === 'error' ? '255, 60, 60' : '0, 220, 255';
+  ctx.strokeStyle = `rgba(${accent}, 0.24)`;
+  ctx.lineWidth = state === 'error' ? 3 : 2;
   ctx.lineWidth = 2;
   ctx.strokeRect(18, 18, w - 36, h - 36);
   ctx.strokeRect(36, 36, w - 72, h - 72);
@@ -1706,6 +1735,12 @@ function createProjectionRuntime(record) {
     imageLoading: false,
     imageStamp: 0,
     drawnImageStamp: -1,
+    // True once ANY live frame has been drawn for this camera (used to pick
+    // LOADING vs NO-SIGNAL placeholder text: a camera that once worked and
+    // now fails reads NO SIGNAL; a camera that never returned a frame reads
+    // LOADING until its first frame lands).
+    lastGoodFrameAt: 0,
+    feedError: null,
     // Signature of the pixels currently ON the canvas, plus the reused 64x36
     // scratch used to compute it. null = "nothing known", which always redraws.
     lastFrameSignature: null,
@@ -1733,6 +1768,10 @@ function createProjectionRuntime(record) {
     video.addEventListener('canplay', () => {
       video.play().catch(() => {});
     });
+    video.addEventListener('error', () => {
+      runtime.feedError = 'video-load-failed';
+      cctvLog(`video LOAD FAILED for ${record.camera.id}`);
+    });
     runtime.video = video;
   } else {
     const img = new Image();
@@ -1742,10 +1781,15 @@ function createProjectionRuntime(record) {
       runtime.imageLoading = false;
       runtime.imageReady = true;
       runtime.imageStamp = Date.now();
+      runtime.lastGoodFrameAt = Date.now();
+      runtime.feedError = null;
+      cctvLog(`frame loaded OK for ${record.camera.id} (${img.src.split('/').pop()})`);
     };
     img.onerror = () => {
       runtime.imageLoading = false;
       runtime.imageReady = false;
+      runtime.feedError = 'load-failed';
+      cctvLog(`frame LOAD FAILED for ${record.camera.id} (${img.src.split('/').pop()})`);
     };
     runtime.image = img;
   }
@@ -1835,12 +1879,18 @@ function refreshProjectionImage(record, force = false) {
   runtime.imageLoading = true;
   runtime.imageReady = false;
   runtime.image.src = `${frameUrl}${sep}projTs=${Math.floor(now / refreshMs)}`;
+  cctvLog(`fetching frame for ${record.camera.id} (active=${record.camera.id === _activeCameraId})`);
 }
 
 /**
  * Repaints the projection placeholder at most once per PLACEHOLDER_REPAINT_MS.
  * The projection loop runs at RAF cadence — unthrottled, a pending feed would
  * re-fill the 1080p canvas (gradient + text) on every single frame.
+ *
+ * The painted state is derived from the runtime:
+ *   - error       → any recent fetch failed AND no frame has ever been drawn
+ *   - loading     → no frame has ever been drawn and a fetch is in flight
+ *   - no-feed     → otherwise (explicit availability message)
  * @param {Object} record - Camera record.
  * @param {Object} runtime - Projection runtime.
  * @param {Object|null} health - Health state for status text.
@@ -1855,7 +1905,17 @@ function paintPlaceholderThrottled(record, runtime, health) {
   // would be skipped as "unchanged" and leave the placeholder on the plane.
   runtime.lastFrameSignature = null;
   runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
-  paintProjectionPlaceholder(runtime.ctx, record.camera, health);
+
+  let state = 'no-feed';
+  if (runtime.feedError && runtime.drawnImageStamp === -1) {
+    state = 'error';
+  } else if (runtime.drawnImageStamp === -1 && runtime.imageLoading) {
+    state = 'loading';
+  } else if (runtime.drawnImageStamp === -1 && runtime.lastGoodFrameAt === 0) {
+    // Nothing loaded and nothing is currently in flight — first connect.
+    state = 'loading';
+  }
+  paintProjectionPlaceholder(runtime.ctx, record.camera, health, state);
 }
 
 /**
@@ -1904,6 +1964,8 @@ function drawProjectionFrame(record) {
         return;
       }
       runtime.lastFrameSignature = signature;
+      runtime.lastGoodFrameAt = Date.now();
+      runtime.feedError = null;
       runtime.ctx.clearRect(0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.ctx.drawImage(runtime.image, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
@@ -3132,8 +3194,14 @@ function fetchCardFrame(record, slot, refreshMs, { userGesture = false } = {}) {
     Object.assign(slot, applyFrameResult(slot, { ok: !!frame, frame }, Date.now()));
     _viewer?.scene?.requestRender?.();
   };
-  image.onload = () => settle(true);
-  image.onerror = () => settle(false);
+  image.onload = () => {
+    cctvLog(`card frame OK for ${cameraId}`);
+    settle(true);
+  };
+  image.onerror = () => {
+    cctvLog(`card frame FAILED for ${cameraId}`);
+    settle(false);
+  };
   image.src = frameUrlFor(record.camera, refreshMs);
 }
 

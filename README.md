@@ -44,6 +44,30 @@ that baseline was excellent to build on.
   from Insecam/dork scrapes into `config/cctv_sources_axis.json`, including
   **318 unlocated cameras** that render as frame-only feeds (no globe pin) and
   join the sweep pool. Regenerate with `scripts/merge-axis-catalog.py`.
+- **Axis MJPG snapshot extraction** — the discovered Axis cameras serve
+  `multipart/x-mixed-replace` MJPG **streams** (e.g. `…/mjpg/video.mjpg`), which
+  never terminate as a single image and previously hung the proxy until the
+  8 s timeout, so every Axis camera fell through to the synthetic
+  "UPSTREAM UNAVAILABLE" SVG. The proxy now (1) probes the common Axis still
+  endpoints (`/mjpg/1/image.jpg`, `/axis-cgi/jpg/image.cgi`), then (2) buffers
+  the stream just long enough to extract the **first complete JPEG frame**. The
+  remaining unreachable cameras degrade visibly to a red **NO SIGNAL** state
+  instead of failing silently.
+- **Still frames, not live video** — by design, CCTV renders as **paced static
+  snapshots** (every ~10 s for the active camera, ~60 s for idle/ambient ones),
+  not persistent live video. Public Axis/CCTV feeds over plain HTTP are
+  fragile, and relaying full MJPG streams through the dev server would burn
+  bandwidth and CPU for little gain. A 10 s still refresh gives ~90% of the
+  "live" feel at a fraction of the cost. Refreshing is a single JPEG open, not
+  a stream.
+- **Visible feed states** — a camera that is still awaiting its first frame
+  shows a cyan **LOADING…** placeholder; a camera whose fetch failed with no
+  prior frame shows a red **NO SIGNAL** placeholder. A camera that once worked
+  and now fails keeps its last good frame on the monitor.
+- **Console debug output** — failures are no longer silent. Set
+  `CCTV_PROXY_DEBUG=1` (dev server) or open the console and set
+  `window.__CCTV_DEBUG__ = true` to trace per-camera frame fetches and load
+  results.
 - **CCTV flash fix** — the projection buffer now uses a single persistent swap
   canvas, eliminating a periodic white-flash frame.
 - **Address-search spinner** — the location search shows a spinner while

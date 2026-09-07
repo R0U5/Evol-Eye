@@ -4492,12 +4492,112 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
   stream.pipe(res);
 }
 
+// ---------------------------------------------------------------------------
+// CCTV debug logging gate
+// ---------------------------------------------------------------------------
+/** Set CCTV_PROXY_DEBUG=1 in the environment to see per-camera fetch traces. */
+const CCTV_PROXY_DEBUG = String(process.env.CCTV_PROXY_DEBUG || '').trim() === '1';
+const cctvLog = (...args) => {
+  if (CCTV_PROXY_DEBUG) console.warn('[CCTV]', ...args);
+};
+
+/**
+ * Returns true when a URL looks like an MJPG multipart/x-mixed-replace stream
+ * (the format most public Axis cameras serve at /mjpg/video.mjpg). Such URLs
+ * never terminate with a single image — fetching them as a static image hangs
+ * until timeout, which is why every Axis camera fell through to the SVG
+ * fallback before the snapshot-extraction path existed.
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isMjpgStreamUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  if (lower.includes('/mjpg/') || lower.includes('/mjpeg/')) return true;
+  return /(\.mjpg|\.mjpeg|video\.mjpg)(\?|$)/i.test(lower);
+}
+
+/**
+ * Derive static-snapshot candidate URLs from an MJPG stream URL.
+ *
+ * Axis cameras that serve /mjpg/video.mjpg almost always expose a still
+ * endpoint too. We probe the most common ones (in order):
+ *   1. /mjpg/1/image.jpg?resolution=640x480
+ *   2. /axis-cgi/jpg/image.cgi?resolution=640x480
+ *   3. the original MJPG URL verbatim (parsed for a frame below)
+ *
+ * Only relative-path rewrites are attempted — the host/port are untouched, so
+ * there is no way for a source record to redirect the proxy to a new host.
+ *
+ * @param {string} url - MJPG stream URL.
+ * @returns {string[]} Candidate still-image URLs to try in order.
+ */
+export function deriveAxisSnapshotUrls(url) {
+  if (!isMjpgStreamUrl(url)) return [];
+  try {
+    const u = new URL(url);
+    const base = `${u.protocol}//${u.host}`;
+    return [
+      `${base}/mjpg/1/image.jpg?resolution=640x480`,
+      `${base}/axis-cgi/jpg/image.cgi?resolution=640x480`,
+    ];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Pull the first complete JPEG frame out of a buffered MJPG multipart body.
+ *
+ * MJPEG bodies are a stream of JPEG frames. If the body happens to be a
+ * single plain JPEG (some cameras answer the stream URL with one shot on
+ * first connect), we return it whole. Otherwise we locate SOI \xFF\xD8 and
+ * scan forward for the matching EOI \xFF\xD9 and slice the frame.
+ *
+ * @param {Buffer} body - Fully-buffered response body (bounded by the fetch budget).
+ * @param {string} contentType - Upstream content-type header.
+ * @returns {{ ok: true, body: Buffer, contentType: string }|null}
+ */
+export function extractFirstJpegFromMjpg(body, contentType) {
+  if (!body || body.length < 4) return null;
+  const SOI = Buffer.from([0xff, 0xd8]);
+  const EOI = Buffer.from([0xff, 0xd9]);
+
+  // Single-image response: the body IS a JPEG.
+  if (bufferHasJpegMarkers(body, SOI, EOI) && (contentType || '').includes('image/jpeg')) {
+    return { ok: true, body, contentType: 'image/jpeg' };
+  }
+
+  const start = body.indexOf(SOI);
+  if (start === -1) return null;
+  const end = body.indexOf(EOI, start + 2);
+  if (end === -1) return null;
+  const frame = body.subarray(start, end + 2);
+  if (frame.length < 4) return null;
+  return {
+    ok: true,
+    body: Buffer.from(frame),
+    contentType: 'image/jpeg',
+  };
+}
+
+function bufferHasJpegMarkers(buf, soi, eoi) {
+  const start = buf.indexOf(soi);
+  if (start === -1) return false;
+  return buf.indexOf(eoi, start + 2) !== -1;
+}
+
 /**
  * Fetch one upstream CCTV image within the frame-refresh budget.
  *
  * A timeout is treated like every other upstream miss so the caller can
  * continue through the Street View and synthetic fallback chain. `fetchImpl`
  * and `timeoutMs` are injectable only to keep the timeout contract unit-testable.
+ *
+ * MJPG stream URLs get special handling:
+ *   1. Probe the Axis still endpoints first (cheap, terminates naturally).
+ *   2. If those miss, fetch the stream URL itself under the normal timeout and
+ *      extract the first complete JPEG frame out of the multipart body.
  *
  * @param {string} url - Server-registered upstream image URL.
  * @param {object} [options]
@@ -4510,6 +4610,36 @@ export async function fetchCctvImageFromUpstream(url, {
   timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS,
 } = {}) {
   if (!url || !/^https?:\/\//i.test(url)) return null;
+
+  // --- MJPG special handling ---------------------------------------------
+  if (isMjpgStreamUrl(url)) {
+    cctvLog(`MJPG stream for ${url} — probing still endpoints`);
+    for (const stillUrl of deriveAxisSnapshotUrls(url)) {
+      cctvLog(`  still candidate: ${stillUrl}`);
+      const still = await fetchSingleImage(stillUrl, { fetchImpl, timeoutMs });
+      if (still) {
+        cctvLog(`  still endpoint OK: ${stillUrl}`);
+        return still;
+      }
+    }
+    // Stream fallback: buffer up to the timeout budget, pull out a frame.
+    cctvLog(`still endpoints missed; buffering stream ${url} to extract a frame`);
+    try {
+      const body = await fetchBoundedBody(url, { fetchImpl, timeoutMs, maxBytes: 2 * 1024 * 1024 });
+      if (body) {
+        const frame = extractFirstJpegFromMjpg(body.body, body.contentType);
+        if (frame) {
+          cctvLog(`extracted JPEG frame (${frame.body.length} bytes) from MJPG stream`);
+          return frame;
+        }
+      }
+    } catch (e) {
+      cctvLog(`MJPG stream buffer failed: ${e?.message || e}`);
+    }
+    return null;
+  }
+
+  // --- Normal static-image path ------------------------------------------
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort(new DOMException('CCTV upstream frame fetch timed out', 'TimeoutError'));
@@ -4520,12 +4650,80 @@ export async function fetchCctvImageFromUpstream(url, {
       signal: controller.signal,
     });
     const contentType = upstream.headers.get('content-type') || '';
-    if (!upstream.ok || !contentType.startsWith('image/')) return null;
+    if (!upstream.ok || !contentType.startsWith('image/')) {
+      cctvLog(`static fetch missed: ${url} → HTTP ${upstream.status} ${contentType || 'no-content-type'}`);
+      return null;
+    }
     return {
       ok: true,
       body: Buffer.from(await upstream.arrayBuffer()),
       contentType,
     };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/** Fetch a single static image with a budget; returns null on any miss. */
+async function fetchSingleImage(url, { fetchImpl = fetch, timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const upstream = await fetchImpl(url, {
+      headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
+      signal: controller.signal,
+    });
+    const contentType = upstream.headers.get('content-type') || '';
+    if (!upstream.ok || !contentType.startsWith('image/')) return null;
+    const body = Buffer.from(await upstream.arrayBuffer());
+    if (body.length === 0) return null;
+    if (upstream.status === 301 || upstream.status === 302 || upstream.status === 303 || upstream.status === 307 || upstream.status === 308) return null;
+    return { ok: true, body, contentType };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/** Buffer a response body up to byteBytes; aborts on timeout. Returns null on miss. */
+async function fetchBoundedBody(url, { fetchImpl = fetch, timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS, maxBytes = 2 * 1024 * 1024 } = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const upstream = await fetchImpl(url, {
+      headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
+      signal: controller.signal,
+    });
+    if (!upstream.ok) return null;
+    const reader = upstream.body?.getReader?.();
+    if (!reader) return null;
+    const chunks = [];
+    let total = 0;
+    let done = false;
+    const SOI = Buffer.from([0xff, 0xd8]);
+    const EOI = Buffer.from([0xff, 0xd9]);
+    while (!done && total < maxBytes) {
+      const { value, done: d } = await reader.read();
+      done = d;
+      if (value) {
+        chunks.push(value);
+        total += value.length;
+        // Stop the moment we hold at least one complete JPEG (SOI + EOI
+        // present). MJPG streams otherwise never terminate — without this
+        // the buffer would fill the whole 2 MiB budget needlessly.
+        if (total > 4096) {
+          const probe = Buffer.concat(chunks, total);
+          if (probe.indexOf(SOI) !== -1 && probe.indexOf(EOI) !== -1) break;
+        }
+      }
+    }
+    await reader.cancel?.().catch?.(() => {});
+    const body = Buffer.concat(chunks, total);
+    if (body.length === 0) return null;
+    return { body, contentType: upstream.headers.get('content-type') || '' };
   } catch {
     return null;
   } finally {
@@ -4681,6 +4879,7 @@ function cctvProxy() {
             const feedType = normalizeFeedType(source?.feedType || 'image');
 
             if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
+              cctvLog(`media ${cameraId}: no stream URL configured`);
               setHealth(cameraId, {
                 status: 'degraded',
                 sourceKind: 'fallback',
@@ -4696,11 +4895,13 @@ function cctvProxy() {
               const upstreamHeaders = { 'User-Agent': 'devils-eye-cctv-proxy/1.0' };
               const requestRange = req.headers?.range;
               if (requestRange) upstreamHeaders.Range = requestRange;
+              cctvLog(`media ${cameraId}: fetching ${mediaUrl}`);
               const upstream = await fetch(mediaUrl, {
                 headers: upstreamHeaders,
               });
               const contentType = upstream.headers.get('content-type') || '';
               if (!upstream.ok) {
+                cctvLog(`media ${cameraId}: upstream HTTP ${upstream.status}`);
                 setHealth(cameraId, {
                   status: 'degraded',
                   sourceKind: 'upstream',
@@ -4733,6 +4934,7 @@ function cctvProxy() {
               });
               return;
             } catch (error) {
+              cctvLog(`media ${cameraId}: fetch error ${error?.message || error}`);
               setHealth(cameraId, {
                 status: 'degraded',
                 sourceKind: 'upstream',
@@ -4769,6 +4971,7 @@ function cctvProxy() {
 
           const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate);
           if (upstreamImage?.ok) {
+            cctvLog(`frame ${cameraId}: UPSTREAM OK (${upstreamImage.contentType}, ${upstreamImage.body.length} B) via ${upstreamCandidate.split('/').slice(0, 3).join('/')}`);
             setHealth(cameraId, {
               status: 'ok',
               sourceKind: 'snapshot',
@@ -4784,8 +4987,10 @@ function cctvProxy() {
             return;
           }
 
+          cctvLog(`frame ${cameraId}: upstream miss (${upstreamCandidate ? upstreamCandidate.split('/')[2] : 'no candidate'}) → street view fallback`);
           const sv = await streetViewFallback({ lat, lon, heading, fov, pitch });
           if (sv?.ok) {
+            cctvLog(`frame ${cameraId}: STREET VIEW OK`);
             setHealth(cameraId, {
               status: 'degraded',
               sourceKind: 'streetview',
@@ -4801,6 +5006,7 @@ function cctvProxy() {
             return;
           }
 
+          cctvLog(`frame ${cameraId}: ALL SOURCES MISS → synthetic SVG placeholder`);
           const svg = buildSyntheticCctvSvg({
             cameraId,
             label,
