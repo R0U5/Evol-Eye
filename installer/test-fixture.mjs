@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import * as fsp from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import http from 'node:http';
 
 import { buildZip } from './zipcode.mjs';
@@ -37,14 +38,32 @@ export async function makeFakeNodeDist() {
 await writeFile('npm-stub-ran.txt', 'stub');
 process.exit(0);
 `;
-  const entries = [{ path: `${spec.topDir}/${spec.binRel}`, data: binBytes }];
-  entries.push({ path: `${spec.topDir}/${spec.npmRel}`, data: npmStub });
-  const buffer = buildZip(entries, { method: 'deflate' });
+  let buffer;
+  if (spec.format === 'tar.gz') {
+    const staging = await fsp.mkdtemp(path.join(process.env.TEMP || '/tmp', 'gev-fake-node-'));
+    try {
+      const binDst = path.join(staging, spec.topDir, spec.binRel);
+      const npmDst = path.join(staging, spec.topDir, spec.npmRel);
+      await fsp.mkdir(path.dirname(binDst), { recursive: true });
+      await fsp.mkdir(path.dirname(npmDst), { recursive: true });
+      await fsp.writeFile(binDst, binBytes);
+      await fsp.writeFile(npmDst, npmStub);
+      execFileSync('tar', ['-czf', path.join(staging, spec.archiveFile), spec.topDir], { cwd: staging });
+      buffer = await fsp.readFile(path.join(staging, spec.archiveFile));
+    } finally {
+      await fsp.rm(staging, { recursive: true, force: true });
+    }
+  } else {
+    const entries = [{ path: `${spec.topDir}/${spec.binRel}`, data: binBytes }];
+    entries.push({ path: `${spec.topDir}/${spec.npmRel}`, data: npmStub });
+    buffer = buildZip(entries, { method: 'deflate' });
+  }
+  const sha256 = createHash('sha256').update(buffer).digest('hex');
   return {
     spec,
     buffer,
-    sha256: createHash('sha256').update(buffer).digest('hex'),
-    shasumsText: `${createHash('sha256').update(buffer).digest('hex')}  ${spec.archiveFile}\n`,
+    sha256,
+    shasumsText: `${sha256}  ${spec.archiveFile}\n`,
   };
 }
 
