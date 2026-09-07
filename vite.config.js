@@ -4625,6 +4625,12 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
   stream.on('error', () => {
     if (!res.writableEnded) res.end();
   });
+  // A client disconnect mid-stream must tear down the upstream socket too —
+  // otherwise live MJPEG/HLS connections stay open until the upstream closes
+  // them (or the 30 s media timeout fires), leaking sockets on every refresh.
+  res.on('close', () => {
+    try { upstream.body?.cancel(); } catch { /* no-op */ }
+  });
   stream.pipe(res);
 }
 
