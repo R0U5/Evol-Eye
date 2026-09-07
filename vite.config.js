@@ -56,6 +56,20 @@ import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
 import { keylessHudSummaryResponse } from './src/hudSummaryResponse.js';
+import { localAuthority, LOOPBACK_ADDRESSES } from './src/keySetupCore.mjs';
+import {
+  DEFAULT_VOICE_DAILY_BUDGET_USD,
+  DEFAULT_VOICE_DAILY_MINT_CAP,
+  VOICE_LEDGER_VERSION,
+  isBudgetExhausted,
+  isMintCapReached,
+  ledgerIdentity,
+  markRevoked,
+  normalizeLedger,
+  recordCost,
+  recordMint,
+  utcDayKey as voiceUtcDayKey,
+} from './src/voiceLedger.mjs';
 import { parseEnv as parseDotenvText } from 'node:util';
 import { readEnvironmentSource as readPinokioEnvironmentSource } from './scripts/pinokio-environment.mjs';
 import {
@@ -5501,6 +5515,101 @@ async function requestHudSummary(provider, context) {
  */
 export function openAiRealtimeProxy() {
   function install(middlewares) {
+    // ── Server-side voice spend ledger (H1) ──────────────────────────────
+    // The client-side meter is the fast path; this persisted ledger is the
+    // backstop gate on /api/realtime/token. Loaded lazily (like the TomTom
+    // budget) so .env values applied by loadEnv are visible, then normalized
+    // against today's UTC day key + the current API key identity on every
+    // read. Persisted on every mutation.
+    const VOICE_LEDGER_PATH = path.join(process.cwd(), '.gev-cache', 'openai-realtime-ledger.json');
+    let voiceLedger = null;
+    let voiceLedgerLoaded = false;
+
+    function voiceDailyBudgetUsd() {
+      const raw = Number(process.env.GEV_VOICE_DAILY_BUDGET_USD);
+      return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_VOICE_DAILY_BUDGET_USD;
+    }
+
+    function voiceDailyMintCap() {
+      const raw = Number(process.env.GEV_VOICE_DAILY_MINT_CAP);
+      return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_VOICE_DAILY_MINT_CAP;
+    }
+
+    function currentVoiceLedger() {
+      if (!voiceLedgerLoaded) {
+        voiceLedgerLoaded = true;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(VOICE_LEDGER_PATH, 'utf8'));
+          if (parsed && parsed.version === VOICE_LEDGER_VERSION) voiceLedger = parsed;
+        } catch { /* no ledger file yet */ }
+      }
+      voiceLedger = normalizeLedger(voiceLedger, {
+        dayKey: voiceUtcDayKey(),
+        budgetUsd: voiceDailyBudgetUsd(),
+        mintCap: voiceDailyMintCap(),
+        identity: ledgerIdentity(process.env.OPENAI_API_KEY),
+      });
+      return voiceLedger;
+    }
+
+    function persistVoiceLedger() {
+      try {
+        fs.mkdirSync(path.dirname(VOICE_LEDGER_PATH), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(VOICE_LEDGER_PATH, JSON.stringify(voiceLedger, null, 2), { mode: 0o600 });
+      } catch (error) {
+        console.warn('[openai-realtime-proxy] ledger write failed:', error?.message || error);
+      }
+    }
+
+    // Host-header validation shared by the cost-bearing routes. Mirrors the
+    // Provider Settings gate (src/keySetupCore.mjs localAuthority): tunnel and
+    // DNS-rebinding traffic carries a foreign Host even over a loopback socket.
+    function isLocalHostRequest(req) {
+      return Boolean(localAuthority(req.headers?.host, req.socket?.encrypted ? 'https:' : 'http:'));
+    }
+
+    // Admission gate for /api/realtime/revoke, mirroring the Provider Settings
+    // checks (loopback socket, local Host, exact Origin on POST, JSON content
+    // type, no reverse-proxy forwarding headers) with revoke-appropriate
+    // messages. A hostile web page can POST to localhost; these checks close
+    // the DNS-rebinding / CSRF write primitive on a cost-bearing route.
+    function admitRealtimeRevoke(req) {
+      if (!LOOPBACK_ADDRESSES.has(String(req.socket?.remoteAddress || ''))) {
+        return { ok: false, status: 403, error: 'Realtime revoke answers only the machine running the server' };
+      }
+      const authority = localAuthority(req.headers?.host, req.socket?.encrypted ? 'https:' : 'http:');
+      if (!authority) {
+        return { ok: false, status: 403, error: 'Realtime revoke answers only local hostnames' };
+      }
+      const origin = req.headers?.origin;
+      if (origin === undefined || origin === null || origin === '') {
+        return { ok: false, status: 403, error: 'Realtime revoke requires an exact local Origin' };
+      }
+      let parsedOrigin;
+      try {
+        parsedOrigin = new URL(String(origin));
+      } catch {
+        return { ok: false, status: 403, error: 'Unrecognized Origin refused' };
+      }
+      const exactOrigin = parsedOrigin.username === ''
+        && parsedOrigin.password === ''
+        && parsedOrigin.pathname === '/'
+        && parsedOrigin.search === ''
+        && parsedOrigin.hash === ''
+        && parsedOrigin.origin === authority;
+      if (!exactOrigin) {
+        return { ok: false, status: 403, error: 'Cross-origin requests are refused' };
+      }
+      if (!String(req.headers?.['content-type'] || '').toLowerCase().startsWith('application/json')) {
+        return { ok: false, status: 415, error: 'Content-Type must be application/json' };
+      }
+      const PROXY_SIGNALS = ['forwarded', 'via', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'x-real-ip', 'cf-connecting-ip', 'cf-ray'];
+      if (PROXY_SIGNALS.some((name) => String(req.headers?.[name] || '').trim() !== '')) {
+        return { ok: false, status: 403, error: 'Realtime revoke does not answer proxied requests' };
+      }
+      return { ok: true };
+    }
+
     middlewares.use('/api/openai/hud-summary', async (req, res) => {
       if (req.method !== 'POST') {
         res.statusCode = 405;
@@ -5588,6 +5697,16 @@ export function openAiRealtimeProxy() {
         return;
       }
 
+      // Host-header validation (mirrors the Provider Settings gate): tunnel and
+      // DNS-rebinding traffic carries a foreign Host even over a loopback
+      // socket, so a local socket alone is not proof of a local caller.
+      if (!isLocalHostRequest(req)) {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Realtime token endpoint answers only local hostnames' }));
+        return;
+      }
+
       // Opt-in per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN). No-op when unset.
       if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
 
@@ -5596,6 +5715,37 @@ export function openAiRealtimeProxy() {
         res.statusCode = 503;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'OPENAI_API_KEY is not set' }));
+        return;
+      }
+
+      // Server-side spend ledger (H1): refuse to mint once the daily budget is
+      // exhausted. The client-side meter is the fast path; this is the backstop
+      // gate, so a local process or DNS-rebinding page cannot mint secrets
+      // without bound. The mint cap is defense in depth against a caller that
+      // never reports cost (the budget only counts reported spend).
+      const ledger = currentVoiceLedger();
+      if (isBudgetExhausted(ledger)) {
+        res.statusCode = 429;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Retry-After', '3600');
+        res.end(JSON.stringify({
+          error: 'Voice spend budget exhausted for today',
+          budgetUsd: ledger.budgetUsd,
+          estimatedCostUsd: Number(ledger.dayEstimatedCostUsd.toFixed(4)),
+          resetsAt: `${voiceUtcDayKey()}T00:00:00.000Z`,
+        }));
+        return;
+      }
+      if (isMintCapReached(ledger)) {
+        res.statusCode = 429;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Retry-After', '3600');
+        res.end(JSON.stringify({
+          error: 'Voice session mint cap reached for today',
+          mintCap: ledger.mintCap,
+          mints: ledger.dayMints,
+          resetsAt: `${voiceUtcDayKey()}T00:00:00.000Z`,
+        }));
         return;
       }
 
@@ -5734,6 +5884,18 @@ export function openAiRealtimeProxy() {
           body: JSON.stringify(sessionConfig),
         });
         const body = await response.text();
+        // Record the mint in the spend ledger (best-effort — the ledger must
+        // never fail the response). The secret id is parsed from the upstream
+        // body so a later cap-trip revoke can target it.
+        if (response.ok) {
+          let secretId = null;
+          try {
+            const parsed = JSON.parse(body);
+            secretId = parsed?.id || parsed?.client_secret?.id || null;
+          } catch { /* non-JSON upstream body */ }
+          voiceLedger = recordMint(currentVoiceLedger(), { secretId });
+          persistVoiceLedger();
+        }
         res.statusCode = response.status;
         res.setHeader('Content-Type', response.headers.get('content-type') || 'application/json');
         // Which tier/model this secret was actually minted for. The upstream
@@ -5750,6 +5912,75 @@ export function openAiRealtimeProxy() {
         res.statusCode = 502;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: error?.message || 'Failed to create Realtime token' }));
+      }
+    });
+
+    middlewares.use('/api/realtime/revoke', async (req, res) => {
+      if (req.method !== 'POST') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      // Validated like the Provider Settings endpoints (see admitRealtimeRevoke).
+      const admission = admitRealtimeRevoke(req);
+      if (!admission.ok) {
+        res.statusCode = admission.status;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: admission.error }));
+        return;
+      }
+
+      try {
+        const body = await readRequestBody(req, 16 * 1024);
+        const parsed = JSON.parse(body || '{}');
+        const secretId = String(parsed.secretId || '').trim();
+        const estimatedCostUsd = Number(parsed.estimatedCostUsd);
+        if (!secretId) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'secretId is required' }));
+          return;
+        }
+        // Record the reported spend FIRST — even if the upstream revoke fails,
+        // the budget gate must count the session. The ledger is the backstop.
+        voiceLedger = recordCost(currentVoiceLedger(), { secretId, costUsd: estimatedCostUsd });
+        voiceLedger = markRevoked(voiceLedger, { secretId });
+        persistVoiceLedger();
+
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, revoked: false, reason: 'no_api_key' }));
+          return;
+        }
+        const response = await fetch(
+          `https://api.openai.com/v1/realtime/client_secrets/${encodeURIComponent(secretId)}`,
+          {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'OpenAI-Safety-Identifier': 'gev-local-dev',
+            },
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        const revoked = response.ok;
+        if (!revoked) {
+          console.warn(`[openai-realtime-proxy] upstream revoke failed for ${secretId}: HTTP ${response.status}`);
+        }
+        res.statusCode = revoked ? 200 : 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          ok: revoked,
+          revoked,
+          error: revoked ? null : `Upstream revoke failed: HTTP ${response.status}`,
+        }));
+      } catch (error) {
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: error?.message || 'Failed to revoke Realtime secret' }));
       }
     });
   }

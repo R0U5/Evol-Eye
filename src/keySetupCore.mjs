@@ -116,11 +116,19 @@ export const KEY_SETUP_KEYS = Object.freeze([
 
 /** Hostnames a Provider Settings request may arrive under or originate from. */
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
-/** Socket addresses that count as this machine. */
-const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+/**
+ * Socket addresses that count as this machine. Exported so the cost-bearing
+ * proxy routes can apply the same loopback boundary as Provider Settings.
+ */
+export const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
-/** Parse an exact local request authority from a Host header. */
-function localAuthority(hostHeader, protocol) {
+/**
+ * Parse an exact local request authority from a Host header.
+ * Exported so the cost-bearing proxy routes (`/api/realtime/token`,
+ * `/api/realtime/revoke`, `/api/openai/hud-summary`) can apply the same
+ * DNS-rebinding / tunnel-Host defense as the Provider Settings endpoints.
+ */
+export function localAuthority(hostHeader, protocol) {
   const raw = String(hostHeader || '').trim().toLowerCase();
   const scheme = String(protocol || '').toLowerCase();
   if (!raw || !['http:', 'https:'].includes(scheme) || /[\s/?#@]/.test(raw)) return null;

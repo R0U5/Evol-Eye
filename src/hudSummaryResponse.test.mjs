@@ -31,13 +31,13 @@ function installOpenAiRoutes() {
   return routes;
 }
 
-function invokeRoute(handler, { method = 'GET', url = '/', remoteAddress = '127.0.0.1', body } = {}) {
+function invokeRoute(handler, { method = 'GET', url = '/', remoteAddress = '127.0.0.1', host = 'localhost:4173', body } = {}) {
   return new Promise((resolve, reject) => {
     const headers = new Map();
     const req = new EventEmitter();
     req.method = method;
     req.url = url;
-    req.headers = {};
+    req.headers = { host };
     req.socket = { remoteAddress };
     if (body !== undefined) {
       req.destroy = () => {};
