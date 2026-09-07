@@ -1314,6 +1314,42 @@ function planeOrientationFor(camera, capCenterPos) {
 }
 
 /**
+ * Orientation quaternion that lays the monitor plane FLAT, normal facing
+ * straight up toward the sky, texture unmirrored and upright. Used when the
+ * selected camera is framed top-down (see focusCctvRecord): with the camera
+ * looking straight down, the flat plane's front face reads perfectly — no 3D
+ * terrain occlusion, no oblique foreshortening.
+ *
+ * Local +X = east, +Y = north, local +Z (plane normal) = up. The texture
+ * maps so east is right and north is up, which keeps the 16:9 feed upright
+ * and unmirrored from the top-down view.
+ * @param {Cesium.Cartesian3} capCenterPos - Plane center in ECEF.
+ * @returns {Cesium.Quaternion}
+ */
+function planeFlatOrientation(capCenterPos) {
+  const carto = Cesium.Cartographic.fromCartesian(capCenterPos);
+  const lat = carto.latitude;
+  const lon = carto.longitude;
+  const cl = Math.cos(lat);
+  const sl = Math.sin(lat);
+  const co = Math.cos(lon);
+  const so = Math.sin(lon);
+  // Local ENU axes in ECEF at this position.
+  const east = new Cesium.Cartesian3(-so, co, 0);
+  const north = new Cesium.Cartesian3(-sl * co, -sl * so, cl);
+  const up = new Cesium.Cartesian3(cl * co, cl * so, sl);
+  // Plane local frame has +X=east, +Y=north, +Z=up (its normal). These ECEF
+  // unit axes rotate the plane's local UNIT_Z normal to the sky, so the flat
+  // plane faces straight up at this position, texture unmirrored.
+  const m = new Cesium.Matrix3(
+    east.x, north.x, up.x,
+    east.y, north.y, up.y,
+    east.z, north.z, up.z
+  );
+  return Cesium.Quaternion.fromRotationMatrix(m);
+}
+
+/**
  * Task 5: the surface regime the scene is CURRENTLY rendering, derived live
  * from `globe.show` (mapStackController's `_activatePhotoreal` /
  * `_activateGlobeStack` flip exactly this flag). Reading scene state directly
@@ -1629,7 +1665,7 @@ function updatePlanePlacement(record) {
     || computeFrustumGeometry(record.camera, groundAltFor(record), record.probeClampRangeM);
   const positions = record.frustumPositions || frustumCartesians(geometry);
   runtime.planeEntity.position = positions.capCenter;
-  runtime.planeEntity.orientation = planeOrientationFor(record.camera, positions.capCenter);
+  runtime.planeEntity.orientation = planeFlatOrientation(positions.capCenter);
   if (runtime.planeEntity.plane) {
     runtime.planeEntity.plane.dimensions = new Cesium.Cartesian2(
       geometry.halfW * 2,
@@ -1688,7 +1724,10 @@ function createProjectionPlane(record, runtime, geometry, positions) {
     properties: { cctvCameraId: record.camera.id },
     show: false,
     position: positions.capCenter,
-    orientation: planeOrientationFor(record.camera, positions.capCenter),
+    // Lay the monitor plane FLAT (normal straight up toward the sky) so a
+    // top-down focus reads the feed perfectly (owner fix) — the frustum
+    // WIREFRAME keeps its oblique orientation via its own entities.
+    orientation: planeFlatOrientation(positions.capCenter),
     plane: {
       plane: new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, 0.0),
       dimensions: new Cesium.Cartesian2(geometry.halfW * 2, geometry.halfH * 2),
@@ -4259,19 +4298,38 @@ export function focusCctvRecord(viewer, record, duration = 2.2) {
   const { camera } = record;
   // Frame-only (unlocated) cameras have no position — nothing to fly to.
   if (!record.position) return CCTV_FOCUS_RESULT.FOCUSED;
-  const range = Math.max(280, camera.rangeM * 1.18);
-  viewer.camera.flyToBoundingSphere(
-    new Cesium.BoundingSphere(record.position, Math.max(40, camera.rangeM * 0.36)),
-    {
-      offset: new Cesium.HeadingPitchRange(
-        toRad(camera.headingDeg),
-        toRad(-22),
-        range
-      ),
-      duration: Math.max(0.2, duration || 0),
-      easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT,
-    }
+  if (typeof record.position === 'function') return CCTV_FOCUS_RESULT.FOCUSED;
+  // Top-down framing (owner fix): fly DIRECTLY above the monitor plane looking
+  // straight down (pitch −90°, heading 0) and zoom so the plane fills the view.
+  // The plane is oriented to face flat toward the sky (see planeOrientationFor),
+  // so the selected camera's feed is seen perfectly instead of being pitched
+  // under the 3D terrain occlusion and viewed at an oblique angle.
+  const geometry = record.frustumGeometry;
+  const halfW = Number(geometry?.halfW) || Math.max(40, camera.rangeM * 0.36);
+  const halfH = Number(geometry?.halfH) || Math.max(40, camera.rangeM * 0.2);
+  const FOCUS_FOV_RAD = toRad(60); // camera frustum FOV used for framing
+  // Use the plane's SMALLER half-extent so the whole rectangle stays in frame,
+  // with a 1.25x margin. At altitude `range`, the limiting half-edge subtends
+  //   tan(fov/2) ≈ (limitingHalf * 1.25) / range  ⇒  range = limitingHalf*1.25/tan(fov/2)
+  const limitingHalf = Math.max(20, Math.min(halfW, halfH));
+  const range = Math.max(140, limitingHalf * 1.25 / Math.tan(FOCUS_FOV_RAD / 2));
+  // Center on the plane's CAP CENTER (where the image is), falling back to the
+  // mount. The plane is rendered flat at the cap center, so hover directly
+  // above it, looking straight down (pitch −90°, heading 0) so the feed fills
+  // the view with no terrain occlusion.
+  const capCenter = record.frustumPositions?.capCenter || record.position;
+  const up = Cesium.Cartographic.fromCartesian(capCenter);
+  const dir = Cesium.Cartesian3.fromRadians(
+    up.longitude,
+    up.latitude,
+    (up.height || 0) + range
   );
+  viewer.camera.flyTo({
+    destination: dir,
+    orientation: { heading: 0, pitch: toRad(-90), roll: 0 },
+    duration: Math.max(0.2, duration || 0),
+    easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT,
+  });
   return CCTV_FOCUS_RESULT.FOCUSED;
 }
 
