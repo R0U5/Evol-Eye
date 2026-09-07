@@ -165,7 +165,12 @@ const cctvLog = (...args) => { if (CCTV_DEBUG) console.warn('[CCTV]', ...args); 
 // V2 frustum geometry (design §2a/§6): the far-cap center + corners never sink
 // below groundAlt + this clearance, so a fabricated pitch (-24°) cannot bury
 // the monitor plane in the 3D tiles. Exported for the unit suite.
-export const FRUSTUM_GROUND_CLEARANCE_M = 2;
+// Vertical clearance between the far-cap (monitor plane) and local terrain.
+// Raised from 2m (2026-09-07, spy-satellite polish): a larger clearance keeps
+// the projected feed from being clipped by hills/roofs/masts between the mount
+// and the far cap. Combined with the terrain-following corner lift in
+// updatePlanePlacement, this stops the 3D tiles from slicing through the image.
+export const FRUSTUM_GROUND_CLEARANCE_M = 14;
 /** Public result codes for explicit CCTV camera flights. */
 export const CCTV_FOCUS_RESULT = Object.freeze({
   FOCUSED: 'focused',
@@ -272,12 +277,17 @@ const ACTIVE_CAMERA_COLOR = Cesium.Color.fromCssColorString('#ffd97a').withAlpha
 const IDLE_COVERAGE_COLOR = Cesium.Color.fromCssColorString('#2fe0ff').withAlpha(0.24);
 const IDLE_COVERAGE_CENTER_MUTED = Cesium.Color.fromCssColorString('#2fe0ff').withAlpha(0.2);
 const IDLE_COVERAGE_EDGE_MUTED = Cesium.Color.fromCssColorString('#2fe0ff').withAlpha(0.18);
-const ACTIVE_COVERAGE_EDGE = Cesium.Color.fromCssColorString('#8dff87').withAlpha(0.58);
-const ACTIVE_COVERAGE_CENTER = Cesium.Color.fromCssColorString('#d7ff8d').withAlpha(0.82);
+// Spy-satellite polish (2026-09-07): the active coverage wireframe used to be
+// a bright GREEN reticle ('#8dff87' / '#d7ff8d') that clashed with the HUD and
+// read as a janky "green border". Re-theme to the app's tactical cyan/teal
+// palette so coverage overlays look like a satellite targeting frame, not an
+// error token.
+const ACTIVE_COVERAGE_EDGE = Cesium.Color.fromCssColorString('#3ee0ff').withAlpha(0.62);
+const ACTIVE_COVERAGE_CENTER = Cesium.Color.fromCssColorString('#7ce6ff').withAlpha(0.85);
 // H6: dimmer depth-fail materials let the active frustum wireframe read
 // through buildings while in monitor fallback mode.
-const ACTIVE_COVERAGE_EDGE_DEPTHFAIL = Cesium.Color.fromCssColorString('#8dff87').withAlpha(0.18);
-const ACTIVE_COVERAGE_CENTER_DEPTHFAIL = Cesium.Color.fromCssColorString('#d7ff8d').withAlpha(0.26);
+const ACTIVE_COVERAGE_EDGE_DEPTHFAIL = Cesium.Color.fromCssColorString('#3ee0ff').withAlpha(0.2);
+const ACTIVE_COVERAGE_CENTER_DEPTHFAIL = Cesium.Color.fromCssColorString('#7ce6ff').withAlpha(0.28);
 const PLANE_OUTLINE_COLOR = Cesium.Color.fromCssColorString('#6be8ff').withAlpha(0.55);
 
 // ---------------------------------------------------------------------------
@@ -291,7 +301,10 @@ let _coverageEntities = [];
 let _projectionEntities = [];
 let _enabled = false;
 let _activeCameraId = null;
-let _coverageMode = 'on'; // 'off' | 'on' (wireframes) | 'viewshed' (color-coded volumes)
+// Default coverage OFF: in the default projection-off + clean-viewer era the
+// frustum wireframe (the green reticle rectangle around the feed) is clutter.
+// It stays one click away via the COVERAGE button (off -> wireframes -> viewshed).
+let _coverageMode = 'off'; // 'off' | 'on' (wireframes) | 'viewshed' (color-coded volumes)
 // Default the 3D projected "monitor plane" OFF: the flat 2D feed in the
 // right-rail CCTV panel is the primary viewer (owner directive 2026-09-07).
 // A globe-projected plane is clipped by terrain and shows a green wireframe
@@ -1639,8 +1652,32 @@ function updatePlanePlacement(record) {
   const geometry = record.frustumGeometry
     || computeFrustumGeometry(record.camera, groundAltFor(record), record.probeClampRangeM);
   const positions = record.frustumPositions || frustumCartesians(geometry);
-  runtime.planeEntity.position = positions.capCenter;
-  runtime.planeEntity.orientation = planeFlatOrientation(positions.capCenter);
+
+  // Spy-satellite polish (2026-09-07): keep the projected feed from being
+  // buried by terrain that rises between the mount and the far cap. The plane
+  // is FLAT (never warps), so we lift the whole flat plane so its center sits
+  // above the local surface. The frustum/viewshed weld is untouched — the
+  // wireframe has its own geometry. Warm the point so a cold cache refines
+  // on a later poll; when no floor is known yet (cold cache), no-op (no
+  // worse than before).
+  const cap = positions.capCenter;
+  const capLL = Cesium.Cartographic.fromCartesian(cap);
+  const capLat = Cesium.Math.toDegrees(capLL.latitude);
+  const capLon = Cesium.Math.toDegrees(capLL.longitude);
+  const capAlt = capLL.height; // ellipsoidal height (m) — what floors use
+  const localFloor = cachedGroundFloor(capLat, capLon);
+  let planePos = positions.capCenter;
+  if (Number.isFinite(localFloor)) {
+    warmGroundFloor([{ lat: capLat, lon: capLon }]);
+    const minAlt = localFloor + FRUSTUM_GROUND_CLEARANCE_M;
+    // Only lift when the plane would otherwise sit below the clearance floor.
+    if (capAlt < minAlt) {
+      const liftM = minAlt - capAlt;
+      planePos = Cesium.Cartesian3.fromDegrees(capLon, capLat, capAlt + liftM);
+    }
+  }
+  runtime.planeEntity.position = planePos;
+  runtime.planeEntity.orientation = planeFlatOrientation(planePos);
   if (runtime.planeEntity.plane) {
     runtime.planeEntity.plane.dimensions = new Cesium.Cartesian2(
       geometry.halfW * 2,
@@ -3457,10 +3494,13 @@ export function refreshCoverageStyles() {
 
     const inVisibleSet = coverageVisible.has(record.camera.id);
     for (const entity of record.coverageEntities || []) {
-      // The frustum wireframe is part of the projection representation —
-      // force it on for the active camera and let it read through geometry
-      // via depthFailMaterial (polylines have no disableDepthTestDistance).
-      entity.show = !!(_enabled && ((coverageOn && inVisibleSet) || planeShowing));
+      // Spy-satellite polish (2026-09-07): the frustum wireframe is now an
+      // explicit COVERAGE overlay only — it is NOT forced on around the
+      // projected feed. Projection-off (the default) and projection-on both
+      // show a clean image with no reticle; the wireframe appears only when
+      // the user toggles COVERAGE (off -> wireframes -> viewshed). This kills
+      // the "green border" around the flat feed.
+      entity.show = !!(_enabled && coverageOn && inVisibleSet);
       if (!entity.polyline) continue;
       // Viewshed mode swaps the cyan/green scheme for the camera's own hue so
       // adjacent cones read as distinct coverage claims (design §3b); the

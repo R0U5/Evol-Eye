@@ -232,7 +232,7 @@ test('lazy coverage inserts nothing at catalog init, then materializes only elig
   );
 });
 
-test('default COVERAGE refresh materializes the active and visible camera frustums', () => {
+test('default COVERAGE refresh is clean — no wireframe cohort until coverage is ON', () => {
   const records = Array.from({ length: 20 }, (_, index) => ({
     camera: {
       ...UNCLAMPED_CAMERA,
@@ -255,40 +255,75 @@ test('default COVERAGE refresh materializes the active and visible camera frustu
   const activeRecord = records.at(-1);
 
   try {
+    // New default (2026-09-07, spy-satellite polish): COVERAGE is OFF by
+    // default, so the frustum wireframe cohort is NOT materialized. The
+    // projected feed shows clean with no reticle.
     _setCctvCoverageStateForTest({
       viewer,
       records,
       activeCameraId: activeRecord.camera.id,
+      coverageMode: 'off',
     });
     refreshCoverageStyles();
 
     const materialized = records.filter((record) => record.coverageEntities.length > 0);
-    assert.equal(inserted.length, 14 * 2, 'default COVERAGE ON builds the 14-camera visible cohort');
-    assert.equal(materialized.length, 14);
+    // The active camera is always materialized (ensureActiveCoverageEntities),
+    // but with COVERAGE OFF its wireframe must be HIDDEN — no reticle.
+    assert.equal(inserted.length, 2, 'only the active camera materializes under COVERAGE OFF');
+    assert.ok(activeRecord.coverageEntities.length >= 2);
+    assert.ok(
+      activeRecord.coverageEntities.every((e) => e.show === false),
+      'COVERAGE OFF hides the active frustum wireframe',
+    );
+
+    // Explicitly enabling COVERAGE (wireframes) arms the full visible cohort.
+    // (The active camera was already materialized in phase 1, so this pass
+    // only adds the visible neighbors.)
+    inserted.length = 0;
+    _setCctvCoverageStateForTest({
+      viewer,
+      records,
+      activeCameraId: activeRecord.camera.id,
+      coverageMode: 'on',
+    });
+    refreshCoverageStyles();
+    const withCoverage = records.filter((record) => record.coverageEntities.length > 0);
+    assert.equal(inserted.length, 13 * 2, 'COVERAGE ON adds the visible neighbor cohort');
+    assert.equal(withCoverage.length, 14);
     assert.equal(activeRecord.coverageEntities.length, 2, 'the enable-time active camera is materialized');
     assert.ok(
-      materialized.some((record) => record !== activeRecord),
+      activeRecord.coverageEntities.every((e) => e.show === true),
+      'COVERAGE ON shows the active frustum wireframe',
+    );
+    assert.ok(
+      withCoverage.some((record) => record !== activeRecord),
       'visible neighbors are materialized alongside the active camera',
     );
 
+    // PROJECTION alone does NOT bring back the wireframe: even with the plane
+    // projected, COVERAGE OFF means no reticle is drawn around the feed.
     const projectionOnly = {
       ...records[0],
       camera: { ...records[0].camera, id: 'projection-only' },
       coverageEntities: [],
-      projection: { planeEntity: { show: false } },
+      projection: { planeEntity: { show: true } },
     };
+    const pInserted = [];
     _setCctvCoverageStateForTest({
-      viewer,
+      viewer: { entities: { add: (e) => { pInserted.push(e); return e; } } },
       records: [projectionOnly],
       activeCameraId: projectionOnly.camera.id,
       coverageMode: 'off',
       showProjection: true,
     });
     refreshCoverageStyles();
-    assert.equal(projectionOnly.coverageEntities.length, 2);
+    // The active camera always materializes its coverage entities, but with
+    // COVERAGE OFF + projection on they must be HIDDEN — projection does not
+    // resurrect the reticle.
+    assert.equal(pInserted.length, 2, 'active camera materializes (hidden) under projection-only');
     assert.ok(
-      projectionOnly.coverageEntities.every((entity) => entity.show),
-      'COVERAGE OFF keeps the active projection frustum materialized and visible',
+      projectionOnly.coverageEntities.every((e) => e.show === false),
+      'projection alone does NOT show the coverage wireframe',
     );
   } finally {
     _setCctvCoverageStateForTest({ enabled: false });
