@@ -1129,7 +1129,7 @@ function buildCatalogFromSources(rawSources) {
     const lat = safeNumber(source.lat, seed?.lat ?? NaN);
     const lon = safeNumber(source.lon, seed?.lon ?? NaN);
     // Frame-only camera: a discovered Axis cam with no geolocation still
-    // provides a live frame (SURF can land on it, the panel shows the feed)
+    // provides a live frame (SWEEP can land on it, the panel shows the feed)
     // even though it has no globe pin. Every other source without coords is
     // unusable and skipped. `unlocated` tags the record so geometry/projection
     // paths can skip pin/viewshed work instead of pushing NaN into the globe.
@@ -4265,7 +4265,7 @@ const cctvLayer = {
         : (Number(camera.groundElevationM) || 0);
       camera.absoluteHeightM = priorGround + camera.mountHeightM;
       // Unlocated (frame-only) cameras have no position: no globe pin, no
-      // billboard — they exist for the SURF/panel frame feed only. Records
+      // billboard — they exist for the SWEEP/panel frame feed only. Records
       // still enter _records so the layer can select them; geometry and
       // projection paths no-op on the null position.
       const located = camera.unlocated !== true && Number.isFinite(camera.lat) && Number.isFinite(camera.lon);
@@ -4840,7 +4840,7 @@ const cctvLayer = {
   },
 
   /**
-   * Jumps to a random camera in the catalog — the SURF control.
+   * Jumps to a random camera in the catalog — the SWEEP control.
    *
    * Samples uniformly from the full catalog, or (with `axisOnly`) from just
    * the discovered Axis pool (geolocated + unlocated). Unlocated cameras are
@@ -4857,7 +4857,7 @@ const cctvLayer = {
    * @param {number} [options.durationSec] Fly-to duration in seconds.
    * @returns {string|null} The newly active camera ID, or null if none found.
    */
-  surfCamera(options = {}) {
+  sweepCamera(options = {}) {
     if (!_records.length) return null;
     const axisOnly = options.axisOnly === true;
     const filtered = axisOnly

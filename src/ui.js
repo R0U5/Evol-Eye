@@ -2335,7 +2335,7 @@ export class StyleManager {
     this._cctvNearestBtn = document.getElementById('cctv-nearest-btn');
     this._cctvPrevBtn = document.getElementById('cctv-prev-btn');
     this._cctvNextBtn = document.getElementById('cctv-next-btn');
-    this._cctvSurfBtn = document.getElementById('cctv-surf-btn');
+    this._cctvSweepBtn = document.getElementById('cctv-sweep-btn');
     this._cctvSelect = document.getElementById('cctv-camera-select');
     this._cctvFocusBtn = document.getElementById('cctv-focus-btn');
     this._cctvCoverageBtn = document.getElementById('cctv-coverage-btn');
@@ -6185,14 +6185,14 @@ export class StyleManager {
       );
     });
 
-    // SURF — jump to a random camera. Shift-click = Axis-only pool.
+    // SWEEP — jump to a random camera. Shift-click = Axis-only pool.
     // Uses the same focus path as NEXT/PREV; the layer skips fly-to for
     // unlocated (frame-only) cameras so the globe doesn't chase a NaN pin.
-    this._cctvSurfBtn?.addEventListener('click', async (event) => {
+    this._cctvSweepBtn?.addEventListener('click', async (event) => {
       if (!await this._toggleCctvEnabled(true)) return;
       const axisOnly = event.shiftKey === true;
       this._runExplicitCctvFocus(
-        () => cctvLayer.surfCamera({ axisOnly }),
+        () => cctvLayer.sweepCamera({ axisOnly }),
         (cameraId) => cctvLayer.focusCamera(cameraId, 1.4),
       );
     });
@@ -6611,7 +6611,7 @@ export class StyleManager {
       }
     }
 
-    for (const btn of [this._cctvNearestBtn, this._cctvPrevBtn, this._cctvNextBtn, this._cctvSurfBtn]) {
+    for (const btn of [this._cctvNearestBtn, this._cctvPrevBtn, this._cctvNextBtn, this._cctvSweepBtn]) {
       if (!btn) continue;
       btn.disabled = !enabled || cameras.length === 0;
     }

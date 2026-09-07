@@ -1284,14 +1284,14 @@ test('frameSignatureFromPixels: empty or junk input yields null (always redraw)'
   assert.equal(frameSignatureFromPixels({}), null);
 });
 
-// ── SURF (random camera) + frame-only admission ─────────────────────────────
+// ── SWEEP (random camera) + frame-only admission ─────────────────────────────
 
-test('surfCamera returns null on an empty catalog (no crash)', () => {
-  assert.equal(cctvLayer.surfCamera({ axisOnly: true }), null);
-  assert.equal(cctvLayer.surfCamera({ axisOnly: false }), null);
+test('sweepCamera returns null on an empty catalog (no crash)', () => {
+  assert.equal(cctvLayer.sweepCamera({ axisOnly: true }), null);
+  assert.equal(cctvLayer.sweepCamera({ axisOnly: false }), null);
 });
 
-test('surfCamera axisOnly restricts to discovered sources', () => {
+test('sweepCamera axisOnly restricts to discovered sources', () => {
   // Layer-level behavior: the filter uses sourceKind startsWith('discovered').
   // Verified by inspection of the method source (records are built by the
   // viewer-backed enable path, not available in this pure-node harness).
@@ -1304,12 +1304,12 @@ test('surfCamera axisOnly restricts to discovered sources', () => {
   assert.match(
     src,
     /Math\.floor\(Math\.random\(\) \* filtered\.length\)/,
-    'surf must pick a uniformly random catalog index',
+    'sweep must pick a uniformly random catalog index',
   );
   assert.match(
     src,
     /Number\.isFinite\(next\.camera\.lat\)/,
-    'surf must guard fly-to on unlocated (NaN-lat) cameras',
+    'sweep must guard fly-to on unlocated (NaN-lat) cameras',
   );
 });
 
