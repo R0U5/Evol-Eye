@@ -86,8 +86,8 @@ test('thumbnail entry carries the exact shipped contract and stable frame-slot r
   assert.equal(entry.paintLane, 'thumbnail');
   assert.equal(entry.interactive, true);
   assert.equal(entry.image, frameSlot, 'host receives the source-owned stable slot by reference');
-  assert.equal(entry.thumbnailWidth, 96);
-  assert.equal(entry.thumbnailHeight, 54);
+  assert.equal(entry.thumbnailWidth, 115);
+  assert.equal(entry.thumbnailHeight, 65);
   assert.equal(entry.thumbnailPadX, 4);
   assert.equal(entry.thumbnailTitleHeight, 13);
   assert.equal(entry.requireImage, true);

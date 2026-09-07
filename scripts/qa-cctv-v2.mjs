@@ -172,15 +172,16 @@ async function positionPointerForGizmoDrag(page, point, frameCount = 3) {
 
 // In-page helper (stringified and re-defined inside each evaluate that needs
 // it, since functions can't cross the puppeteer boundary): serializes the
-// 5 frustum polylines + plane position/orientation/dimensions for a camera
-// into plain arrays of numbers, using only the camera's own clock time (no
-// Cesium namespace needed — Property.getValue just needs *a* JulianDate,
-// and the viewer's own clock.currentTime is a valid live instance of one).
+// 2 frustum polylines (center axis + far cap) + plane position/orientation/
+// dimensions for a camera into plain arrays of numbers, using only the
+// camera's own clock time (no Cesium namespace needed — Property.getValue just
+// needs *a* JulianDate, and the viewer's own clock.currentTime is a valid live
+// instance of one).
 const SERIALIZE_GEOM_SRC = `
   function serializeGeom(camId) {
     const viewer = window.__devilsEyeView.viewer;
     const time = viewer.clock.currentTime;
-    const roles = ['ray-tl', 'ray-tr', 'ray-br', 'ray-bl', 'cap'];
+    const roles = ['axis', 'cap'];
     const poly = {};
     for (const role of roles) {
       const ent = viewer.entities.getById('cctv-' + camId + '-' + role);
@@ -226,7 +227,7 @@ const BEARING_SHIFT_SRC = `
       for (let i = 0; i < 4; i++) { avg[0] += pts[i][0]; avg[1] += pts[i][1]; avg[2] += pts[i][2]; }
       return [avg[0] / 4, avg[1] / 4, avg[2] / 4];
     }
-    const mount = before.poly['ray-tl'][0];
+    const mount = before.poly['axis'][0];
     const up = mount;
     const upLen = Math.hypot(up[0], up[1], up[2]);
     const upN = [up[0] / upLen, up[1] / upLen, up[2] / upLen];
@@ -613,8 +614,8 @@ async function main() {
       return g;
     })(${JSON.stringify(activeId)})`);
 
-    const allPolylinesPresent = ['ray-tl', 'ray-tr', 'ray-br', 'ray-bl', 'cap'].every((r) => Array.isArray(geomInfo.poly[r]));
-    record('all 5 frustum polyline entities exist for the active camera', allPolylinesPresent,
+    const allPolylinesPresent = ['axis', 'cap'].every((r) => Array.isArray(geomInfo.poly[r]));
+    record('all 2 frustum polyline entities exist for the active camera', allPolylinesPresent,
       Object.keys(geomInfo.poly).map((k) => `${k}=${geomInfo.poly[k] ? 'ok' : 'MISSING'}`).join(', '));
     record('plane + plane-label entities exist for the active camera', !!geomInfo.plane && geomInfo.hasLabel,
       `plane=${!!geomInfo.plane} label=${geomInfo.hasLabel} show=${geomInfo.planeShow}`);
@@ -666,6 +667,7 @@ async function main() {
       patchGeometryApplied ? 'plane dimensions changed vs pre-patch' : 'plane dimensions never changed — tiles kept flipping mid-stream; corner-coincidence check below may be running against a stale pose');
 
     let cornerEps = null;
+    let axisErr = null;
     if (allPolylinesPresent && geomForCorners.plane) {
       cornerEps = await page.evaluate((geom) => {
         // Rotate vector v by quaternion q=[x,y,z,w] (standard formula).
@@ -694,24 +696,34 @@ async function main() {
           const world = rotate(plane.orientation, local);
           return [center[0] + world[0], center[1] + world[1], center[2] + world[2]];
         };
+        // Cap polyline ordering is [tl, tr, br, bl, tl] (cctv.js
+        // buildCoverageEntities) — match each cap corner to the plane corner.
         const planeCorners = { tl: corner(-1, 1), tr: corner(1, 1), br: corner(1, -1), bl: corner(-1, -1) };
-        const rayEndpoint = (role) => poly[role][poly[role].length - 1];
-        const rayCorners = { tl: rayEndpoint('ray-tl'), tr: rayEndpoint('ray-tr'), br: rayEndpoint('ray-br'), bl: rayEndpoint('ray-bl') };
-        return {
-          tl: dist(planeCorners.tl, rayCorners.tl),
-          tr: dist(planeCorners.tr, rayCorners.tr),
-          br: dist(planeCorners.br, rayCorners.br),
-          bl: dist(planeCorners.bl, rayCorners.bl),
+        const capCorners = { tl: poly.cap[0], tr: poly.cap[1], br: poly.cap[2], bl: poly.cap[3] };
+        const cap = {
+          tl: dist(planeCorners.tl, capCorners.tl),
+          tr: dist(planeCorners.tr, capCorners.tr),
+          br: dist(planeCorners.br, capCorners.br),
+          bl: dist(planeCorners.bl, capCorners.bl),
         };
+        // The center axis polyline runs mount → cap center; its last point
+        // must land exactly on the monitor plane center.
+        const axisEnd = poly.axis[poly.axis.length - 1];
+        const axis = dist(center, axisEnd);
+        return { cap, axis };
       }, geomForCorners);
-      const maxEps = Math.max(...Object.values(cornerEps));
+      const maxEps = Math.max(...Object.values(cornerEps.cap));
       const epsLabel = safePatch
-        ? 'plane corners coincide with wireframe corner-ray endpoints (ε < 0.5m, ground-clamp-cleared pose)'
-        : 'plane corners coincide with wireframe corner-ray endpoints (ε < 0.5m)';
+        ? 'plane corners coincide with wireframe cap endpoints (ε < 0.5m, ground-clamp-cleared pose)'
+        : 'plane corners coincide with wireframe cap endpoints (ε < 0.5m)';
       record(epsLabel, maxEps < 0.5,
-        `tl=${cornerEps.tl.toFixed(3)}m tr=${cornerEps.tr.toFixed(3)}m br=${cornerEps.br.toFixed(3)}m bl=${cornerEps.bl.toFixed(3)}m`);
+        `tl=${cornerEps.cap.tl.toFixed(3)}m tr=${cornerEps.cap.tr.toFixed(3)}m br=${cornerEps.cap.br.toFixed(3)}m bl=${cornerEps.cap.bl.toFixed(3)}m`);
+      record('center axis line lands on the monitor plane center (ε < 0.5m)', cornerEps.axis < 0.5,
+        `axis end→plane center = ${cornerEps.axis.toFixed(3)}m`);
     } else {
-      record('plane corners coincide with wireframe corner-ray endpoints (ε < 0.5m)', null,
+      record('plane corners coincide with wireframe cap endpoints (ε < 0.5m)', null,
+        'skipped — geometry entities missing');
+      record('center axis line lands on the monitor plane center (ε < 0.5m)', null,
         'skipped — geometry entities missing');
     }
 

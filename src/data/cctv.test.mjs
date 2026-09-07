@@ -3,7 +3,7 @@
 // Locks the §2a math of docs/plans/2026-07-03-cctv-v2-design.md:
 //   - the far-cap (monitor plane) corners lie ON the plane through capCenter
 //     perpendicular to the frustum view axis (ε < 0.5 m) — this is the geometric
-//     invariant that welds the wireframe corner rays to the plane entity;
+//     invariant that welds the wireframe cap rectangle to the plane entity;
 //   - vFov = 2·atan(tan(hFov/2) / (16/9)) (same 16:9 derivation the projection
 //     frame used);
 //   - far-cap center + corners clamp to ≥ groundAlt + 2 m so a fabricated pitch
@@ -202,7 +202,7 @@ test('lazy coverage inserts nothing at catalog init, then materializes only elig
     coverageEntities: [],
   }));
   let insertCount = 0;
-  const build = (record) => Array.from({ length: 5 }, (_, entityIndex) => {
+  const build = (record) => Array.from({ length: 2 }, (_, entityIndex) => {
     insertCount += 1;
     return { id: `${record.camera.id}-${entityIndex}`, show: false };
   });
@@ -211,8 +211,8 @@ test('lazy coverage inserts nothing at catalog init, then materializes only elig
   assert.doesNotMatch(cctvLayer.init.toString(), /buildCoverageEntities|ensure(?:Active|Visible)CoverageEntities/);
 
   const activated = materializeCctvActiveCoverageEntities(records[42], build);
-  assert.equal(activated.length, 5);
-  assert.equal(insertCount, 5, 'activation builds only the active camera set');
+  assert.equal(activated.length, 2);
+  assert.equal(insertCount, 2, 'activation builds only the active camera set');
   assert.equal(records.filter((record) => record.coverageEntities.length > 0).length, 1);
   assert.match(setActiveCamera.toString(), /ensureActiveCoverageEntities\(record\)/);
 
@@ -221,8 +221,8 @@ test('lazy coverage inserts nothing at catalog init, then materializes only elig
     records[42].camera.id,
   ]);
   const coverageOn = materializeCctvVisibleCoverageEntities(records, visibleIds, build);
-  assert.equal(coverageOn.length, 14 * 5);
-  assert.equal(insertCount, 15 * 5, 'COVERAGE ON builds only remaining visible/eligible sets');
+  assert.equal(coverageOn.length, 14 * 2);
+  assert.equal(insertCount, 15 * 2, 'COVERAGE ON builds only remaining visible/eligible sets');
   assert.equal(records.filter((record) => record.coverageEntities.length > 0).length, 15);
   assert.match(refreshCoverageStyles.toString(), /ensureVisibleCoverageEntities\(_records, coverageVisible\)/);
   assert.equal(
@@ -263,9 +263,9 @@ test('default COVERAGE refresh materializes the active and visible camera frustu
     refreshCoverageStyles();
 
     const materialized = records.filter((record) => record.coverageEntities.length > 0);
-    assert.equal(inserted.length, 14 * 5, 'default COVERAGE ON builds the 14-camera visible cohort');
+    assert.equal(inserted.length, 14 * 2, 'default COVERAGE ON builds the 14-camera visible cohort');
     assert.equal(materialized.length, 14);
-    assert.equal(activeRecord.coverageEntities.length, 5, 'the enable-time active camera is materialized');
+    assert.equal(activeRecord.coverageEntities.length, 2, 'the enable-time active camera is materialized');
     assert.ok(
       materialized.some((record) => record !== activeRecord),
       'visible neighbors are materialized alongside the active camera',
@@ -285,7 +285,7 @@ test('default COVERAGE refresh materializes the active and visible camera frustu
       showProjection: true,
     });
     refreshCoverageStyles();
-    assert.equal(projectionOnly.coverageEntities.length, 5);
+    assert.equal(projectionOnly.coverageEntities.length, 2);
     assert.ok(
       projectionOnly.coverageEntities.every((entity) => entity.show),
       'COVERAGE OFF keeps the active projection frustum materialized and visible',
@@ -413,7 +413,7 @@ test('ground clamp lifts the CAP CENTER only — the rectangle stays rigid (true
 });
 
 test('clamped pose keeps corner/plane coincidence and the rigid 2·halfW × 2·halfH span', () => {
-  // The wireframe corner rays must terminate exactly on the monitor plane's
+  // The wireframe cap corners must terminate exactly on the monitor plane's
   // corners AT THE DEFAULT AUSTIN POSE — this is the case that diverged by
   // ~47.5 m under per-corner clamping (owner field test 2026-07-04).
   const g = computeFrustumGeometry(AUSTIN_FABRICATED_CAMERA, AUSTIN_GROUND);

@@ -169,7 +169,7 @@ function waitForTilesLoaded(page, timeoutMs = 15000) {
 
 /**
  * Reads a camera's placed mount-point cartographic height off its
- * `cctv-<id>-ray-tl` polyline entity (first position = the mount, per
+ * `cctv-<id>-axis` polyline entity (first position = the mount, per
  * cctv.js `buildCoverageEntities`/`applyFrustumGeometry`), returns
  * `{ mountAltM, groundM }` where `groundM = mountAltM - mountHeightM` — the
  * SAME arithmetic cctv.js itself uses in reverse
@@ -182,7 +182,7 @@ async function readCameraGround(page, camId) {
   return page.evaluate((id) => {
     const viewer = window.__devilsEyeView.viewer;
     const time = viewer.clock.currentTime;
-    const ent = viewer.entities.getById(`cctv-${id}-ray-tl`);
+    const ent = viewer.entities.getById(`cctv-${id}-axis`);
     if (!ent || !ent.polyline) return null;
     const positions = ent.polyline.positions.getValue(time);
     if (!Array.isArray(positions) || positions.length < 1) return null;
@@ -378,7 +378,7 @@ async function main() {
         }, cam.id);
         const geom = await readCameraGround(page, cam.id);
         if (!geom || !Number.isFinite(geom.groundM)) {
-          record(`${label} ${cam.id}: record ground reads finitely`, false, 'ray-tl entity missing or non-finite height');
+          record(`${label} ${cam.id}: record ground reads finitely`, false, 'axis entity missing or non-finite height');
           continue;
         }
         record(`${label} ${cam.id}: rendered ground reads finitely`, true,

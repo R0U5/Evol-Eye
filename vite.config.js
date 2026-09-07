@@ -5932,6 +5932,57 @@ export function googlePlacesContextProxy() {
         res.end(JSON.stringify({ error: error?.message || 'Google Places request failed', places: [] }));
       }
     });
+
+    // Keyless Nominatim forward-geocode fallback for the location search bar. OSM
+    // asks that requests carry a real application User-Agent/Referer (not a bare
+    // browser fetch), so the dev server mediates the call. Single-query and
+    // on-demand, comfortably inside the Nominatim 1 req/s fair-use guidance.
+    middlewares.use('/api/geocode/nominatim', async (req, res) => {
+      if (req.method !== 'GET') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: 'ERROR', error: 'Method not allowed', results: [] }));
+        return;
+      }
+      const requestUrl = new URL(req.url || '', 'http://localhost');
+      const q = String(requestUrl.searchParams.get('q') || '').trim();
+      if (!q || q.length > 200) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ status: 'ERROR', error: 'q (trimmed, <=200 chars) is required', results: [] }));
+        return;
+      }
+      const viewbox = String(requestUrl.searchParams.get('viewbox') || '').trim();
+      try {
+        const params = new URLSearchParams({ q, format: 'jsonv2', addressdetails: '1', limit: '1' });
+        if (viewbox) {
+          params.set('viewbox', viewbox);
+          params.set('bounded', '1');
+        }
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+          headers: {
+            'User-Agent': 'Devils-Eye/1.0 searchbar geocoder',
+            Referer: 'https://github.com/R0U5/Devils-Eye',
+            Accept: 'application/json',
+          },
+          signal: AbortSignal.timeout(30000),
+        });
+        const data = await response.json().catch(() => ({}));
+        const results = Array.isArray(data) ? data : [];
+        res.statusCode = response.ok ? 200 : response.status;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify({
+          status: response.ok ? 'OK' : 'ERROR',
+          error: response.ok ? null : (data.error || 'Nominatim request failed'),
+          results,
+        }));
+      } catch (error) {
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({ status: 'ERROR', error: error?.message || 'Nominatim request failed', results: [] }));
+      }
+    });
   }
 
   return {

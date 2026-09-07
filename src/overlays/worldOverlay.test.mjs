@@ -1686,7 +1686,7 @@ test('CCTV stable frame slots gate ambient chrome and wire the exact host hit re
   env.postRender.raise();
   const rect = getOverlayPaintRect('cctv', 'cam-a');
   assert.ok(rect);
-  assert.deepEqual({ w: rect.w, h: rect.h }, { w: 104, h: 77 });
+  assert.deepEqual({ w: rect.w, h: rect.h }, { w: 123, h: 88 });
   const hit = hitTestWorldOverlay(rect.x + 1, rect.y + 1, { sourceId: 'cctv' });
   assert.equal(hit?.entryId, 'cam-a');
   assert.equal(hit?.entry.interactive, true);
