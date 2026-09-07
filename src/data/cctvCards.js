@@ -40,19 +40,20 @@ import { CCTV_THUMBNAIL_STYLE } from '../overlays/worldOverlayTokens.js';
 
 // ─── Card geometry / style constants ───────────────────────────────────────
 
-/** Thumbnail display size (CSS px, 16:9). */
-export const CCTV_CARD_THUMB_W = 96;
-export const CCTV_CARD_THUMB_H = 54;
+/** Thumbnail display size (CSS px, 16:9). 20% larger than the original 96x54. */
+export const CCTV_CARD_THUMB_W = 115;
+export const CCTV_CARD_THUMB_H = 65;
 /** Offscreen frame-canvas size (2x thumb for DPI crispness). */
-export const CCTV_FRAME_CANVAS_W = 192;
-export const CCTV_FRAME_CANVAS_H = 108;
+export const CCTV_FRAME_CANVAS_W = 230;
+export const CCTV_FRAME_CANVAS_H = 130;
 /**
  * Min screen separation between accepted card anchors (greedy declutter).
  * Owner field test 2026-07-30: 130 read too sparse once the HUD safe-zone
- * filter started dropping cards as well. 112 still exceeds the card box width
- * (104 px) so accepted boxes cannot overlap. This is THE density knob.
+ * filter started dropping cards as well. 134 still exceeds the card box width
+ * (123 px = 115 thumb + 2*4 padding) so accepted boxes cannot overlap. This is
+ * THE density knob.
  */
-export const CCTV_CARD_MIN_SEP_PX = 112;
+export const CCTV_CARD_MIN_SEP_PX = 134;
 /** Ambient cards yield the top HUD band to mission text and controls. */
 export const CCTV_CARD_SAFE_TOP_RATIO = 0.18;
 export const CCTV_CARD_SAFE_TOP_MAX_PX = 150;

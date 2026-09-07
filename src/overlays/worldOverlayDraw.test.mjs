@@ -244,8 +244,8 @@ test('edge-clamped CCTV placements keep leaders vertical unless the anchor is ou
   const edgeClamped = placementVariants({
     anchorX: 20,
     anchorY: 160,
-    width: 104,
-    height: 77,
+    width: 123,
+    height: 88,
     viewportWidth: 240,
     viewportHeight: 240,
     gap: 22,
@@ -259,8 +259,8 @@ test('edge-clamped CCTV placements keep leaders vertical unless the anchor is ou
   const offRectAnchor = placementVariants({
     anchorX: 2,
     anchorY: 160,
-    width: 104,
-    height: 77,
+    width: 123,
+    height: 88,
     viewportWidth: 240,
     viewportHeight: 240,
     gap: 22,
@@ -349,9 +349,9 @@ test('variant measurement and all six painters remain renderer-local', () => {
     title: 'CAMERA 12',
     details: ['LIVE', '1.2 KM'],
     accent: '#6be8ff',
-    image: { width: 192, height: 108 },
-    thumbnailWidth: 96,
-    thumbnailHeight: 54,
+    image: { width: 230, height: 130 },
+    thumbnailWidth: 115,
+    thumbnailHeight: 65,
   };
   const variants = ['label', 'track', 'card', 'thumbnail', 'selected', 'tracked'];
   const painters = [paintLabel, paintTrack, paintCard, paintThumbnail, paintSelected, paintTracked];
@@ -375,10 +375,10 @@ test('variant measurement and all six painters remain renderer-local', () => {
   assert.ok(trackLayout.w >= 'CAMERA 12 · LIVE'.length * 6);
 });
 
-test('thumbnail painter preserves the shipped CCTV 104x77 geometry and drawing coordinates', () => {
+test('thumbnail painter preserves the shipped CCTV 123x88 geometry and drawing coordinates', () => {
   const ctx = mockContext();
   const frameSlot = createFrameSlot();
-  frameSlot.frame = { width: 192, height: 108 };
+  frameSlot.frame = { width: 230, height: 130 };
   frameSlot.stamp = 123;
   const entry = createCctvThumbnailOverlayEntry({
     id: 'cam-a',
@@ -389,20 +389,20 @@ test('thumbnail painter preserves the shipped CCTV 104x77 geometry and drawing c
   entry._overlayLayout = measureOverlayEntry(ctx, entry, {});
   assert.deepEqual(
     { w: entry._overlayLayout.w, h: entry._overlayLayout.h },
-    { w: 104, h: 77 },
+    { w: 123, h: 88 },
   );
   const placement = placementVariants({
     anchorX: 200,
     anchorY: 200,
-    width: 104,
-    height: 77,
+    width: 123,
+    height: 88,
     viewportWidth: 500,
     viewportHeight: 400,
     gap: entry.gapPx,
     leaderOffset: entry.leaderOffsetPx,
     verticalOnly: true,
   })[0];
-  assert.deepEqual(placement.rect, { x: 148, y: 101, w: 104, h: 77 });
+  assert.deepEqual(placement.rect, { x: 139, y: 90, w: 123, h: 88 });
   paintThumbnail(ctx, entry, placement, 0.75);
   assert.deepEqual(
     ctx.calls.find(([name]) => name === 'strokeStyle'),
@@ -412,11 +412,11 @@ test('thumbnail painter preserves the shipped CCTV 104x77 geometry and drawing c
   assert.deepEqual(ctx.calls.find(([name]) => name === 'moveTo'), ['moveTo', 200, 184]);
   assert.deepEqual(
     ctx.calls.find(([name]) => name === 'drawImage'),
-    ['drawImage', frameSlot.frame, 152, 105, 96, 54],
+    ['drawImage', frameSlot.frame, 143, 94, 115, 65],
   );
   assert.deepEqual(
     ctx.calls.find(([name]) => name === 'fillText'),
-    ['fillText', 'MAIN & FIFTH AV', 152, 169],
+    ['fillText', 'MAIN & FIFTH AV', 143, 169],
   );
 });
 

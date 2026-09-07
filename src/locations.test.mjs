@@ -597,3 +597,98 @@ test('search without an authority hook preserves the existing caller contract', 
   assert.equal(result.navigationMode, 'city-overview');
   assert.equal(viewer.flights.length, 1);
 });
+
+// ── Keyless Nominatim fallback (searchbar address finder) ────────────────────
+// Google's Geocoding API is NOT enabled by default on a fresh Cloud project:
+// geocoding returns REQUEST_DENIED and the Places text-search proxy returns 403,
+// so the search bar used to greet every address with "no addresses found". The
+// fallback below resolves the same query through the dev-server Nominatim proxy.
+
+test('searchAndFlyTo falls back to a keyless Nominatim geocode when Google denies', async () => {
+  const viewer = stubViewer();
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  globalThis.window = { __GOOGLE_MAPS_API_KEY__: 'test-key' };
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    if (String(url).startsWith('https://maps.googleapis.com/')) {
+      return {
+        ok: false,
+        json: async () => ({
+          status: 'REQUEST_DENIED',
+          error_message: 'This API is not activated on your API project.',
+          results: [],
+        }),
+      };
+    }
+    if (String(url).startsWith('/api/geocode/nominatim?')) {
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'OK',
+          results: [{
+            lat: '30.2672',
+            lon: '-97.7431',
+            display_name: 'Austin, Travis County, Texas, United States',
+            class: 'place',
+            type: 'city',
+            boundingbox: ['30.10', '30.50', '-97.95', '-97.55'],
+          }],
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  try {
+    const plan = await searchAndFlyTo(viewer, 'Austin, TX', {});
+    assert.equal(plan.navigationMode, 'city-overview');
+    assert.equal(plan.label, 'Austin, Travis County, Texas, United States');
+    assert.ok(requested.some((u) => u.startsWith('/api/geocode/nominatim?')),
+      'an unavailable Google geocode must still resolve through the Nominatim proxy');
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+    else delete globalThis.window;
+  }
+});
+
+test('searchAndFlyTo resolves through Nominatim even when no Google key is configured', async () => {
+  const viewer = stubViewer();
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  globalThis.window = {};
+  let nominatimCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith('/api/geocode/nominatim?')) {
+      nominatimCalls += 1;
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'OK',
+          results: [{
+            lat: '30.2672',
+            lon: '-97.7431',
+            display_name: '6th Street, Downtown Austin, Travis County, Texas, United States',
+            class: 'highway',
+            type: 'residential',
+            boundingbox: ['30.26', '30.28', '-97.76', '-97.73'],
+          }],
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  try {
+    const plan = await searchAndFlyTo(viewer, '6th Street Austin TX', {});
+    assert.equal(nominatimCalls, 1);
+    assert.equal(plan.navigationMode, 'street-corridor');
+    assert.equal(plan.label, '6th Street, Downtown Austin, Travis County, Texas, United States');
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+    else delete globalThis.window;
+  }
+});

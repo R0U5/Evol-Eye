@@ -1309,12 +1309,12 @@ This is the current runtime/source-of-truth snapshot for the project.
 >   Satellite pre-render propagation refreshes its altitude line from the same
 >   per-frame SGP4 sample used by the tracked dot and camera.
 > - **CCTV thumbnail ownership:** `cctv.js` retains the 20/28/40 zoom selection,
->   40-card shipped maximum, 112 px source declutter, eviction grace, frame
+>   40-card shipped maximum, 134 px source declutter, eviction grace, frame
 >   fetching/cadence/retry, stable slot cache, last-success persistence, hover
 >   pinning, and activation. `cctvCards.js` is now source policy plus pure
 >   lifecycle helpers only; it owns no canvas, post-render subscription,
 >   Cesium projection, layout solve, paint pass, or hit store. The shared host
->   paints its exact 96×54 thumbnail inside the 104×77 shipped chrome, applies
+>   paints its exact 115×65 thumbnail inside the 123×88 shipped chrome, applies
 >   the same 1.0→0.45→0.35 altitude scale and 7,500→9,500 m fade, shared
 >   keyhole fade, full UI exclusions, and tracked/protected footprint
 >   exclusion. Ambient entries paint nothing before their first successful
@@ -1944,7 +1944,8 @@ silently demoting every later lookup for the session.
 - The detection-overlay record cache (`_detectionObjects`) is cleared with the catalog on every rebuild: it stamps id/class at creation only, and a rebuild can re-tag a satellite when a partial CelesTrak outage changes which group wins dedupe.
 - **FIRMS**: no ground clamping (zero 3D-tiles height sampling), ≤18 screen-decluttered ambient labels, click-to-inspect detail card, 2.5k/3k sprite budgets viewport-clipped by FRP.
 - **CCTV v2 foundation:** a pitched
-  frustum wireframe (4 corner rays + far-cap rectangle) with a monitor plane at the frustum's
+  frustum wireframe (center axis line mount → far-cap center + far-cap rectangle) with a monitor
+  plane at the frustum's
   far cap, retargeting the existing video/canvas texture pipeline. Manual calibration only —
   auto-calibration and the drape mesh pipeline are deleted. A one-shot activation obstruction
   probe (`pickFromRay` on camera activation, clamping the plane short of the first hit) remains;
@@ -1956,11 +1957,12 @@ silently demoting every later lookup for the session.
   notifications (roughly 300 ms or ten batches; natural completion and disable each publish their
   terminal state through their own completion paths) and a LOADING FRAMES
   chip and the preview-first auto-expanding panel are unchanged. Coverage polylines are created
-  lazily instead of inserting five entities for every catalog camera during initialization: default
+  lazily instead of inserting two entities for every catalog camera during initialization: default
   COVERAGE ON enable creates the active/visible 14-camera cohort, and activation always creates the
   selected frustum even with COVERAGE OFF. **Field validation passed
   2026-07-04** (core look + downtown no-clip confirmed); that round fixed three findings: the
-  ground clamp now lifts the cap *center* only so the wireframe stays a true pyramid welded to
+  ground clamp now lifts the cap *center* only so the wireframe stays a true pyramid (axis + cap)
+  welded to
   the plane (was a flattened fan / the ~47.5 m divergence — RESOLVED), re-selecting the active
   camera is a no-op (killed a click-flash), and texture swaps gate on canvas content (killed a
   periodic white flash). Coverage is now **metro-wide: 250 cameras** (`CCTV_AUSTIN_MAX_SOURCES`
