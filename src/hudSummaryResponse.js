@@ -1,15 +1,26 @@
-export const HUD_SUMMARY_UNCONFIGURED_CODE = 'OPENAI_NOT_CONFIGURED';
+export const HUD_SUMMARY_UNCONFIGURED_CODE = 'HUD_SUMMARY_NOT_CONFIGURED';
 
 /**
  * Describe the optional HUD summary capability without turning a deliberately
  * keyless boot into an HTTP failure.
  *
- * @param {unknown} apiKey - Candidate server-side OpenAI credential.
+ * The summary can be served by any of three providers; it counts as configured
+ * when at least one of them can serve: a local Ollama pair
+ * (OLLAMA_BASE_URL + OLLAMA_HUD_SUMMARY_MODEL), or an OpenAI key
+ * (OPENAI_API_KEY — optionally pointed at an OpenAI-compatible base URL).
+ * A bare OPENAI_BASE_URL without a key is not a provider.
+ *
+ * @param {{openAiKey?: unknown, ollamaBaseUrl?: unknown, ollamaModel?: unknown}} env
  * @returns {{ statusCode: 200, payload: { configured: false, code: string, error: null, summary: null } }|null}
- *   A graceful unconfigured response, or null when the provider is configured.
+ *   A graceful unconfigured response, or null when any provider is configured.
  */
-export function keylessHudSummaryResponse(apiKey) {
-  if (String(apiKey ?? '').trim()) return null;
+export function keylessHudSummaryResponse(env = {}) {
+  const openAiKey = String(env?.openAiKey ?? '').trim();
+  const localConfigured = Boolean(
+    String(env?.ollamaBaseUrl ?? '').trim()
+    && String(env?.ollamaModel ?? '').trim()
+  );
+  if (openAiKey || localConfigured) return null;
   return {
     statusCode: 200,
     payload: {

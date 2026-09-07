@@ -14,7 +14,7 @@
 /** Longest accepted key/token value. Real provider keys are all far shorter. */
 export const KEY_SETUP_VALUE_LIMIT = 512;
 
-/** Most env vars accepted in one save. The registry defines nine. */
+/** Most env vars accepted in one save. The registry defines eleven. */
 export const KEY_SETUP_UPDATE_LIMIT = 16;
 
 /** Header line written above keys the panel appends to a .env file. */
@@ -43,6 +43,24 @@ export const KEY_SETUP_KEYS = Object.freeze([
     unlocks: 'Voice control — talk to the planet',
     getUrl: 'https://platform.openai.com/api-keys',
     envVars: Object.freeze(['OPENAI_API_KEY']),
+    tier: 'metered',
+  }),
+  Object.freeze({
+    id: 'ollama',
+    title: 'LOCAL INTEL',
+    unlocks: 'On-premise HUD summarizer — no network egress, no API bill',
+    getUrl: 'https://ollama.com',
+    // NOT clientExposed — the browser never calls Ollama directly; the dev
+    // server proxies the HUD summary request to a locally hosted model.
+    envVars: Object.freeze(['OLLAMA_BASE_URL', 'OLLAMA_HUD_SUMMARY_MODEL']),
+    tier: 'free',
+  }),
+  Object.freeze({
+    id: 'openai-compatible',
+    title: 'OPENAI-COMPATIBLE',
+    unlocks: 'Point the HUD summarizer at any OpenAI-compatible endpoint (vLLM, LM Studio, Azure, etc.)',
+    getUrl: 'https://platform.openai.com/api-keys',
+    envVars: Object.freeze(['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_HUD_SUMMARY_MODEL']),
     tier: 'metered',
   }),
   Object.freeze({
