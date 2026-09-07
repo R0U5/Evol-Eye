@@ -292,7 +292,11 @@ let _projectionEntities = [];
 let _enabled = false;
 let _activeCameraId = null;
 let _coverageMode = 'on'; // 'off' | 'on' (wireframes) | 'viewshed' (color-coded volumes)
-let _showProjection = true;
+// Default the 3D projected "monitor plane" OFF: the flat 2D feed in the
+// right-rail CCTV panel is the primary viewer (owner directive 2026-09-07).
+// A globe-projected plane is clipped by terrain and shows a green wireframe
+// border, so keep it opt-in via the PROJECTION toggle rather than the default.
+let _showProjection = false;
 let _autoHop = false;
 // An explicit empty-space deselect keeps AUTO HOP configured but prevents its
 // timer from silently choosing a replacement. A later explicit activation or
