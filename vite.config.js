@@ -8494,7 +8494,16 @@ function keySetupEndpoint() {
       // bytes for UTF-8, corrupt the file, and wedge the next launch. We always
       // write back UTF-8, which is exactly what the launcher normalizes to.
       if (pinokioManaged()) return readPinokioEnvironmentSource(storePath());
-      return fs.readFileSync(storePath(), 'utf8');
+      // O_NOFOLLOW mirrors the write-side symlink refusal: a credential store
+      // must never be read THROUGH a symlink. ELOOP is a refusal, not an
+      // absent store — it must abort the save exactly like any other
+      // unreadable-store fault (it already throws ELOOP past this catch below).
+      const fd = fs.openSync(storePath(), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      try {
+        return fs.readFileSync(fd, 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch (error) {
       if (error?.code === 'ENOENT') return ''; // The first saved key births the file.
       const unreadable = new Error('the existing configuration could not be read, so nothing was changed');
