@@ -661,7 +661,7 @@ test('CCTV focus reports when the camera flight starts', () => {
   let flyCalls = 0;
   const viewer = {
     trackedEntity: null,
-    camera: { flyToBoundingSphere() { flyCalls += 1; } },
+    camera: { flyTo(options) { flyCalls += 1; } },
   };
   const record = {
     camera: { rangeM: 210, headingDeg: 41 },
@@ -677,7 +677,7 @@ test('CCTV focus refuses camera flights while cockpit owns the view', () => {
   let flyCalls = 0;
   const viewer = {
     trackedEntity: null,
-    camera: { flyToBoundingSphere() { flyCalls += 1; } },
+    camera: { flyTo(options) { flyCalls += 1; } },
   };
   const record = {
     camera: { rangeM: 210, headingDeg: 41 },
@@ -753,7 +753,7 @@ function makeDeselectViewer() {
       pitch: -0.7,
       roll: 0.1,
       transform: Cesium.Matrix4.clone(Cesium.Matrix4.IDENTITY),
-      flyToBoundingSphere() { this.flyCalls = (this.flyCalls || 0) + 1; },
+      flyTo() { this.flyCalls = (this.flyCalls || 0) + 1; },
     },
     scene: {
       canvas: { clientWidth: 1200, clientHeight: 800 },
