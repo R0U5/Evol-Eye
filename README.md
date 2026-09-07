@@ -82,7 +82,7 @@ Start with the included data sources, then add your own. Each layer is a separat
 ## ⚡ Quick Start
 
 **Start without an account or API keys.** Both paths open the same app with
-Esri satellite imagery and keyless terrain. OSM is the fallback if Esri is
+Esri satellite imagery and keyless terrain. Dark is the fallback if Esri is
 unreachable. Flights, military traffic, satellites, earthquakes, public
 cameras, radio, and launches are available without keys.
 
@@ -252,7 +252,7 @@ Twenty-eight tools, four jobs — the commands below come straight from the prod
 > 🗣️ *"Switch to night vision and turn on the flights layer."* · *"Turn on the camera viewsheds."* · *"Play a news radio station near Austin."* · *"Track that plane."* → *"Enter Cockpit."*
 
 **And the rapid-fire tier** — one sentence each:
-> 🗣️ *"Show me global infrastructure."* (stages the layers and pulls back to the globe) · *"Play Orbital Watch."* (a full cinematic scene) · *"Set detection density to fifty percent."* · *"Next contact — helicopters only."* (mid-cockpit) · *"Show me space missions."* · *"Switch to OSM."* · *"Sharpen the image a touch."* · *"Switch to the tactical layout."* · *"What's turned on right now?"*
+> 🗣️ *"Show me global infrastructure."* (stages the layers and pulls back to the globe) · *"Play Orbital Watch."* (a full cinematic scene) · *"Set detection density to fifty percent."* · *"Next contact — helicopters only."* (mid-cockpit) · *"Show me space missions."* · *"Switch to Dark."* · *"Sharpen the image a touch."* · *"Switch to the tactical layout."* · *"What's turned on right now?"*
 
 ![The globe populating with the world's radio stations as another live layer](docs/media/15-global-radio-layer.gif)
 
@@ -266,13 +266,13 @@ Thirteen layers and map sources. **Eleven have a keyless path.** Some offer addi
 
 | Layer | What you get | Source | Auth |
 |-------|--------------|--------|------|
-| 🗺️ **Map Stack** | Esri satellite imagery, Google Photorealistic 3D, OSM, plus additional ion-hosted stacks | Esri / Google / Ion / OSM | 🟢 Esri satellite + OSM · 🟡 ion-hosted Google 3D + world terrain · 🔴 direct Google + place search |
+| 🗺️ **Map Stack** | Esri satellite imagery, Google Photorealistic 3D, Dark, plus additional ion-hosted stacks | Esri / Google / Ion / Dark | 🟢 Esri satellite + Dark · 🟡 ion-hosted Google 3D + world terrain · 🔴 direct Google + place search |
 | ✈️ **Live Flights** | 11,000+ live aircraft + route history | OpenSky + adsb.lol | 🟢 (🟡 optional for more polling credits) |
 | 🎖️ **Military Flights** | ADS-B military traffic in amber | adsb.lol | 🟢 |
 | 🚢 **Live Vessels** | Thousands of ships worldwide | AISStream | 🟡 |
 | 🛰️ **Satellites** | 838-object catalog, color-coded by class with a live legend — the **DENSE** chip drops in the whole Starlink shell | CelesTrak | 🟢 |
 | 🌍 **Earthquakes** | Global seismic activity, last 24h | USGS | 🟢 |
-| 🚗 **Traffic** | Simulated vehicles on OSM roads. With TomTom, live flow speeds drive the simulation and congestion colors below ~8 km; individual vehicle positions are not live observations | TomTom + OSM | 🟢 simulation · 🟡 live flow speeds |
+| 🚗 **Traffic** | Simulated vehicles on OpenStreetMap roads. With TomTom, live flow speeds drive the simulation and congestion colors below ~8 km; individual vehicle positions are not live observations | TomTom + OSM | 🟢 simulation · 🟡 live flow speeds |
 | 📹 **CCTV Mesh** | ~800 public cameras projected *into* the 3D space — Austin · California (Caltrans) · London (TfL). Positions are published; poses are estimated priors **you calibrate by dragging a gizmo on the camera itself** | City APIs | 🟢 |
 | 📻 **Radio** | Geolocated world radio with an **analog tuner** — drag the needle across up to 750 stations and the globe flies to each broadcaster | Radio Browser / broadcasters | 🟢 |
 | 🚲 **Bikeshare** | Live station availability | GBFS | 🟢 |
@@ -284,7 +284,7 @@ Thirteen layers and map sources. **Eleven have a keyless path.** Some offer addi
 
 | You have | The globe you get |
 |---|---|
-| 🟢 Nothing | Esri World Imagery satellite basemap + keyless terrain, in 2D. OSM takes over automatically if Esri is unreachable; if terrain is unavailable the globe continues without it |
+| 🟢 Nothing | Esri World Imagery satellite basemap + keyless terrain, in 2D. Dark takes over automatically if Esri is unreachable; if terrain is unavailable the globe continues without it |
 | 🟡 A free Cesium ion token | **Google Photorealistic 3D cities** and world terrain — eligible personal, non-commercial use; current ion terms and quotas apply |
 | 🔴 A Google Maps key | The same 3D direct from Google, plus in-app place search — the billing-enabled, metered route |
 
@@ -352,7 +352,7 @@ src/
 ├── ui.js                   # Runtime UI — panels, HUD, styles, control facade
 ├── hud.js                  # Intelligence HUD + AI scene summary
 ├── keySetup.js             # POWER UP panel — in-app provider keys (dev server only)
-├── mapStackController.js   # Basemap switching — Google 3D / Esri / OSM / ion stacks
+├── mapStackController.js   # Basemap switching — Google 3D / Esri / Dark / ion stacks
 ├── voice/                  # OpenAI Realtime session + 28 voice tools
 ├── data/                   # One module per layer + orchestration + context store
 │   ├── iconOrientation.js  # Screen-projected headings + horizon cull

@@ -64,7 +64,7 @@ function describeError(error) {
 }
 
 /**
- * GOD'S EYE VIEW — Main Entry Point
+ * DEVIL'S EYE — Main Entry Point
  * Initializes CesiumJS with Google Photorealistic 3D Tiles,
  * style system, intelligence HUD, location presets, and share links.
  */

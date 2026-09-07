@@ -372,7 +372,7 @@ test('Esri fallbacks report and attribute the imagery source actually rendered',
   const controller = readFileSync(new URL('./mapStackController.js', import.meta.url), 'utf8');
   assert.match(
     controller,
-    /effectiveStackId = 'osm';[\s\S]*?fallbackMessage = 'Esri Satellite is unavailable; using OSM'/,
+    /effectiveStackId = 'osm';[\s\S]*?fallbackMessage = 'Esri Satellite is unavailable; using Dark map';/,
     'construction failure must resolve truthfully to OSM',
   );
   assert.match(

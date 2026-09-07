@@ -624,15 +624,15 @@ test('the launcher keeps focus, restores it, and never disables the focused butt
   assert.match(module, /addEventListener\('keydown', onKeyDown, true\)/);
 });
 
-test('the DISPLAY rail starts collapsed on a first run, and a stored choice wins', () => {
+test('the DISPLAY rail starts expanded on a first run (so overlay toggles incl. Radar are visible), and a stored choice wins', () => {
   const ui = fs.readFileSync(new URL('./ui.js', import.meta.url), 'utf8');
-  // The rail opened by default to advertise HUD / DETECT / 3D. Those default ON
-  // now, so it was opening to offer controls for things already happening —
-  // while competing with the mission card for the one first impression there is.
+  // The rail now opens by default so the overlay toggles — including the
+  // RainViewer Radar overlay — are immediately visible on first run. A stored
+  // choice still wins in both directions.
   assert.match(
     ui,
-    /if \(panelId === 'pp-toggles' && stored === null\) collapsed = true;/,
-    'first run must leave DISPLAY collapsed',
+    /if \(panelId === 'pp-toggles' && stored === null\) collapsed = false;/,
+    'first run must leave DISPLAY expanded',
   );
   // The first-run default may only apply when NOTHING is stored: a visitor who
   // opened the rail keeps it open, and one who closed it keeps it closed.

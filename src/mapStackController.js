@@ -50,14 +50,20 @@ export const MAP_STACKS = [
   },
   {
     id: 'osm',
-    label: 'OSM',
-    shortLabel: 'OSM',
+    label: 'Dark',
+    shortLabel: 'Dark',
     kind: 'osm',
     requiresIon: false,
   },
 ];
 
-const DEFAULT_OSM_CREDIT = '© OpenStreetMap contributors';
+// CartoDB Dark Matter — OSM-derived tile data, no key, no 403.
+// Subdomains (a/b/c) provide automatic DNS-level failover.
+const CARTODB_DARK_URL = 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png';
+const CARTODB_DARK_CREDIT = '© OpenStreetMap contributors, © CARTO';
+
+// Legacy alias for the fallback path (Esri unavailable → OSM).
+const DEFAULT_OSM_CREDIT = CARTODB_DARK_CREDIT;
 
 // Esri World Imagery — the keyless satellite basemap and the default keyless
 // landing (a spy-satellite simulator should open on satellite imagery, not a
@@ -394,21 +400,21 @@ export class MapStackController {
         });
       } catch (error) {
         // The keyless DEFAULT landing must never strand a first run on a blank
-        // globe because Esri is unreachable — fall back to OSM tiles for this
+        // globe because Esri is unreachable — fall back to Dark tiles for this
         // session. (The fallback is cached under this stack id like any other
         // provider, so the session won't re-probe Esri; a restart does.)
-        console.warn('[MapStack] Esri World Imagery unavailable, falling back to OSM:', error?.message || error);
-        provider = new Cesium.OpenStreetMapImageryProvider({
-          url: 'https://tile.openstreetmap.org/',
-          credit: DEFAULT_OSM_CREDIT,
+        console.warn('[MapStack] Esri World Imagery unavailable, falling back to Dark map:', error?.message || error);
+        provider = new Cesium.UrlTemplateImageryProvider({
+          url: CARTODB_DARK_URL,
+          credit: CARTODB_DARK_CREDIT,
         });
         effectiveStackId = 'osm';
-        fallbackMessage = 'Esri Satellite is unavailable; using OSM';
+        fallbackMessage = 'Esri Satellite is unavailable; using Dark map';
       }
     } else if (stack.kind === 'osm') {
-      provider = new Cesium.OpenStreetMapImageryProvider({
-        url: 'https://tile.openstreetmap.org/',
-        credit: DEFAULT_OSM_CREDIT,
+      provider = new Cesium.UrlTemplateImageryProvider({
+        url: CARTODB_DARK_URL,
+        credit: CARTODB_DARK_CREDIT,
       });
     } else {
       throw new Error(`Unsupported map stack: ${stack.id}`);

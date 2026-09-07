@@ -182,7 +182,7 @@ try {
       && esriTileFailureFallback.before.hasLayer
       && esriTileFailureFallback.afterOne === 'esri-imagery'
       && esriTileFailureFallback.afterTwo.activeId === 'osm'
-      && /tile requests failed; using OSM/i.test(esriTileFailureFallback.afterTwo.lastError)
+      && /tile requests failed; using Dark map/i.test(esriTileFailureFallback.afterTwo.lastError)
       && esriTileFailureFallback.afterTwo.creditVisible === false
       && esriTileFailureFallback.afterTwo.globeShown
       && esriTileFailureFallback.afterTwo.hasLayer

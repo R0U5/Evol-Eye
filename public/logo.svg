@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="180 120 775 520" role="img" aria-labelledby="logo-title">
-  <title id="logo-title">God's Eye View</title>
+  <title id="logo-title">Devil's Eye</title>
   <defs>
     <style>
       .cls-4 {
@@ -22,11 +22,11 @@
       }
 
       .cls-2 {
-        fill: #00f6ff;
+        fill: #ff3c3c;
       }
 
       .cls-3 {
-        stroke: #00f6ff;
+        stroke: #ff3c3c;
         stroke-linecap: round;
         stroke-width: 6.99px;
       }

@@ -188,14 +188,15 @@ const CITY_ALIASES = new Map([
 ]);
 
 // Basemap stack vocabulary. Switching requires an explicit stack name
-// ("Bing aerial", "road map", "OSM", "Google 3D") — any "satellite(s)"
+// ("Bing aerial", "road map", "Dark", "Google 3D") — any "satellite(s)"
 // phrasing ALWAYS means the satellites DATA LAYER, never a basemap; the
 // session instructions carry the decision table.
 //
-// Road phrasings resolve to OSM, the one shipped road basemap. Every alias
-// must name a live `MAP_STACKS` id: an alias for a retired stack would resolve
-// cleanly and then fail at the controller with "Unknown map stack", which reads
-// to the operator as a broken command rather than a retired source.
+// Road phrasings resolve to the osm stack (id `osm`, branded "Dark" — a
+// CartoDB Dark Matter road basemap). Every alias must name a live
+// `MAP_STACKS` id: an alias for a retired stack would resolve cleanly and
+// then fail at the controller with "Unknown map stack", which reads to the
+// operator as a broken command rather than a retired source.
 const STACK_ALIASES = new Map([
   ['photoreal', 'photoreal'],
   ['google 3d', 'photoreal'],
@@ -213,6 +214,8 @@ const STACK_ALIASES = new Map([
   ['esri imagery', 'esri-imagery'],
   ['esri satellite', 'esri-imagery'],
   ['osm', 'osm'],
+  ['dark', 'osm'],
+  ['dark map', 'osm'],
   ['openstreetmap', 'osm'],
   ['open street map', 'osm'],
   ['road', 'osm'],

@@ -216,16 +216,16 @@ const MUTATIONS = [
   },
 
   {
-    defect: 'the DISPLAY rail opens on first run again, stealing the impression',
+    defect: 'the DISPLAY rail collapses on first run, hiding the overlay toggles (incl. Radar)',
     file: 'ui',
-    from: "if (panelId === 'pp-toggles' && stored === null) collapsed = true;",
-    to: "if (panelId === 'pp-toggles' && stored === null) collapsed = false;",
+    from: "if (panelId === 'pp-toggles' && stored === null) collapsed = false;",
+    to: "if (panelId === 'pp-toggles' && stored === null) collapsed = true;",
   },
   {
     defect: 'the first-run rail default overrides a stored user choice',
     file: 'ui',
-    from: "if (panelId === 'pp-toggles' && stored === null) collapsed = true;",
-    to: "if (panelId === 'pp-toggles') collapsed = true;",
+    from: "if (panelId === 'pp-toggles' && stored === null) collapsed = false;",
+    to: "if (panelId === 'pp-toggles') collapsed = false;",
   },
 
   // ── Mission definitions ────────────────────────────────────────────────────
