@@ -1876,6 +1876,12 @@ function tomtomProxy() {
   const DEFAULT_DAILY_BUDGET = 40000;
   const MEM_MAX_ENTRIES = 256;
   const UPSTREAM_TIMEOUT_MS = 15000;
+  // Disk cache caps: the memory cache is bounded (MEM_MAX_ENTRIES) but disk
+  // writes were unbounded — at the 40k/day budget a few days of use grows
+  // gigabytes. Enforce count and bytes, whichever trips first, and delete the
+  // oldest tiles (by mtime) on insert past the cap.
+  const DISK_MAX_TILES = 2048;
+  const DISK_MAX_BYTES = 256 * 1024 * 1024;
 
   /** @type {Map<string, {at:number, buf:Buffer}>} tile key `z/x/y` -> cached tile (kept past TTL for serve-stale). */
   const mem = new Map();
@@ -1925,6 +1931,9 @@ function tomtomProxy() {
 
   const tilePath = (key) => path.join(CACHE_DIR, `flow-${key.replaceAll('/', '-')}.pbf`);
 
+  /** Only `flow-*.pbf` files are tiles — budget.json in the same dir is not. */
+  const isTileFile = (name) => /^flow-.*\.pbf$/.test(name);
+
   /** Disk-cache read; tile age comes from the file's mtime. */
   async function readDiskTile(key) {
     try {
@@ -1936,10 +1945,38 @@ function tomtomProxy() {
     } catch { return null; }
   }
 
+  /** Enforce the disk cap: delete oldest tiles (by mtime) past count/bytes. */
+  async function pruneDiskTiles() {
+    let names;
+    try {
+      names = (await fsp.readdir(CACHE_DIR)).filter(isTileFile);
+    } catch { return; }
+    if (names.length === 0) return;
+    const tiles = (await Promise.all(names.map(async (name) => {
+      try {
+        const stat = await fsp.stat(path.join(CACHE_DIR, name));
+        return { name, mtimeMs: stat.mtimeMs, size: stat.size };
+      } catch { return null; } // file vanished mid-scan
+    }))).filter(Boolean);
+    let totalBytes = tiles.reduce((sum, tile) => sum + tile.size, 0);
+    tiles.sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
+    let deleted = 0;
+    while (deleted < tiles.length
+      && (tiles.length - deleted > DISK_MAX_TILES || totalBytes > DISK_MAX_BYTES)) {
+      const victim = tiles[deleted];
+      totalBytes -= victim.size;
+      deleted += 1;
+      try {
+        await fsp.unlink(path.join(CACHE_DIR, victim.name));
+      } catch { /* already gone */ }
+    }
+  }
+
   async function writeDiskTile(key, buf) {
     try {
       await fsp.mkdir(CACHE_DIR, { recursive: true });
       await fsp.writeFile(tilePath(key), buf);
+      await pruneDiskTiles();
     } catch (err) {
       console.warn(`[tomtom-proxy] tile cache write failed for ${key}:`, err?.message || err);
     }
