@@ -1,6 +1,6 @@
 # Devil's Eye Current State
 
-Updated: August 24, 2026
+Updated: September 7, 2026
 
 ## Installations and map-source guidance
 
@@ -20,6 +20,56 @@ Updated: August 24, 2026
   map-source tooltips and toasts share provider guidance: missing credentials
   point to Provider Settings, while a configured Google 3D route that fails
   points to restrictions, quota, or connectivity. These hints do not expose keys.
+
+> **2026-09-07 — "Installer for dummies" (`installer/`).** A no-terminal
+> onboarding path that checks/downloads missing dependencies (Node required;
+> Python optional, report-only, used solely to regenerate the Axis camera
+> catalog), pulls the app source from `R0U5/Devils-Eye` (currently **private**,
+> so a GitHub fine-grained token is accepted; it lives only in installer memory
+> and is never persisted — `manifest.json`'s `repoIsPrivate` is the single flip
+> when it goes public), runs `npm install` + `npm run build`, writes a
+> double-click `Devil's Eye` launcher and desktop shortcut, and starts the app.
+> Build/flow facts:
+> - **Distribution:** `scripts/installer/build.mjs` emits
+>   `dist-installer/Devils-Eye-Setup-<version>.zip` + `SHA256SUMS.txt` +
+>   `installer.json` (no secrets anywhere). The zip unpacks to a folder whose
+>   `bootstrap.cmd` (Windows) / `bootstrap.sh` (mac/Linux) / `ensure-runtime.ps1`
+>   are the zero-prerequisite entry points — they provision Node if absent and
+>   `Start-Process`/`exec` the installer server, polling `/api/health` before
+>   opening the browser.
+> - **Server model (`installer/server.mjs`):** loopback-only (`127.0.0.1`,
+>   default installer port **8787**), with Host/Origin/Referer admission gates
+>   (`admitInstallerRequest`) so a cross-origin page or spoofed Host cannot drive
+>   installs. UI is static files served from the installer dir. `/api/plan`
+>   (pre-flight: Node/Python detection, source reachability — HEAD to the GitHub
+>   archive, classified `ok | need-token | error`), `/api/install` (NDJSON event
+>   stream: `step`/`progress`/`log`/`done`/`error`/`end`, AbortController on
+>   client disconnect), `/api/launch`. Ports: installer **8787**, app **4173**.
+> - **Pure-JS zip (`installer/zipcode.mjs`)** — zero deps: store + deflate
+>   (zlib), CRC-32 verify on read, ZIP64 central-dir support, zip-slip /
+>   encryption / Deflate64 rejection. Used for BOTH the source archive and the
+>   (optional) bundled Node runtime. Node dist resolves from
+>   `nodejs.org/dist/v<version>/SHASUMS256.txt` and is verified before unpack;
+>   recommended runtime **24.14.0**, min **20.0.0**.
+> - **Runtime policy (`installer/runner.mjs`):** install dirs default per-OS
+>   (`%LOCALAPPDATA%\DevilsEye` / `~/Library/Application Support/DevilsEye` /
+>   `~/.local/share/devils-eye`). `bundleNode` off = use system Node; on (default)
+>   = download + verify a matching archive, UNLESS the installer itself was
+>   started by a bootstrap — then `GEV_BOOTSTRAP_NODE` is the marker and that
+>   runtime is **reused** (`runtime/node`) instead of downloaded twice. npm
+>   always runs through `node <npm-cli.js>`. Desktop shortcut is best-effort and
+>   never fails the install. `.gev-install.json` records install metadata and is
+>   read by the generated `launcher-app.mjs`, which starts `vite preview`/dev and
+>   opens the browser.
+> - **Gates:** `npm run installer:test` (zipcode/core/runner/server suites, 42
+>   tests, hermetic — fixture HTTP server + generated repo archive + a copied
+>   real `node.exe` fake dist), `scripts/installer/verify.mjs` (post-build zip
+>   integrity + no-secret scan). `.github/workflows/installer.yml` runs the suite
+>   on ubuntu + windows and publishes the zip to a GitHub Release on `installer-v*`
+>   tags or manual dispatch (prerelease `installer-canary-*`).
+> - **Do not re-introduce:** compiled `.exe` packaging (rejected; native
+>   bootstrap + documented `pkg`/nexe path instead), auto-installing Python
+>   (report-only by decision), any token at rest.
 
 > **2026-08-23 — first-run mission launcher** (`src/firstRunExperience.js`,
 > `#first-run-launcher`, styles at the tail of `style.css`). After startup

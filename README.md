@@ -116,6 +116,29 @@ Open **`http://localhost:4173`**.
 Requires **Node.js ≥ 18** (tested through 22–26). The setup doctor warns about
 end-of-life Node versions.
 
+### Installer / no-terminal route
+
+Ready-to-run Disk replaces the whole terminal dance. It checks Node.js (and
+bundles it if missing), downloads the latest app source automatically, runs
+`npm install` and the production build, drops in a double-click **Devil's Eye**
+launcher and desktop shortcut, and starts the app.
+
+- **Windows:** grab the `Devils-Eye-Setup-*.zip` from
+  [Releases](https://github.com/R0U5/Devils-Eye/releases), extract it, and
+  double-click `bootstrap.cmd`. No prerequisites — it provisions Node itself.
+- **macOS / Linux:** run `./bootstrap.sh` inside the same zip.
+- **Private-repo heads-up:** while `R0U5/Devils-Eye` is private you must paste a
+  GitHub fine-grained token (read-only, `Contents` scope) into the installer UI
+  once. The token lives only in the installer's memory — it is never written to
+  disk. Once the repo goes public, no token is ever needed.
+- **Builder/dev:** `npm run installer:dev` starts the installer locally
+  (default `http://localhost:8787`); `npm run installer:test` runs the suite;
+  `npm run installer:build` produces the signed-summed zip under
+  `dist-installer/`. `manifest.json` flags `repoIsPrivate` and the target repo.
+- **Optional side quest:** the app regenerates its bundled Axis camera catalog
+  offline with Python + the `requests` library; the installer just reports
+  whether Python is present. Nothing else needs it.
+
 ### Pinokio
 
 The upstream has Pinokio packaging; this fork doesn't maintain its own
