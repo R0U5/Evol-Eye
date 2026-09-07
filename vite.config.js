@@ -2313,6 +2313,13 @@ function terrainHeightsProxy() {
   const CACHE_PATH = path.join(CACHE_DIR, 'terrain-heights.json');
   const UPSTREAM_CHUNK = 256;
   const MAX_POINTS = 2000;
+  // Bounded in-memory cache: terrain doesn't move, so a modest LRU cap keeps
+  // the hot working set without letting any client grow memory or the on-disk
+  // JSON without bound (mirrors the tomtomProxy MEM_MAX_ENTRIES pattern).
+  const MEM_MAX_ENTRIES = 256;
+  // Skip loading a cache file that has grown pathologically large (e.g. a
+  // pre-eviction file from an older build) instead of parsing it into memory.
+  const MAX_CACHE_FILE_BYTES = 8 * 1024 * 1024;
 
   /** @type {Map<string, {at:number, result:object}>} keyed by canonical 5dp lon/lat. */
   const mem = new Map();
@@ -2321,11 +2328,45 @@ function terrainHeightsProxy() {
   let diskLoaded = false;
   let diskDirty = false;
 
+  /** LRU-ish insert (Map preserves insertion order; evict the oldest). */
+  function memSet(key, entry) {
+    if (!mem.has(key) && mem.size >= MEM_MAX_ENTRIES) {
+      const oldest = mem.keys().next().value;
+      mem.delete(oldest);
+    }
+    mem.set(key, entry);
+  }
+
+  /** Drop entries older than TTL (and any that no longer hold a valid result).
+   * @returns {boolean} true if any entry was removed (caller should persist). */
+  function pruneExpired(now = Date.now()) {
+    let removed = false;
+    for (const [key, entry] of mem) {
+      if (!entry || !validTerrainResult(entry.result) || now - entry.at >= TTL_MS) {
+        mem.delete(key);
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
+  // resolveTerrainHeightRequest writes new entries via cache.set(); route those
+  // through memSet so the LRU cap is enforced on every insert, not just loads.
+  const boundedCache = {
+    get: (key) => mem.get(key),
+    set: (key, entry) => { memSet(key, entry); },
+  };
+
   /** Load the on-disk cache into memory once, lazily (first request only). */
   async function loadDiskOnce() {
     if (diskLoaded) return;
     diskLoaded = true;
     try {
+      const stat = await fsp.stat(CACHE_PATH);
+      if (stat.size > MAX_CACHE_FILE_BYTES) {
+        console.warn(`[terrain-heights-proxy] skipping oversized cache file (${stat.size} bytes > ${MAX_CACHE_FILE_BYTES})`);
+        return;
+      }
       const parsed = JSON.parse(await fsp.readFile(CACHE_PATH, 'utf8'));
       const pointEntries = parsed?.version === 2 && parsed.points && typeof parsed.points === 'object'
         ? parsed.points
@@ -2333,7 +2374,7 @@ function terrainHeightsProxy() {
       if (pointEntries) {
         for (const [key, entry] of Object.entries(pointEntries)) {
           if (entry && Number.isFinite(entry.at) && validTerrainResult(entry.result)) {
-            mem.set(key, entry);
+            memSet(key, entry);
           }
         }
       } else if (parsed && typeof parsed === 'object') {
@@ -2347,15 +2388,18 @@ function terrainHeightsProxy() {
             if (!validTerrainResult(result)) continue;
             const key = terrainPointKey(points[i]);
             const existing = mem.get(key);
-            if (!existing || entry.at > existing.at) mem.set(key, { at: entry.at, result });
+            if (!existing || entry.at > existing.at) memSet(key, { at: entry.at, result });
           }
         }
         diskDirty = mem.size > 0;
       }
     } catch { /* no disk cache yet */ }
     // Periodic flush, same shape as adsbdbProxy: coalesce writes instead of
-    // hitting disk on every request.
+    // hitting disk on every request. Prune TTL-expired entries first so the
+    // on-disk file never grows past the live working set, and skip the write
+    // entirely when nothing changed (no dirty entries).
     setInterval(async () => {
+      if (pruneExpired()) diskDirty = true;
       if (!diskDirty) return;
       diskDirty = false;
       try {
@@ -2428,7 +2472,7 @@ function terrainHeightsProxy() {
 
           const outcome = await resolveTerrainHeightRequest({
             points,
-            cache: mem,
+            cache: boundedCache,
             fetchMissing: fetchMissingSingleFlight,
             ttlMs: TTL_MS,
           });
