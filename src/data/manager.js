@@ -294,6 +294,10 @@ export class DataLayerManager {
       || entry.refreshing
       || signal?.aborted
     ) return false;
+    // Skip while the tab is hidden — the Cesium render loop is paused, so
+    // polling APIs (OpenSky, CelesTrak, etc.) wastes quota for invisible
+    // updates. The next visible tick resumes normal cadence.
+    if (typeof document !== 'undefined' && document.hidden) return false;
     const refreshEpoch = ++entry.refreshEpoch;
     entry.refreshing = true;
     this._refreshTogglePanel();

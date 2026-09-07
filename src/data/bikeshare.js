@@ -477,6 +477,8 @@ let _enabled = false;
 let _cameraDebounceTimer = null;
 /** Whether the camera.changed listener is currently attached. */
 let _cameraChangedAttached = false;
+/** Saved viewer.camera.percentageChanged value, restored on disable(). */
+let _prevPercentageChanged = null;
 /** Hysteresis flag for altitude-based activation. */
 let _altitudeGateEnabled = false;
 /** Monotonic generation counter; incremented on each proximity check to cancel stale work. */
@@ -1519,7 +1521,8 @@ const bikeshareLayer = {
 
     if (!_cameraChangedAttached) {
       viewer.camera.changed.addEventListener(onCameraChanged);
-      viewer.camera.percentageChanged = Math.min(viewer.camera.percentageChanged || 1, 0.05);
+      _prevPercentageChanged = viewer.camera.percentageChanged;
+      viewer.camera.percentageChanged = Math.min(_prevPercentageChanged || 1, 0.05);
       _cameraChangedAttached = true;
     }
 
@@ -1551,6 +1554,12 @@ const bikeshareLayer = {
     if (_cameraChangedAttached) {
       viewer.camera.changed.removeEventListener(onCameraChanged);
       _cameraChangedAttached = false;
+    }
+    // Restore the camera's global percentageChanged so other layers/listeners
+    // receive the original threshold (traffic.js saves/restores the same way).
+    if (_prevPercentageChanged !== null) {
+      viewer.camera.percentageChanged = _prevPercentageChanged;
+      _prevPercentageChanged = null;
     }
 
     abortAllInFlight();

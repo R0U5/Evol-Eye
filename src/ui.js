@@ -2350,6 +2350,7 @@ export class StyleManager {
     this._cctvFrameWrap = document.getElementById('cctv-frame-wrap');
     this._cctvFrameRequestToken = 0;
     this._cctvFramePreloader = null;
+    this._cctvFrameWatchdog = null;
     this._cctvSourceBadge = document.getElementById('cctv-source-badge');
     this._cctvMeta = document.getElementById('cctv-meta');
     this._cctvSummary = document.getElementById('cctv-summary');
@@ -6129,7 +6130,7 @@ export class StyleManager {
       && !this._preservePanelStateDuringLayerClear
       && !this._radioPanel.classList.contains('collapsed')
     ) {
-      this.setPanelCollapsed('radio-panel', true);
+      this.setPanelCollapsed('radio-panel', true, { persist: false });
     }
     this._scheduleRightPanelLayout();
   }
@@ -6286,6 +6287,8 @@ export class StyleManager {
   _clearCctvFrame() {
     this._cctvFrameRequestToken += 1;
     this._cctvFramePreloader = null;
+    clearTimeout(this._cctvFrameWatchdog);
+    this._cctvFrameWatchdog = null;
     if (this._cctvFrame) {
       this._cctvFrame.classList.remove('active');
       this._cctvFrame.removeAttribute('src');
@@ -6342,6 +6345,25 @@ export class StyleManager {
     preloader.onload = () => this._settleCctvFrame(token, src, true);
     preloader.onerror = () => this._settleCctvFrame(token, src, false);
     preloader.src = src;
+
+    // Stall watchdog: if the preloader neither loads nor errors within 15 s
+    // (a flaky HTTP camera that accepts the TCP connection then stalls), clear
+    // the loading state so the 10 s refresh cadence isn't dead during that
+    // window. Without this a stalled image freezes the preview indefinitely.
+    clearTimeout(this._cctvFrameWatchdog);
+    this._cctvFrameWatchdog = setTimeout(() => {
+      if (token !== this._cctvFrameRequestToken) return;
+      if (this._cctvFramePreloader === preloader) {
+        this._cctvFramePreloader = null;
+        this._cctvFrame.dataset.loading = '';
+        this._cctvFrame.dataset.error = 'true';
+        this._cctvFrameWrap?.classList.remove('loading');
+        this._syncCctvSourceBadge(
+          this._cctvState?.activeCamera,
+          !!this._cctvState?.enabled && !!this._dataManager?.isEnabled('cctv')
+        );
+      }
+    }, 15000);
   }
 
   /**
@@ -6354,6 +6376,7 @@ export class StyleManager {
    */
   _settleCctvFrame(token, src, ok) {
     if (!this._cctvFrame || token !== this._cctvFrameRequestToken) return;
+    clearTimeout(this._cctvFrameWatchdog);
     this._cctvFramePreloader = null;
     this._cctvFrame.dataset.loading = '';
     this._cctvFrameWrap?.classList.remove('loading');
@@ -9082,7 +9105,9 @@ export class StyleManager {
 
     // Update button UI
     document.querySelectorAll('.style-btn').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.style === styleName);
+      const isActive = btn.dataset.style === styleName;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-pressed', String(isActive));
     });
 
     // Update style indicator
@@ -10361,6 +10386,19 @@ export class StyleManager {
     destroyTrackedReadout();
     destroyDetection();
     destroyWorldOverlay();
+    // Clear any timers that were left running by inline closures (the
+    // _init* paths add them ad-hoc; without this an HMR/dispose→init cycle
+    // leaves them firing into a torn-down DOM).
+    clearInterval(this._cctvSummaryTypingTimer);
+    this._cctvSummaryTypingTimer = null;
+    clearTimeout(this._cctvChipHideTimer);
+    this._cctvChipHideTimer = null;
+    clearTimeout(this._toastTimer);
+    this._toastTimer = null;
+    clearTimeout(this._trafficTransitionTimer);
+    this._trafficTransitionTimer = null;
+    clearTimeout(this._cctvFrameWatchdog);
+    this._cctvFrameWatchdog = null;
     // Clear transitions
     this.transitions.clear();
   }
