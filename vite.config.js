@@ -529,6 +529,31 @@ function googleRateLimiter() {
   return _googleRateLimiter;
 }
 
+/** Default per-IP cap for /api/openai/hud-summary when the env var is unset (M11). */
+const HUD_SUMMARY_DEFAULT_RATE_LIMIT_PER_MIN = 25;
+let _openAiHudSummaryRateLimiter; // undefined = not built yet; fn = active limiter
+/**
+ * Rate limiter for /api/openai/hud-summary. DEFAULT-ON: when
+ * GEV_RATELIMIT_OPENAI_PER_MIN is unset, `0`, or non-numeric, this route still
+ * gets a sane 25/min per-IP cap instead of unlimited — the HUD summary is a
+ * paid OpenAI call per request, and the client polls it every 15 s. When the
+ * env var IS set, the route shares the same limiter as /api/realtime/token
+ * (unchanged behavior for the opt-in var).
+ */
+function openAiHudSummaryRateLimiter() {
+  if (_openAiHudSummaryRateLimiter === undefined) {
+    const configured = Number(process.env.GEV_RATELIMIT_OPENAI_PER_MIN);
+    _openAiHudSummaryRateLimiter = Number.isFinite(configured) && configured > 0
+      ? openAiRateLimiter()
+      : makeRateLimiter({
+          windowMs: 60_000,
+          max: HUD_SUMMARY_DEFAULT_RATE_LIMIT_PER_MIN,
+          globalMax: HUD_SUMMARY_DEFAULT_RATE_LIMIT_PER_MIN * 20,
+        });
+  }
+  return _openAiHudSummaryRateLimiter;
+}
+
 /**
  * @private Test-only: drop the lazily-built rate-limiter cache so a test can
  * rebuild `openAiRateLimiter()`/`googleRateLimiter()` against its own env.
@@ -537,6 +562,7 @@ function googleRateLimiter() {
 export function resetRateLimiterCacheForTests() {
   _openAiRateLimiter = undefined;
   _googleRateLimiter = undefined;
+  _openAiHudSummaryRateLimiter = undefined;
 }
 
 /**
@@ -5618,6 +5644,16 @@ export function openAiRealtimeProxy() {
         return;
       }
 
+      // Host-header validation (same helper as /api/realtime/token): tunnel and
+      // DNS-rebinding traffic carries a foreign Host even over a loopback
+      // socket, so a local socket alone is not proof of a local caller.
+      if (!isLocalHostRequest(req)) {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'HUD summary endpoint answers only local hostnames' }));
+        return;
+      }
+
       const provider = hudSummaryProvider(process.env);
       const keyless = keylessHudSummaryResponse({
         openAiKey: process.env.OPENAI_API_KEY,
@@ -5632,10 +5668,12 @@ export function openAiRealtimeProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN). Keyless HUD
-      // fallback has no provider cost and resolves above without consuming a
-      // paid-endpoint quota slot.
-      if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
+      // Per-IP throttle for the HUD summary. DEFAULT-ON (M11): when
+      // GEV_RATELIMIT_OPENAI_PER_MIN is unset this route still gets a 25/min
+      // cap instead of unlimited — every request is a paid provider call and
+      // the client polls every 15 s. Keyless HUD fallback has no provider cost
+      // and resolves above without consuming a quota slot.
+      if (!enforceOptInRateLimit(openAiHudSummaryRateLimiter(), req, res)) return;
 
       try {
         const body = await readRequestBody(req, 64 * 1024);
