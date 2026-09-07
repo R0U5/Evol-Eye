@@ -312,8 +312,8 @@ export function measureOverlayEntry(ctx, entry, out = {}) {
     out.padBottom = Math.max(0, Number(entry?.thumbnailPadBottom) || 0);
     out.titleGap = Math.max(0, Number(entry?.thumbnailTitleGap) || 0);
     out.titleH = Math.max(0, Number(entry?.thumbnailTitleHeight) || out.titleH);
-    out.thumbW = Math.max(1, Number(entry?.thumbnailWidth) || 96);
-    out.thumbH = Math.max(1, Number(entry?.thumbnailHeight) || 54);
+    out.thumbW = Math.max(1, Number(entry?.thumbnailWidth) || 115);
+    out.thumbH = Math.max(1, Number(entry?.thumbnailHeight) || 65);
     out.w = out.thumbW + out.padX * 2;
     out.h = out.padY + out.thumbH + out.titleGap + out.titleH + out.padBottom;
   } else {
@@ -621,8 +621,8 @@ export function paintThumbnail(ctx, entry, placement, alpha = 1) {
   const { x, y, w, h } = placement.rect;
   const padX = Number.isFinite(layout.padX) ? layout.padX : 4;
   const padY = Number.isFinite(layout.padY) ? layout.padY : 4;
-  const thumbW = layout.thumbW || Number(entry.thumbnailWidth) || 96;
-  const thumbH = layout.thumbH || Number(entry.thumbnailHeight) || 54;
+  const thumbW = layout.thumbW || Number(entry.thumbnailWidth) || 115;
+  const thumbH = layout.thumbH || Number(entry.thumbnailHeight) || 65;
   const titleH = Number.isFinite(layout.titleH) ? layout.titleH : 13;
   const image = entry.image?.frame ?? entry.image;
   ctx.save();

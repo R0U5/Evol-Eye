@@ -347,39 +347,52 @@ export const CANCELLED_SEARCH = Object.freeze({ cancelled: true });
  * default; precise landmarks/buildings use close landmark framing.
  */
 export async function searchAndFlyTo(viewer, query, options = {}) {
-  const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) throw new Error('No Google Maps API key available for geocoding');
+  const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env?.GOOGLE_MAPS_API_KEY;
 
   const beforeFly = typeof options.beforeFly === 'function' ? options.beforeFly : null;
   const mayFly = () => beforeFly === null || beforeFly() !== false;
 
-  // Viewport-biased geocode — the same bias annotationResolver's geocodePlace uses:
-  // "Sixth Street" spoken over Austin must prefer the Sixth Street on screen, not a
-  // same-named road in another city (or the wrong end of town — the W 6th vs E 6th bug).
-  let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
-  const bias = viewportBias(viewer);
-  if (bias) url += `&bounds=${bias}`;
-  const response = await fetch(url);
-  const data = await response.json();
+  // Viewport-biased Google geocode — the same bias annotationResolver's geocodePlace
+  // uses: "Sixth Street" spoken over Austin must prefer the Sixth Street on screen,
+  // not a same-named road in another city (or the wrong end of town — the W 6th vs
+  // E 6th bug). Any failed/declined Google call falls through to the keyless
+  // Nominatim path below, so a default checkout with no (or unenabled) Google APIs
+  // still turns the search bar into a working address finder.
+  let geocode = null;
+  if (apiKey) {
+    try {
+      geocode = await googleGeocode(query, apiKey, viewportBias(viewer));
+    } catch {
+      geocode = null;
+    }
+  }
+  let viaNominatim = false;
+  if (!geocode) {
+    geocode = await nominatimSearch(query, viewer);
+    viaNominatim = geocode !== null;
+  }
 
-  const result = (data.status === 'OK' && data.results?.length) ? data.results[0] : null;
-  let lat = result?.geometry.location.lat;
-  let lng = result?.geometry.location.lng;
-  let label = result ? result.formatted_address : null;
-  let types = result?.types || [];
-  let viewport = result ? (result.geometry.bounds || result.geometry.viewport) : null;
+  let lat = geocode?.lat;
+  let lng = geocode?.lng;
+  let label = geocode?.label ?? null;
+  let types = geocode?.types || [];
+  let viewport = geocode?.viewport || null;
 
   // Places-near-view recovery (annotationResolver's twin): a missed geocode, or one
   // that landed implausibly far from the view centre, snaps back to a view-biased
   // Places hit within the trust bound — "the Capitol" means the one on screen.
-  const recovered = await placesNearViewRecovery(viewer, query, result ? { lat, lon: lng } : null);
+  // A Nominatim hit is already bounded to the camera box, so it skips the recovery
+  // (which would otherwise spend an unenabled-Places 403 round trip for nothing).
+  const recovered = !viaNominatim
+    ? await placesNearViewRecovery(viewer, query, geocode ? { lat, lon: lng } : null)
+    : null;
   if (recovered) {
     lat = recovered.lat;
     lng = recovered.lon;
     label = recovered.label || label || query;
     types = recovered.types || [];
     viewport = placesViewportToBounds(recovered.viewport) || viewport;
-  } else if (!result) {
+  } else if (!geocode) {
     return null;
   }
 
@@ -474,6 +487,123 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
       ? 'explicit-range'
       : (options.forceClose ? navigationMode.replace('-overview', '-close') : navigationMode),
     rangeM: Math.round(flight.range),
+  };
+}
+
+/**
+ * Google Geocoding API forward geocode — the searchbar primary. Returns null for
+ * every non-OK outcome (bad request, quota/balancing, an API not enabled on the
+ * key's Cloud project, zero results), so the caller can drop to the keyless
+ * Nominatim path instead of surfacing "no addresses found".
+ * @param {string} query
+ * @param {string} apiKey
+ * @param {string|null} bounds Google `swLat,swLng|neLat,neLng` viewport bias, if any.
+ * @returns {Promise<{lat:number,lng:number,label:string|null,types:Array<string>,viewport:object|null}|null>}
+ */
+async function googleGeocode(query, apiKey, bounds) {
+  let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
+  if (bounds) url += `&bounds=${bounds}`;
+  const response = await fetch(url);
+  const data = await response.json();
+  if (data.status !== 'OK' || !data.results?.length) return null;
+  const result = data.results[0];
+  const lat = result.geometry?.location?.lat;
+  const lng = result.geometry?.location?.lng;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    lat,
+    lng,
+    label: result.formatted_address || null,
+    types: Array.isArray(result.types) ? result.types : [],
+    viewport: result.geometry?.bounds || result.geometry?.viewport || null,
+  };
+}
+
+/**
+ * Nominatim viewbox string for a forward geocode biased to the present camera —
+ * Nominatim's order is LEFT,TOP,RIGHT,BOTTOM (westLon,northLat,eastLon,southLat),
+ * the longitude-reversed mirror of the `swLat,swLng|neLat,neLng` Google bias.
+ */
+function nominatimViewbox(viewer) {
+  try {
+    const rect = viewer?.camera?.computeViewRectangle?.();
+    if (!rect) return null;
+    const west = Cesium.Math.toDegrees(rect.west);
+    const north = Cesium.Math.toDegrees(rect.north);
+    const east = Cesium.Math.toDegrees(rect.east);
+    const south = Cesium.Math.toDegrees(rect.south);
+    if (![west, north, east, south].every(Number.isFinite)) return null;
+    return `${west.toFixed(4)},${north.toFixed(4)},${east.toFixed(4)},${south.toFixed(4)}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Translate an OSM class/type pair into the Google geocode `types` vocabulary
+ * geocodeNavigationMode reads, so a Nominatim hit frames like its Google twin
+ * (streets → street-corridor, cities → city-overview, countries → region-overview,
+ * everything else → the precise-place default).
+ */
+function nominatimGoogleTypes(result) {
+  const cls = result.class;
+  const type = String(result.type || '');
+  const address = result.address || {};
+  if (cls === 'highway') return ['route'];
+  if (cls === 'waterway' || cls === 'natural'
+      || type === 'island' || type === 'islet' || type === 'archipelago') {
+    return ['natural_feature'];
+  }
+  const administrative = cls === 'place' || cls === 'boundary' || cls === 'population';
+  if (administrative) {
+    if (type === 'country' || address.country_code) return ['country'];
+    if (type === 'county' || address.county) return ['administrative_area_level_2'];
+    if (type === 'state' || type === 'region' || type === 'province' || address.state) {
+      return ['administrative_area_level_1'];
+    }
+    if (type === 'suburb' || type === 'quarter'
+        || type === 'neighbourhood' || type === 'neighborhood') {
+      return ['sublocality'];
+    }
+    return ['locality'];
+  }
+  return ['premise'];
+}
+
+/**
+ * Keyless Nominatim fallback geocode (a fair-use OSM provider), proxied through the
+ * dev server so the public endpoint is never hit with a raw browser User-Agent.
+ * Returns the same Google-shaped contract searchAndFlyTo consumes, or null when
+ * nothing resolves.
+ */
+async function nominatimSearch(query, viewer) {
+  const params = new URLSearchParams({ q: query, format: 'jsonv2', addressdetails: '1', limit: '1' });
+  const viewbox = nominatimViewbox(viewer);
+  if (viewbox) {
+    params.set('viewbox', viewbox);
+    params.set('bounded', '1');
+  }
+  const response = await fetch(`/api/geocode/nominatim?${params.toString()}`);
+  if (!response.ok) return null;
+  const body = await response.json();
+  if (body.status !== 'OK' || !body.results?.length) return null;
+  const result = body.results[0];
+  const lat = Number(result.lat);
+  const lng = Number(result.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  let viewport = null;
+  if (Array.isArray(result.boundingbox) && result.boundingbox.length === 4) {
+    const [south, north, west, east] = result.boundingbox.map(Number);
+    if ([south, north, west, east].every(Number.isFinite)) {
+      viewport = { southwest: { lat: south, lng: west }, northeast: { lat: north, lng: east } };
+    }
+  }
+  return {
+    lat,
+    lng,
+    label: result.display_name || null,
+    types: nominatimGoogleTypes(result),
+    viewport,
   };
 }
 

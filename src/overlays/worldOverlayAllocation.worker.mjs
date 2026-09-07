@@ -586,7 +586,7 @@ function buildPhase4CctvWorkload(count) {
       rate: 0.38 + (index % 5) * 0.07,
     });
     const slot = createFrameSlot();
-    slot.frame = { width: 192, height: 108 };
+    slot.frame = { width: 230, height: 130 };
     slot.stamp = 1;
     const active = index === CCTV_AMBIENT_CARD_MAX;
     const entry = createCctvThumbnailOverlayEntry({

@@ -9,9 +9,9 @@
  *   holds a base pose, a calibration offset, computed intrinsics/extrinsics,
  *   and an anchor position on the globe.
  *
- * - Coverage geometry (v2): a true pitched frustum pyramid per camera — 4
- *   corner rays from the mount to the far-plane corners plus the closed
- *   far-plane rectangle (5 polylines), rendered as Cesium entities with
+ * - Coverage geometry (v2): a true pitched frustum pyramid per camera — a
+ *   center axis line from the mount to the far-plane center plus the closed
+ *   far-plane rectangle (2 polylines), rendered as Cesium entities with
  *   neighbor-limited visibility. All geometry is pure pose math
  *   (computeFrustumGeometry) — zero steady-state scene queries.
  *
@@ -941,7 +941,7 @@ export function computeFrustumGeometry(camera, groundAltM, rangeOverrideM = null
   // never buries the plane's anchor — then derive the corners RIGIDLY from the
   // lifted center. Clamping each corner independently flattened the wireframe
   // into a ground-hugging fan while the rigid plane kept its height (owner
-  // field test 2026-07-04): the corner rays must always terminate exactly on
+  // field test 2026-07-04): the cap rectangle must always terminate exactly on
   // the monitor plane's corners. The bottom pair may dip below ground; the 3D
   // tiles occlude that portion, exactly as they do for the plane itself.
   const minAlt = ground + FRUSTUM_GROUND_CLEARANCE_M;
@@ -1579,8 +1579,9 @@ function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed
 
 /**
  * Re-derives the monitor plane entity's placement (position, orientation,
- * dimensions) + label from the record's current frustum geometry, so the plane
- * always caps the wireframe exactly (corner rays terminate on its corners).
+ * dimensions) + label from the record's current frustum geometry, so the
+ * far-cap rectangle always welds the plane exactly (its corners terminate on
+ * the plane corners).
  * No-op when the record has no plane runtime (idle neighbors have no plane).
  * @param {Object} record - Camera record.
  */
@@ -2126,8 +2127,8 @@ function stopProjectionLoop() {
 
 /**
  * Recomputes the pure frustum geometry from the camera pose + the given ground
- * altitude and writes it into the scene: billboard position, the 5 wireframe
- * polylines (4 corner rays + closed far-plane rectangle), and the monitor
+ * altitude and writes it into the scene: billboard position, the 2 wireframe
+ * polylines (center axis line + closed far-plane rectangle), and the monitor
  * plane placement. This is the ONLY place v2 geometry is written — called on
  * slider input / save / activation / the one-shot ground snap, never per frame.
  * @param {Object} record - Camera record.
@@ -2143,12 +2144,9 @@ function applyFrustumGeometry(record, groundAltM) {
   if (record.billboard) {
     record.billboard.position = positions.mount;
   }
-  if (record.coverageEntities?.length >= 5) {
-    record.coverageEntities[0].polyline.positions = [positions.mount, positions.tl];
-    record.coverageEntities[1].polyline.positions = [positions.mount, positions.tr];
-    record.coverageEntities[2].polyline.positions = [positions.mount, positions.br];
-    record.coverageEntities[3].polyline.positions = [positions.mount, positions.bl];
-    record.coverageEntities[4].polyline.positions = [
+  if (record.coverageEntities?.length >= 2) {
+    record.coverageEntities[0].polyline.positions = [positions.mount, positions.capCenter];
+    record.coverageEntities[1].polyline.positions = [
       positions.tl, positions.tr, positions.br, positions.bl, positions.tl,
     ];
   }
@@ -3887,12 +3885,14 @@ export function cctvEmptyClickDeselects(picked, {
 }
 
 /**
- * Creates the five Cesium polyline entities that visualize a camera's pitched
- * frustum: 4 corner rays (mount → far-plane corner) + the closed far-plane
- * rectangle. Entity ids stay in the `cctv-<id>-<role>` scheme (pick-owner
- * regex depends on it): roles ray-tl / ray-tr / ray-br / ray-bl / cap.
+ * Creates the two Cesium polyline entities that visualize a camera's pitched
+ * frustum: a single center axis line (mount → far-plane center) showing where
+ * the image is projected from, plus the closed far-plane rectangle (the
+ * image border). Entity ids stay in the `cctv-<id>-<role>` scheme (pick-owner
+ * regex depends on it): roles axis / cap. The former 4 corner rays were
+ * removed — they read as a green X over the projected image.
  * @param {Object} record - Camera record.
- * @returns {Cesium.Entity[]} Array of five coverage entities.
+ * @returns {Cesium.Entity[]} Array of two coverage entities (axis, cap).
  */
 function buildCoverageEntities(record) {
   const { camera } = record;
@@ -3924,18 +3924,14 @@ function buildCoverageEntities(record) {
   });
 
   const entities = [
-    addPolyline('ray-tl', [positions.mount, positions.tl]),
-    addPolyline('ray-tr', [positions.mount, positions.tr]),
-    addPolyline('ray-br', [positions.mount, positions.br]),
-    addPolyline('ray-bl', [positions.mount, positions.bl]),
+    // Single center axis (mount → image center): the projection-origin
+    // indicator that replaced the 4 corner rays (the "green X").
+    addPolyline('axis', [positions.mount, positions.capCenter]),
     addPolyline('cap', [positions.tl, positions.tr, positions.br, positions.bl, positions.tl]),
   ];
 
   entities[0]._coverageRole = 'edge';
-  entities[1]._coverageRole = 'edge';
-  entities[2]._coverageRole = 'edge';
-  entities[3]._coverageRole = 'edge';
-  entities[4]._coverageRole = 'cap';
+  entities[1]._coverageRole = 'cap';
   return entities;
 }
 
@@ -4526,7 +4522,7 @@ const cctvLayer = {
     registerPickOwner('cctv', (pickedId) => {
       if (_recordById.has(pickedId)) return true;
       if (typeof pickedId === 'string' && pickedId.startsWith(GIZMO_ID_PREFIX)) return true;
-      const coverage = /^cctv-(.+)-(?:ray-tl|ray-tr|ray-br|ray-bl|cap|plane|plane-label)$/.exec(pickedId);
+      const coverage = /^cctv-(.+)-(?:axis|cap|plane|plane-label)$/.exec(pickedId);
       return Boolean(coverage && _recordById.has(coverage[1]));
     });
     if (!_activeCameraId && _records.length) {
