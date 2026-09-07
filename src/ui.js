@@ -2356,6 +2356,7 @@ export class StyleManager {
     this._cctvSummary = document.getElementById('cctv-summary');
     this._shareBtn = document.getElementById('share-btn');
     this._clearSelectedLayersBtn = document.getElementById('clear-selected-layers');
+    this._dataLayersToggleBtn = document.getElementById('data-layers-toggle');
     this._globalLoadingStatus = document.getElementById('global-loading-status');
     this._globalLoadingLabel = document.getElementById('global-loading-label');
     this._globalLoadingDetail = document.getElementById('global-loading-detail');
@@ -2632,6 +2633,7 @@ export class StyleManager {
     this._initShareButton();
     this._initClearSelectedLayersButton();
     this._initResetGlobeButton();
+    this._initDataLayersToggle();
     this._initHUDToggle();
     this._initModels3dToggle();
     this._applyGlobalPostDefaults();
@@ -3230,10 +3232,17 @@ export class StyleManager {
   _updateRadarButtonState() {
     const controller = this.mapStackController?._radarOverlay;
     if (!controller || !this._radarBtn) return;
-    const visible = controller.isVisible;
-    this._radarBtn.classList.toggle('active', visible);
-    this._radarBtn.setAttribute('aria-pressed', String(visible));
-    this._radarBtn.title = visible ? 'Disable RainViewer Radar Overlay' : 'Enable RainViewer Radar Overlay';
+    // Reflect the INTENDED enabled state (matches what a click sets), not just
+    // the rendered layer — so the toggle gives instant visual feedback even on
+    // the frame or two before the imagery layer finishes building.
+    const active = controller._enabled === true && controller.isVisible === true;
+    const pending = controller._enabled === true && controller.isVisible === false;
+    this._radarBtn.classList.toggle('active', active);
+    this._radarBtn.setAttribute('aria-pressed', String(active));
+    this._radarBtn.classList.toggle('pending', pending);
+    this._radarBtn.title = controller._enabled
+      ? 'Disable RainViewer Radar Overlay'
+      : 'Enable RainViewer Radar Overlay';
   }
 
   /**
@@ -3393,6 +3402,7 @@ export class StyleManager {
       if (e.key.toLowerCase() === 'v') this.toggleCleanView();
       if (e.key.toLowerCase() === 'f') {
         document.getElementById('data-panel').classList.toggle('active');
+        this._dataPanelSyncHandler?.();
       }
       if (e.key.toLowerCase() === 'd') {
         this.shareLinkManager?.claimRestoreLane?.('visual');
@@ -6750,6 +6760,13 @@ export class StyleManager {
     this._lastCctvSummaryText = nextText;
 
     clearInterval(this._cctvSummaryTypingTimer);
+    // L6: typing mutates the summary text at up to 50 Hz, and the summary sits
+    // inside the right-stack MutationObserver subtree — every tick scheduled a
+    // panel-layout pass. Disconnect the observer for the animation (a 50 Hz
+    // layout pass costs more than the DOM write), re-arming when typing ends.
+    // A mid-animation dispose is fine: teardown creates a fresh observer on the
+    // next init, and a stale one would have no targets anyway.
+    this._rightStackMutationObserver?.disconnect();
     this._cctvSummary.textContent = '';
     let idx = 0;
     this._cctvSummaryTypingTimer = setInterval(() => {
@@ -6758,6 +6775,7 @@ export class StyleManager {
         this._cctvSummary.textContent = nextText;
         clearInterval(this._cctvSummaryTypingTimer);
         this._cctvSummaryTypingTimer = null;
+        this._observeRightStackMutation();
         return;
       }
       this._cctvSummary.textContent = nextText.slice(0, idx);
@@ -6883,21 +6901,7 @@ export class StyleManager {
       this._rightStackMutationObserver = new MutationObserver(() => {
         this._scheduleRightPanelLayout();
       });
-      this._rightStackMutationObserver.observe(stack, {
-        subtree: true,
-        childList: true,
-        characterData: true,
-        attributes: true,
-        attributeFilter: ['class', 'hidden', 'data-variant'],
-      });
-      const hud = document.getElementById('intel-hud');
-      if (hud) {
-        this._rightStackMutationObserver.observe(hud, {
-          subtree: true,
-          attributes: true,
-          attributeFilter: ['class', 'hidden', 'data-variant'],
-        });
-      }
+      this._observeRightStackMutation();
     }
 
     const transitionHud = document.getElementById('intel-hud');
@@ -6911,6 +6915,46 @@ export class StyleManager {
     }
 
     this._scheduleRightPanelLayout();
+  }
+
+  /** (Re-)arm the right-stack layout observer over its watch targets. */
+  _observeRightStackMutation() {
+    const observer = this._rightStackMutationObserver;
+    if (!observer) return;
+    const stack = this._rightStack;
+    if (stack) {
+      observer.observe(stack, {
+        subtree: true,
+        childList: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['class', 'hidden', 'data-variant'],
+      });
+    }
+    const hud = document.getElementById('intel-hud');
+    if (hud) {
+      observer.observe(hud, {
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'hidden', 'data-variant'],
+      });
+    }
+  }
+
+  /**
+   * Run `fn` with the right-stack layout observer disconnected, re-arming it
+   * afterwards. A MutationObserver cannot be paused in place; disconnect +
+   * re-observe is the pause/replay equivalent.
+   */
+  _withRightStackObserverPaused(fn) {
+    const observer = this._rightStackMutationObserver;
+    if (!observer) return fn();
+    observer.disconnect();
+    try {
+      return fn();
+    } finally {
+      this._observeRightStackMutation();
+    }
   }
 
   _scheduleRightPanelLayout({ reconsiderAutoCollapse = false } = {}) {
@@ -9709,6 +9753,32 @@ export class StyleManager {
   }
 
   /**
+   * Wire the DISPLAY-group Data button: the #data-panel is invisible unless
+   * `.active` (F key only) — the button toggles the same class so the panel is
+   * reachable without the keyboard.
+   * @returns {void}
+   */
+  _initDataLayersToggle() {
+    if (!this._dataLayersToggleBtn) return;
+    const toggle = () => {
+      const panel = this._dataPanel;
+      if (!panel) return;
+      const active = !panel.classList.contains('active');
+      panel.classList.toggle('active', active);
+      this._dataLayersToggleBtn.setAttribute('aria-pressed', String(active));
+    };
+    this._dataLayersToggleBtn.addEventListener('click', toggle);
+    this._dataLayersToggleHandler = toggle;
+    // Keep the button in sync with the F-key handler.
+    this._dataPanelSyncHandler = () => {
+      const active = this._dataPanel?.classList.contains('active') === true;
+      this._dataLayersToggleBtn.setAttribute('aria-pressed', String(active));
+    };
+    const initial = this._dataPanel?.classList.contains('active') === true;
+    this._dataLayersToggleBtn.setAttribute('aria-pressed', String(initial));
+  }
+
+  /**
    * Clear every selected data layer without resetting visual, map, HUD, or
    * camera state. A layer may still release camera work it owns as part of its
    * established disable lifecycle.
@@ -9852,10 +9922,20 @@ export class StyleManager {
    * @returns {void}
    */
   _initShareButton() {
-    this._shareBtn.addEventListener('click', async () => {
-      const success = await this.shareLinkManager.copyLink();
+    // L8: guard + catch so a stale click can never surface an unhandled async
+    // exception, even after dispose (the handler ref is removed in dispose).
+    const handler = async () => {
+      if (this._disposed) return;
+      let success = false;
+      try {
+        success = await this.shareLinkManager.copyLink();
+      } catch {
+        success = false;
+      }
       this._showToast(success ? 'Link copied!' : 'Copy failed');
-    });
+    };
+    this._shareBtn.addEventListener('click', handler);
+    this._shareBtnHandler = handler;
   }
 
   /**
@@ -10312,6 +10392,15 @@ export class StyleManager {
       document.removeEventListener('keydown', this._globalKeydownHandler);
       this._globalKeydownHandler = null;
     }
+    if (this._dataLayersToggleHandler && this._dataLayersToggleBtn) {
+      this._dataLayersToggleBtn.removeEventListener('click', this._dataLayersToggleHandler);
+      this._dataLayersToggleHandler = null;
+    }
+    if (this._shareBtnHandler && this._shareBtn) {
+      this._shareBtn.removeEventListener('click', this._shareBtnHandler);
+      this._shareBtnHandler = null;
+    }
+    this._dataPanelSyncHandler = null;
     if (this._poiKeydownHandler) {
       document.removeEventListener('keydown', this._poiKeydownHandler);
       this._poiKeydownHandler = null;

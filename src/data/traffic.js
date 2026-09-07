@@ -1155,6 +1155,11 @@ function onCameraChanged() {
     clearDots();
     _lastBounds = null;
     _lastViewCenter = null;
+    // Stamp the last-update gate so the enable-kick timer self-clears while
+    // the camera is parked above the activation altitude — otherwise it fires
+    // clearDots()+return every 1.5 s. Coming back DOWN still re-fetches: the
+    // bounds gate was nulled above, so no overlap skip can suppress it.
+    _lastUpdate = Date.now();
     return;
   }
 

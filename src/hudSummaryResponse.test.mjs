@@ -31,13 +31,13 @@ function installOpenAiRoutes() {
   return routes;
 }
 
-function invokeRoute(handler, { method = 'GET', url = '/', remoteAddress = '127.0.0.1', body } = {}) {
+function invokeRoute(handler, { method = 'GET', url = '/', remoteAddress = '127.0.0.1', host = 'localhost:4173', body } = {}) {
   return new Promise((resolve, reject) => {
     const headers = new Map();
     const req = new EventEmitter();
     req.method = method;
     req.url = url;
-    req.headers = {};
+    req.headers = { host };
     req.socket = { remoteAddress };
     if (body !== undefined) {
       req.destroy = () => {};
@@ -316,5 +316,46 @@ test('configured route keeps calling the OpenAI Responses API when no base URL i
     assert.equal(typeof sent.instructions, 'string');
     assert.equal(response.statusCode, 200);
     assert.deepEqual(response.body, { summary: 'Fog over the Golden Gate', source: 'openai', error: null });
+  },
+));
+
+test('HUD summary refuses a foreign Host header (DNS-rebinding defense)', withProviderRoute(
+  { OPENAI_API_KEY: 'sk-test' },
+  async () => ({ ok: true, status: 200, json: async () => ({ output_text: 'Fog over the Golden Gate' }) }),
+  async (hud, fetchCalls) => {
+    const response = await invokeRoute(hud, { method: 'POST', host: 'evil.example.com', body: '{}' });
+    assert.equal(response.statusCode, 403);
+    assert.match(response.body.error, /local hostnames/);
+    assert.equal(fetchCalls.length, 0, 'no upstream call is made for a foreign Host');
+  },
+));
+
+test('HUD summary rate-limits by default (25/min) even when the env var is unset', withProviderRoute(
+  { OPENAI_API_KEY: 'sk-test' },
+  async () => ({ ok: true, status: 200, json: async () => ({ output_text: 'Fog over the Golden Gate' }) }),
+  async (hud, fetchCalls) => {
+    // 25 requests fit within the default window; the 26th is refused.
+    for (let i = 0; i < 25; i += 1) {
+      const response = await invokeRoute(hud, { method: 'POST', body: '{}' });
+      assert.equal(response.statusCode, 200, `request ${i + 1} within the default cap succeeds`);
+    }
+    const over = await invokeRoute(hud, { method: 'POST', body: '{}' });
+    assert.equal(over.statusCode, 429, 'the 26th request is rate-limited by default');
+    assert.equal(over.body.error, 'Rate limit exceeded');
+    assert.equal(fetchCalls.length, 25, 'only the allowed requests reach the provider');
+  },
+));
+
+test('HUD summary shares the configured env-var limiter with the token route when set', withProviderRoute(
+  { OPENAI_API_KEY: 'sk-test', GEV_RATELIMIT_OPENAI_PER_MIN: '2' },
+  async () => ({ ok: true, status: 200, json: async () => ({ output_text: 'Fog over the Golden Gate' }) }),
+  async (hud, fetchCalls) => {
+    const first = await invokeRoute(hud, { method: 'POST', body: '{}' });
+    const second = await invokeRoute(hud, { method: 'POST', body: '{}' });
+    const third = await invokeRoute(hud, { method: 'POST', body: '{}' });
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+    assert.equal(third.statusCode, 429, 'the env-var cap still applies when set');
+    assert.equal(fetchCalls.length, 2);
   },
 ));

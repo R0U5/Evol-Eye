@@ -4045,6 +4045,9 @@ const flightsLayer = {
     // aircraft. destroy() also does this, but disable() is the normal toggle.
     if (_enrichDripTimer) { clearTimeout(_enrichDripTimer); _enrichDripTimer = null; }
     _enrichQueue.length = 0;
+    // Drop dead-reckoning history too: stale positions from a previous
+    // session would otherwise blip a ghost trail on re-enable.
+    _positionHistory.clear();
   },
 
   /**

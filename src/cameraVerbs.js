@@ -808,6 +808,10 @@ let _getTarget = null;
 let _active = null; // { kind, motion, direction, speed, mode, ...state }
 let _tickRemover = null;
 let _inputRemovers = [];
+// External motion provider (e.g. scene playback) so voice can see and stop
+// motions the camera-verbs engine does not drive itself. Single slot: callers
+// that already own the camera are the only legitimate registrants.
+let _externalMotion = null;
 
 function clearLookAt() {
   try { _viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); } catch { /* teardown race */ }
@@ -839,6 +843,13 @@ function levelCameraRoll() {
 /** Stop any active motion. Returns whether one was running. */
 export function interruptCameraMotion(reason = 'interrupt') {
   const wasActive = Boolean(_active);
+  // No engine-driven motion? Check the external provider (scene playback)
+  // before declaring nothing was running — a voice "stop" mid-scene must
+  // cancel the run, not report success over a flight that keeps flying.
+  if (!wasActive && _externalMotion) {
+    const cancelled = _externalMotion.cancel(reason);
+    return { wasActive: cancelled, reason, leveled: false, external: true };
+  }
   // While an entity is TRACKED, the follow camera owns the reference frame —
   // resetting the lookAt transform here flings the camera into space (field
   // finding). Leave the transform to the tracker; it re-asserts every frame.
@@ -855,7 +866,15 @@ export function interruptCameraMotion(reason = 'interrupt') {
 
 /** Diagnostics / harness hook. */
 export function getActiveCameraMotion() {
-  if (!_active) return null;
+  if (!_active) {
+    // Surface external motions (scene playback) to voice diagnostics so the
+    // assistant reports "scene flying" instead of "nothing moving".
+    if (_externalMotion?.describe) {
+      const external = _externalMotion.describe();
+      if (external) return external;
+    }
+    return null;
+  }
   const info = { kind: _active.kind, mode: _active.mode, speed: _active.speed };
   if (_active.kind === 'route') {
     info.progress = _active.u;
@@ -969,6 +988,20 @@ function onTick() {
 }
 
 /** Wire the module to the viewer once (idempotent). */
+/**
+ * Register (or clear, with null) an external camera-motion provider.
+ *
+ * The provider is consulted by getActiveCameraMotion() when no engine motion
+ * is running, and by interruptCameraMotion() so a voice stop can cancel the
+ * external motion. `describe()` must return a motion-info object (or null
+ * when idle) and `cancel(reason)` must return true when it stopped something.
+ *
+ * @param {{ describe: () => object|null, cancel: (reason: string) => boolean }|null} provider
+ */
+export function registerExternalCameraMotion(provider) {
+  _externalMotion = provider || null;
+}
+
 export function initCameraVerbs(viewer, getViewTargetCartesian) {
   if (_viewer === viewer) return;
   _viewer = viewer;

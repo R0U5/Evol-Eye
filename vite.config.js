@@ -56,6 +56,20 @@ import { normalizeAdsbLolPointResponse } from './src/data/adsbLolFallback.js';
 import { createAisStreamAdapter, isRecognizedAisEnvelope } from './src/data/aisStreamAdapter.js';
 import { parseSilenceTimeoutEnv } from './src/data/aisWatchdog.js';
 import { keylessHudSummaryResponse } from './src/hudSummaryResponse.js';
+import { localAuthority, LOOPBACK_ADDRESSES } from './src/keySetupCore.mjs';
+import {
+  DEFAULT_VOICE_DAILY_BUDGET_USD,
+  DEFAULT_VOICE_DAILY_MINT_CAP,
+  VOICE_LEDGER_VERSION,
+  isBudgetExhausted,
+  isMintCapReached,
+  ledgerIdentity,
+  markRevoked,
+  normalizeLedger,
+  recordCost,
+  recordMint,
+  utcDayKey as voiceUtcDayKey,
+} from './src/voiceLedger.mjs';
 import { parseEnv as parseDotenvText } from 'node:util';
 import { readEnvironmentSource as readPinokioEnvironmentSource } from './scripts/pinokio-environment.mjs';
 import {
@@ -515,6 +529,31 @@ function googleRateLimiter() {
   return _googleRateLimiter;
 }
 
+/** Default per-IP cap for /api/openai/hud-summary when the env var is unset (M11). */
+const HUD_SUMMARY_DEFAULT_RATE_LIMIT_PER_MIN = 25;
+let _openAiHudSummaryRateLimiter; // undefined = not built yet; fn = active limiter
+/**
+ * Rate limiter for /api/openai/hud-summary. DEFAULT-ON: when
+ * GEV_RATELIMIT_OPENAI_PER_MIN is unset, `0`, or non-numeric, this route still
+ * gets a sane 25/min per-IP cap instead of unlimited — the HUD summary is a
+ * paid OpenAI call per request, and the client polls it every 15 s. When the
+ * env var IS set, the route shares the same limiter as /api/realtime/token
+ * (unchanged behavior for the opt-in var).
+ */
+function openAiHudSummaryRateLimiter() {
+  if (_openAiHudSummaryRateLimiter === undefined) {
+    const configured = Number(process.env.GEV_RATELIMIT_OPENAI_PER_MIN);
+    _openAiHudSummaryRateLimiter = Number.isFinite(configured) && configured > 0
+      ? openAiRateLimiter()
+      : makeRateLimiter({
+          windowMs: 60_000,
+          max: HUD_SUMMARY_DEFAULT_RATE_LIMIT_PER_MIN,
+          globalMax: HUD_SUMMARY_DEFAULT_RATE_LIMIT_PER_MIN * 20,
+        });
+  }
+  return _openAiHudSummaryRateLimiter;
+}
+
 /**
  * @private Test-only: drop the lazily-built rate-limiter cache so a test can
  * rebuild `openAiRateLimiter()`/`googleRateLimiter()` against its own env.
@@ -523,6 +562,7 @@ function googleRateLimiter() {
 export function resetRateLimiterCacheForTests() {
   _openAiRateLimiter = undefined;
   _googleRateLimiter = undefined;
+  _openAiHudSummaryRateLimiter = undefined;
 }
 
 /**
@@ -1330,6 +1370,7 @@ function radioBrowserProxy() {
 // ---------------------------------------------------------------------------
 /** Upstream fetch timeout for GBFS requests (ms). */
 const GBFS_PROXY_TIMEOUT_MS = 12000;
+const GBFS_REDIRECT_MAX_HOPS = 3;
 /** Allowlisted GBFS hostnames; wildcard *.publicbikesystem.net also accepted. */
 const GBFS_ALLOWED_HOSTS = new Set([
   'gbfs.lyft.com',
@@ -1471,7 +1512,10 @@ async function getOpenSkyToken() {
 
       let data = null;
       try {
-        data = await res.json();
+        // Cap the token body: an OAuth token response is a few KB, so 64 KB
+        // is generous while still refusing a malicious/oversized endpoint.
+        const text = await readResponseTextCapped(res, 64 * 1024);
+        data = JSON.parse(text);
       } catch {
         data = null;
       }
@@ -1836,6 +1880,12 @@ function tomtomProxy() {
   const DEFAULT_DAILY_BUDGET = 40000;
   const MEM_MAX_ENTRIES = 256;
   const UPSTREAM_TIMEOUT_MS = 15000;
+  // Disk cache caps: the memory cache is bounded (MEM_MAX_ENTRIES) but disk
+  // writes were unbounded — at the 40k/day budget a few days of use grows
+  // gigabytes. Enforce count and bytes, whichever trips first, and delete the
+  // oldest tiles (by mtime) on insert past the cap.
+  const DISK_MAX_TILES = 2048;
+  const DISK_MAX_BYTES = 256 * 1024 * 1024;
 
   /** @type {Map<string, {at:number, buf:Buffer}>} tile key `z/x/y` -> cached tile (kept past TTL for serve-stale). */
   const mem = new Map();
@@ -1885,6 +1935,9 @@ function tomtomProxy() {
 
   const tilePath = (key) => path.join(CACHE_DIR, `flow-${key.replaceAll('/', '-')}.pbf`);
 
+  /** Only `flow-*.pbf` files are tiles — budget.json in the same dir is not. */
+  const isTileFile = (name) => /^flow-.*\.pbf$/.test(name);
+
   /** Disk-cache read; tile age comes from the file's mtime. */
   async function readDiskTile(key) {
     try {
@@ -1896,10 +1949,38 @@ function tomtomProxy() {
     } catch { return null; }
   }
 
+  /** Enforce the disk cap: delete oldest tiles (by mtime) past count/bytes. */
+  async function pruneDiskTiles() {
+    let names;
+    try {
+      names = (await fsp.readdir(CACHE_DIR)).filter(isTileFile);
+    } catch { return; }
+    if (names.length === 0) return;
+    const tiles = (await Promise.all(names.map(async (name) => {
+      try {
+        const stat = await fsp.stat(path.join(CACHE_DIR, name));
+        return { name, mtimeMs: stat.mtimeMs, size: stat.size };
+      } catch { return null; } // file vanished mid-scan
+    }))).filter(Boolean);
+    let totalBytes = tiles.reduce((sum, tile) => sum + tile.size, 0);
+    tiles.sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
+    let deleted = 0;
+    while (deleted < tiles.length
+      && (tiles.length - deleted > DISK_MAX_TILES || totalBytes > DISK_MAX_BYTES)) {
+      const victim = tiles[deleted];
+      totalBytes -= victim.size;
+      deleted += 1;
+      try {
+        await fsp.unlink(path.join(CACHE_DIR, victim.name));
+      } catch { /* already gone */ }
+    }
+  }
+
   async function writeDiskTile(key, buf) {
     try {
       await fsp.mkdir(CACHE_DIR, { recursive: true });
       await fsp.writeFile(tilePath(key), buf);
+      await pruneDiskTiles();
     } catch (err) {
       console.warn(`[tomtom-proxy] tile cache write failed for ${key}:`, err?.message || err);
     }
@@ -2273,6 +2354,13 @@ function terrainHeightsProxy() {
   const CACHE_PATH = path.join(CACHE_DIR, 'terrain-heights.json');
   const UPSTREAM_CHUNK = 256;
   const MAX_POINTS = 2000;
+  // Bounded in-memory cache: terrain doesn't move, so a modest LRU cap keeps
+  // the hot working set without letting any client grow memory or the on-disk
+  // JSON without bound (mirrors the tomtomProxy MEM_MAX_ENTRIES pattern).
+  const MEM_MAX_ENTRIES = 256;
+  // Skip loading a cache file that has grown pathologically large (e.g. a
+  // pre-eviction file from an older build) instead of parsing it into memory.
+  const MAX_CACHE_FILE_BYTES = 8 * 1024 * 1024;
 
   /** @type {Map<string, {at:number, result:object}>} keyed by canonical 5dp lon/lat. */
   const mem = new Map();
@@ -2281,11 +2369,45 @@ function terrainHeightsProxy() {
   let diskLoaded = false;
   let diskDirty = false;
 
+  /** LRU-ish insert (Map preserves insertion order; evict the oldest). */
+  function memSet(key, entry) {
+    if (!mem.has(key) && mem.size >= MEM_MAX_ENTRIES) {
+      const oldest = mem.keys().next().value;
+      mem.delete(oldest);
+    }
+    mem.set(key, entry);
+  }
+
+  /** Drop entries older than TTL (and any that no longer hold a valid result).
+   * @returns {boolean} true if any entry was removed (caller should persist). */
+  function pruneExpired(now = Date.now()) {
+    let removed = false;
+    for (const [key, entry] of mem) {
+      if (!entry || !validTerrainResult(entry.result) || now - entry.at >= TTL_MS) {
+        mem.delete(key);
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
+  // resolveTerrainHeightRequest writes new entries via cache.set(); route those
+  // through memSet so the LRU cap is enforced on every insert, not just loads.
+  const boundedCache = {
+    get: (key) => mem.get(key),
+    set: (key, entry) => { memSet(key, entry); },
+  };
+
   /** Load the on-disk cache into memory once, lazily (first request only). */
   async function loadDiskOnce() {
     if (diskLoaded) return;
     diskLoaded = true;
     try {
+      const stat = await fsp.stat(CACHE_PATH);
+      if (stat.size > MAX_CACHE_FILE_BYTES) {
+        console.warn(`[terrain-heights-proxy] skipping oversized cache file (${stat.size} bytes > ${MAX_CACHE_FILE_BYTES})`);
+        return;
+      }
       const parsed = JSON.parse(await fsp.readFile(CACHE_PATH, 'utf8'));
       const pointEntries = parsed?.version === 2 && parsed.points && typeof parsed.points === 'object'
         ? parsed.points
@@ -2293,7 +2415,7 @@ function terrainHeightsProxy() {
       if (pointEntries) {
         for (const [key, entry] of Object.entries(pointEntries)) {
           if (entry && Number.isFinite(entry.at) && validTerrainResult(entry.result)) {
-            mem.set(key, entry);
+            memSet(key, entry);
           }
         }
       } else if (parsed && typeof parsed === 'object') {
@@ -2307,15 +2429,18 @@ function terrainHeightsProxy() {
             if (!validTerrainResult(result)) continue;
             const key = terrainPointKey(points[i]);
             const existing = mem.get(key);
-            if (!existing || entry.at > existing.at) mem.set(key, { at: entry.at, result });
+            if (!existing || entry.at > existing.at) memSet(key, { at: entry.at, result });
           }
         }
         diskDirty = mem.size > 0;
       }
     } catch { /* no disk cache yet */ }
     // Periodic flush, same shape as adsbdbProxy: coalesce writes instead of
-    // hitting disk on every request.
+    // hitting disk on every request. Prune TTL-expired entries first so the
+    // on-disk file never grows past the live working set, and skip the write
+    // entirely when nothing changed (no dirty entries).
     setInterval(async () => {
+      if (pruneExpired()) diskDirty = true;
       if (!diskDirty) return;
       diskDirty = false;
       try {
@@ -2388,7 +2513,7 @@ function terrainHeightsProxy() {
 
           const outcome = await resolveTerrainHeightRequest({
             points,
-            cache: mem,
+            cache: boundedCache,
             fetchMissing: fetchMissingSingleFlight,
             ttlMs: TTL_MS,
           });
@@ -2418,24 +2543,63 @@ function terrainHeightsProxy() {
 function adsbdbProxy() {
   const TTL_MS = 24 * 3600_000;
   const CACHE_PATH = path.join(process.cwd(), '.gev-cache', 'adsbdb.json');
-  let cache = { routes: {}, aircraft: {} };
+  // Bounded per-store caches: every distinct callsign/hex mints a persistent
+  // entry (404s negative-cached), so cap both stores with LRU eviction to keep
+  // memory and the on-disk JSON bounded. Maps preserve insertion order for all
+  // key shapes — integer-like hex keys ("123456") would reorder in a plain
+  // object and break oldest-first eviction.
+  const STORE_MAX_ENTRIES = 512;
+  /** @type {{routes: Map<string, {at:number, data:object|null}>, aircraft: Map<string, {at:number, data:object|null}>}} */
+  let cache = { routes: new Map(), aircraft: new Map() };
   let dirty = false;
   let loaded = false;
   const inflight = new Map();
+
+  /** LRU-ish insert into a store Map (Map preserves insertion order; evict the oldest). */
+  function storeSet(store, key, entry) {
+    if (!store.has(key) && store.size >= STORE_MAX_ENTRIES) {
+      const oldest = store.keys().next().value;
+      store.delete(oldest);
+    }
+    store.set(key, entry);
+  }
+
+  /** Drop entries older than TTL. @returns {boolean} true if any were removed. */
+  function pruneStore(store, now = Date.now()) {
+    let removed = false;
+    for (const [key, entry] of store) {
+      if (!entry || now - entry.at >= TTL_MS) {
+        store.delete(key);
+        removed = true;
+      }
+    }
+    return removed;
+  }
 
   async function loadOnce() {
     if (loaded) return;
     loaded = true;
     try {
       const parsed = JSON.parse(await fsp.readFile(CACHE_PATH, 'utf8'));
-      cache = { routes: parsed.routes ?? {}, aircraft: parsed.aircraft ?? {} };
+      cache = {
+        routes: new Map(Object.entries(parsed.routes ?? {})),
+        aircraft: new Map(Object.entries(parsed.aircraft ?? {})),
+      };
     } catch { /* first run */ }
     setInterval(async () => {
+      // Prune TTL-expired entries first; persist only when something changed
+      // (new entries, refreshes, or pruning removed entries).
+      const prunedRoutes = pruneStore(cache.routes);
+      const prunedAircraft = pruneStore(cache.aircraft);
+      if (prunedRoutes || prunedAircraft) dirty = true;
       if (!dirty) return;
       dirty = false;
       try {
         await fsp.mkdir(path.dirname(CACHE_PATH), { recursive: true });
-        await fsp.writeFile(CACHE_PATH, JSON.stringify(cache), 'utf8');
+        await fsp.writeFile(CACHE_PATH, JSON.stringify({
+          routes: Object.fromEntries(cache.routes),
+          aircraft: Object.fromEntries(cache.aircraft),
+        }), 'utf8');
       } catch { dirty = true; } // retry next tick
     }, 15_000).unref?.();
   }
@@ -2466,7 +2630,7 @@ function adsbdbProxy() {
 
   function lookup(kind, key) {
     const store = kind === 'route' ? cache.routes : cache.aircraft;
-    if (fresh(store[key])) return Promise.resolve(store[key].data);
+    if (fresh(store.get(key))) return Promise.resolve(store.get(key).data);
     const ik = `${kind}:${key}`;
     if (!inflight.has(ik)) {
       inflight.set(ik, (async () => {
@@ -2477,18 +2641,18 @@ function adsbdbProxy() {
           const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
           if (res.ok) {
             const data = kind === 'route' ? parseRoute(await res.json()) : parseAircraft(await res.json());
-            store[key] = { at: Date.now(), data }; // data may be null — negative cache
+            storeSet(store, key, { at: Date.now(), data }); // data may be null — negative cache
             dirty = true;
             return data;
           }
           if (res.status === 404) {
-            store[key] = { at: Date.now(), data: null }; // known-missing — cache the miss
+            storeSet(store, key, { at: Date.now(), data: null }); // known-missing — cache the miss
             dirty = true;
           }
           // other statuses: leave uncached so we retry later
-          return fresh(store[key]) ? store[key].data : null;
+          return fresh(store.get(key)) ? store.get(key).data : null;
         } catch {
-          return fresh(store[key]) ? store[key].data : null; // network error → stale if any
+          return fresh(store.get(key)) ? store.get(key).data : null; // network error → stale if any
         } finally {
           inflight.delete(ik);
         }
@@ -3354,6 +3518,59 @@ function isAllowedGbfsHost(hostname) {
 }
 
 /**
+ * Fetch a GBFS target with redirects manually re-validated (SSRF tie-in).
+ *
+ * Mirrors fetchCctvUpstream: `redirect: 'manual'` so a 3xx that points at a
+ * non-allowlisted host is refused instead of followed. Each hop is re-checked
+ * against the hostname + path allowlists (CDN/LB rotation stays safe because
+ * the connection is taken to the PUBLIC host, never a private one).
+ *
+ * @param {URL} url - Validated upstream URL.
+ * @param {{ signal?: AbortSignal }} [options]
+ * @returns {Promise<Response|null>} Upstream response, or null when refused/errored.
+ */
+async function fetchGbfsUpstream(url, { signal = null } = {}) {
+  let current = url;
+  for (let hop = 0; hop <= GBFS_REDIRECT_MAX_HOPS; hop += 1) {
+    let upstream;
+    try {
+      upstream = await fetch(current.toString(), {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'devils-eye-gbfs-proxy/1.0',
+        },
+        signal,
+        redirect: 'manual',
+      });
+    } catch {
+      return null;
+    }
+    if (upstream.status < 300 || upstream.status >= 400) {
+      return upstream;
+    }
+    const location = upstream.headers.get('location');
+    try {
+      await upstream.body?.cancel();
+    } catch {
+      /* no-op */
+    }
+    if (!location) return null;
+    let next;
+    try {
+      next = new URL(location, current);
+    } catch {
+      return null;
+    }
+    if (next.protocol !== 'https:' || !isAllowedGbfsHost(next.hostname) || !isAllowedGbfsPath(next.pathname)) {
+      return null;
+    }
+    current = next;
+  }
+  return null; // too many hops — refuse
+}
+
+/**
  * Only allow station_information.json and station_status.json endpoints.
  *
  * @param {string} pathname
@@ -3449,16 +3666,14 @@ function gbfsProxy() {
           const timeoutId = setTimeout(() => controller.abort(), GBFS_PROXY_TIMEOUT_MS);
           let upstream;
           try {
-            upstream = await fetch(upstreamUrl.toString(), {
-              method: 'GET',
-              headers: {
-                Accept: 'application/json',
-                'User-Agent': 'devils-eye-gbfs-proxy/1.0',
-              },
-              signal: controller.signal,
-            });
+            upstream = await fetchGbfsUpstream(upstreamUrl, { signal: controller.signal });
           } finally {
             clearTimeout(timeoutId);
+          }
+          if (!upstream) {
+            res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ error: 'GBFS upstream unavailable or redirect refused' }));
+            return;
           }
 
           // Limit response size to prevent memory exhaustion from malicious upstream
@@ -3564,6 +3779,16 @@ function normalizeFeedType(value) {
  */
 function isVideoFeedType(feedType) {
   return feedType === 'mp4' || feedType === 'webm' || feedType === 'hls';
+}
+
+/**
+ * Whether a feed type is a live STREAM the proxy must pipe unbuffered (as
+ * opposed to a static still fetched per-frame). MJPEG is included: browsers
+ * decode multipart/x-mixed-replace natively in an <img>, so it is served
+ * through the same streaming proxy as HLS/MP4 and plays in realtime.
+ */
+function isLiveStreamFeedType(feedType) {
+  return feedType === 'mjpeg' || isVideoFeedType(feedType);
 }
 
 // ---------------------------------------------------------------------------
@@ -4253,12 +4478,54 @@ async function loadTflSourcesFromOpenData() {
 }
 
 /**
+ * Return whether a CCTV upstream URL is safe for the proxy to fetch.
+ *
+ * Mirrors the Radio Browser host checks (isNonGlobalIpv4 / isPublicRadioAddress)
+ * but allows plain http and non-standard ports — public Axis cameras are
+ * commonly served over http on arbitrary ports. Rejects loopback, private,
+ * link-local, reserved, and credential-bearing URLs so a file/env catalog
+ * entry can never point the proxy at internal infrastructure.
+ *
+ * @param {string} value - Candidate upstream URL.
+ * @returns {boolean} True when the URL is http(s) with a public host.
+ */
+export function isPublicCctvUrl(value) {
+  let url;
+  try {
+    url = new URL(String(value ?? ''));
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  if (url.username || url.password) return false;
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!hostname) return false;
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) return false;
+  if (hostname.includes(':')) return isPublicRadioAddress(hostname); // IPv6 literal
+  return !isNonGlobalIpv4(hostname);
+}
+
+/**
  * Normalize a raw CCTV source item into a canonical shape with safe defaults.
  *
  * @param {object} item - Raw source from file, env, or Austin Open Data.
  * @returns {object} Normalized source with all expected fields populated.
  */
 function normalizeSourceItem(item) {
+  const rawUrl = typeof item.url === 'string' ? item.url : '';
+  const rawSnapshotUrl = typeof item.snapshotUrl === 'string' ? item.snapshotUrl : '';
+  // Host-validate catalog URLs at normalize time (SSRF defense): a file/env
+  // entry pointing at a private/LAN/loopback/link-local host is blanked so it
+  // can never be fetched by /frame or /media. The shipped catalogs and the
+  // live open-data packs all use public hosts and pass unchanged.
+  const url = isPublicCctvUrl(rawUrl) ? rawUrl : '';
+  const snapshotUrl = isPublicCctvUrl(rawSnapshotUrl) ? rawSnapshotUrl : '';
+  if (rawUrl && !url) {
+    console.warn(`[CCTV] Dropping non-public url for source "${String(item.id || '')}": ${rawUrl}`);
+  }
+  if (rawSnapshotUrl && !snapshotUrl) {
+    console.warn(`[CCTV] Dropping non-public snapshotUrl for source "${String(item.id || '')}": ${rawSnapshotUrl}`);
+  }
   return {
     id: String(item.id || '').trim(),
     name: String(item.name || item.id || '').trim(),
@@ -4275,8 +4542,8 @@ function normalizeSourceItem(item) {
     mountHeightM: toFiniteNumber(item.mountHeightM),
     groundElevationM: toFiniteNumber(item.groundElevationM),
     feedType: normalizeFeedType(item.feedType || item.type || ''),
-    url: typeof item.url === 'string' ? item.url : '',
-    snapshotUrl: typeof item.snapshotUrl === 'string' ? item.snapshotUrl : '',
+    url,
+    snapshotUrl,
     license: String(item.license || item.licenseNote || ''),
     sourceKind: String(item.sourceKind || item.kind || 'configured'),
     // Optional CAL badge input (cctv-v2 design §3b/§9.2, additive-only per the
@@ -4543,6 +4810,12 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
   stream.on('error', () => {
     if (!res.writableEnded) res.end();
   });
+  // A client disconnect mid-stream must tear down the upstream socket too —
+  // otherwise live MJPEG/HLS connections stay open until the upstream closes
+  // them (or the 30 s media timeout fires), leaking sockets on every refresh.
+  res.on('close', () => {
+    try { upstream.body?.cancel(); } catch { /* no-op */ }
+  });
   stream.pipe(res);
 }
 
@@ -4586,14 +4859,15 @@ export function isMjpgStreamUrl(url) {
  * @param {string} url - MJPG stream URL.
  * @returns {string[]} Candidate still-image URLs to try in order.
  */
-export function deriveAxisSnapshotUrls(url) {
+export function deriveAxisSnapshotUrls(url, resolution = '640x480') {
   if (!isMjpgStreamUrl(url)) return [];
   try {
     const u = new URL(url);
     const base = `${u.protocol}//${u.host}`;
+    const res = String(resolution || '640x480');
     return [
-      `${base}/mjpg/1/image.jpg?resolution=640x480`,
-      `${base}/axis-cgi/jpg/image.cgi?resolution=640x480`,
+      `${base}/mjpg/1/image.jpg?resolution=${encodeURIComponent(res)}`,
+      `${base}/axis-cgi/jpg/image.cgi?resolution=${encodeURIComponent(res)}`,
     ];
   } catch {
     return [];
@@ -4641,6 +4915,70 @@ function bufferHasJpegMarkers(buf, soi, eoi) {
   return buf.indexOf(eoi, start + 2) !== -1;
 }
 
+/** Redirect statuses that fetch() would otherwise follow automatically. */
+const CCTV_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** Maximum redirect hops the CCTV proxy will follow, each re-validated. */
+const CCTV_REDIRECT_MAX_HOPS = 3;
+
+/**
+ * Fetch an upstream CCTV URL with redirects manually re-validated.
+ *
+ * Always sets `redirect: 'manual'` so a catalog URL that 302s to an internal
+ * host is never followed blindly. Redirect targets are re-validated with the
+ * same public-host check used at catalog-normalize time; a redirect to a
+ * non-public host fails closed ({ blocked: true }) and is never fetched.
+ *
+ * @param {string} url - Server-registered upstream URL.
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl=fetch] - Fetch implementation.
+ * @param {number} [options.timeoutMs=CCTV_FRAME_FETCH_TIMEOUT_MS] - Per-hop abort timeout.
+ * @param {Record<string,string>} [options.headers] - Extra request headers.
+ * @returns {Promise<{upstream: Response|null, blocked: boolean}>}
+ */
+async function fetchCctvUpstream(url, {
+  fetchImpl = fetch,
+  timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS,
+  headers = {},
+} = {}) {
+  let current = url;
+  for (let hop = 0; hop <= CCTV_REDIRECT_MAX_HOPS; hop += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort(new DOMException('CCTV upstream fetch timed out', 'TimeoutError'));
+    }, timeoutMs);
+    let upstream;
+    try {
+      upstream = await fetchImpl(current, {
+        headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0', ...headers },
+        signal: controller.signal,
+        redirect: 'manual',
+      });
+    } catch {
+      return { upstream: null, blocked: false };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!CCTV_REDIRECT_STATUSES.has(upstream.status)) {
+      return { upstream, blocked: false };
+    }
+    const location = upstream.headers.get('location');
+    try { await upstream.body?.cancel(); } catch { /* no-op */ }
+    if (!location) return { upstream: null, blocked: false };
+    let target;
+    try {
+      target = new URL(location, current);
+    } catch {
+      return { upstream: null, blocked: false };
+    }
+    if (!isPublicCctvUrl(target.href)) {
+      cctvLog(`redirect to non-public host refused: ${target.href}`);
+      return { upstream: null, blocked: true };
+    }
+    current = target.href;
+  }
+  return { upstream: null, blocked: false };
+}
+
 /**
  * Fetch one upstream CCTV image within the frame-refresh budget.
  *
@@ -4657,20 +4995,22 @@ function bufferHasJpegMarkers(buf, soi, eoi) {
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl=fetch] - Fetch implementation.
  * @param {number} [options.timeoutMs=CCTV_FRAME_FETCH_TIMEOUT_MS] - Abort timeout.
- * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
+ * @returns {Promise<{ok:true,body:Buffer,contentType:string}|{blocked:true}|null>}
  */
 export async function fetchCctvImageFromUpstream(url, {
   fetchImpl = fetch,
   timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS,
+  resolution = '640x480',
 } = {}) {
   if (!url || !/^https?:\/\//i.test(url)) return null;
 
   // --- MJPG special handling ---------------------------------------------
   if (isMjpgStreamUrl(url)) {
-    cctvLog(`MJPG stream for ${url} — probing still endpoints`);
-    for (const stillUrl of deriveAxisSnapshotUrls(url)) {
+    cctvLog(`MJPG stream for ${url} — probing still endpoints @${resolution}`);
+    for (const stillUrl of deriveAxisSnapshotUrls(url, resolution)) {
       cctvLog(`  still candidate: ${stillUrl}`);
       const still = await fetchSingleImage(stillUrl, { fetchImpl, timeoutMs });
+      if (still?.blocked) return { blocked: true };
       if (still) {
         cctvLog(`  still endpoint OK: ${stillUrl}`);
         return still;
@@ -4680,6 +5020,7 @@ export async function fetchCctvImageFromUpstream(url, {
     cctvLog(`still endpoints missed; buffering stream ${url} to extract a frame`);
     try {
       const body = await fetchBoundedBody(url, { fetchImpl, timeoutMs, maxBytes: 2 * 1024 * 1024 });
+      if (body?.blocked) return { blocked: true };
       if (body) {
         const frame = extractFirstJpegFromMjpg(body.body, body.contentType);
         if (frame) {
@@ -4694,95 +5035,65 @@ export async function fetchCctvImageFromUpstream(url, {
   }
 
   // --- Normal static-image path ------------------------------------------
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort(new DOMException('CCTV upstream frame fetch timed out', 'TimeoutError'));
-  }, timeoutMs);
-  try {
-    const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
-      signal: controller.signal,
-    });
-    const contentType = upstream.headers.get('content-type') || '';
-    if (!upstream.ok || !contentType.startsWith('image/')) {
-      cctvLog(`static fetch missed: ${url} → HTTP ${upstream.status} ${contentType || 'no-content-type'}`);
-      return null;
-    }
-    return {
-      ok: true,
-      body: Buffer.from(await upstream.arrayBuffer()),
-      contentType,
-    };
-  } catch {
+  const { upstream, blocked } = await fetchCctvUpstream(url, { fetchImpl, timeoutMs });
+  if (blocked) return { blocked: true };
+  if (!upstream) return null;
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!upstream.ok || !contentType.startsWith('image/')) {
+    cctvLog(`static fetch missed: ${url} → HTTP ${upstream.status} ${contentType || 'no-content-type'}`);
     return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  return {
+    ok: true,
+    body: Buffer.from(await upstream.arrayBuffer()),
+    contentType,
+  };
 }
 
 /** Fetch a single static image with a budget; returns null on any miss. */
 async function fetchSingleImage(url, { fetchImpl = fetch, timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS } = {}) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
-      signal: controller.signal,
-    });
-    const contentType = upstream.headers.get('content-type') || '';
-    if (!upstream.ok || !contentType.startsWith('image/')) return null;
-    const body = Buffer.from(await upstream.arrayBuffer());
-    if (body.length === 0) return null;
-    if (upstream.status === 301 || upstream.status === 302 || upstream.status === 303 || upstream.status === 307 || upstream.status === 308) return null;
-    return { ok: true, body, contentType };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  const { upstream, blocked } = await fetchCctvUpstream(url, { fetchImpl, timeoutMs });
+  if (blocked) return { blocked: true };
+  if (!upstream) return null;
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!upstream.ok || !contentType.startsWith('image/')) return null;
+  const body = Buffer.from(await upstream.arrayBuffer());
+  if (body.length === 0) return null;
+  return { ok: true, body, contentType };
 }
 
 /** Buffer a response body up to byteBytes; aborts on timeout. Returns null on miss. */
 async function fetchBoundedBody(url, { fetchImpl = fetch, timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS, maxBytes = 2 * 1024 * 1024 } = {}) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
-      signal: controller.signal,
-    });
-    if (!upstream.ok) return null;
-    const reader = upstream.body?.getReader?.();
-    if (!reader) return null;
-    const chunks = [];
-    let total = 0;
-    let done = false;
-    const SOI = Buffer.from([0xff, 0xd8]);
-    const EOI = Buffer.from([0xff, 0xd9]);
-    while (!done && total < maxBytes) {
-      const { value, done: d } = await reader.read();
-      done = d;
-      if (value) {
-        chunks.push(value);
-        total += value.length;
-        // Stop the moment we hold at least one complete JPEG (SOI + EOI
-        // present). MJPG streams otherwise never terminate — without this
-        // the buffer would fill the whole 2 MiB budget needlessly.
-        if (total > 4096) {
-          const probe = Buffer.concat(chunks, total);
-          if (probe.indexOf(SOI) !== -1 && probe.indexOf(EOI) !== -1) break;
-        }
+  const { upstream, blocked } = await fetchCctvUpstream(url, { fetchImpl, timeoutMs });
+  if (blocked) return { blocked: true };
+  if (!upstream) return null;
+  if (!upstream.ok) return null;
+  const reader = upstream.body?.getReader?.();
+  if (!reader) return null;
+  const chunks = [];
+  let total = 0;
+  let done = false;
+  const SOI = Buffer.from([0xff, 0xd8]);
+  const EOI = Buffer.from([0xff, 0xd9]);
+  while (!done && total < maxBytes) {
+    const { value, done: d } = await reader.read();
+    done = d;
+    if (value) {
+      chunks.push(value);
+      total += value.length;
+      // Stop the moment we hold at least one complete JPEG (SOI + EOI
+      // present). MJPG streams otherwise never terminate — without this
+      // the buffer would fill the whole 2 MiB budget needlessly.
+      if (total > 4096) {
+        const probe = Buffer.concat(chunks, total);
+        if (probe.indexOf(SOI) !== -1 && probe.indexOf(EOI) !== -1) break;
       }
     }
-    await reader.cancel?.().catch?.(() => {});
-    const body = Buffer.concat(chunks, total);
-    if (body.length === 0) return null;
-    return { body, contentType: upstream.headers.get('content-type') || '' };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  await reader.cancel?.().catch?.(() => {});
+  const body = Buffer.concat(chunks, total);
+  if (body.length === 0) return null;
+  return { body, contentType: upstream.headers.get('content-type') || '' };
 }
 
 /**
@@ -4833,7 +5144,7 @@ function cctvProxy() {
     return {
       id: cameraId,
       feedType,
-      mediaUrl: isVideoFeedType(feedType)
+      mediaUrl: isLiveStreamFeedType(feedType)
         ? `/api/cctv/media/${encodeURIComponent(cameraId)}`
         : null,
       frameUrl: `/api/cctv/frame/${encodeURIComponent(cameraId)}`,
@@ -4955,10 +5266,14 @@ function cctvProxy() {
                 // Do not follow redirects — a catalog URL that 302s to an
                 // internal host would otherwise be silently followed (SSRF).
                 redirect: 'manual',
-                // Snapshot/image media gets a hard timeout; live streams (HLS/
-                // MJPEG) are given a longer window but still bounded so a
-                // stalled camera can't hang the handler forever.
-                signal: AbortSignal.timeout(isVideoFeedType(feedType) ? 30000 : 10000),
+                // Snapshot/image media gets a hard timeout. Live streams
+                // (HLS/MJPEG) must NOT get a fixed wall-clock abort: a healthy
+                // MJPEG <img> stays connected indefinitely, and a 30 s abort
+                // would kill the feed every half-minute. They stream until the
+                // client disconnects (which tears the upstream down via
+                // proxyMediaResponse's res.on('close')), and a stalled camera
+                // is released by the client's own retry/placeholder path.
+                signal: isLiveStreamFeedType(feedType) ? null : AbortSignal.timeout(10000),
               });
               const contentType = upstream.headers.get('content-type') || '';
               if (!upstream.ok) {
@@ -4975,7 +5290,7 @@ function cctvProxy() {
                 return;
               }
 
-              if (isVideoFeedType(feedType) && !(contentType.startsWith('video/') || contentType.includes('mpegurl'))) {
+              if (isLiveStreamFeedType(feedType) && !(contentType.startsWith('video/') || contentType.includes('mpegurl') || contentType.includes('multipart/x-mixed-replace'))) {
                 setHealth(cameraId, {
                   status: 'degraded',
                   sourceKind: 'upstream',
@@ -4985,14 +5300,14 @@ function cctvProxy() {
               } else {
                 setHealth(cameraId, {
                   status: 'ok',
-                  sourceKind: isVideoFeedType(feedType) ? 'live' : 'snapshot',
+                  sourceKind: isLiveStreamFeedType(feedType) ? 'live' : 'snapshot',
                   label: source?.provider || 'Configured source',
-                  message: isVideoFeedType(feedType) ? 'Live stream connected' : 'Snapshot feed connected',
+                  message: isLiveStreamFeedType(feedType) ? 'Live stream connected' : 'Snapshot feed connected',
                 });
               }
 
               await proxyMediaResponse(res, upstream, {
-                sourceHeader: isVideoFeedType(feedType) ? 'live-media' : 'upstream-image',
+                sourceHeader: isLiveStreamFeedType(feedType) ? 'live-media' : 'upstream-image',
               });
               return;
             } catch (error) {
@@ -5024,6 +5339,13 @@ function cctvProxy() {
           const heading = Number(url.searchParams.get('heading') || source?.headingDeg);
           const fov = Number(url.searchParams.get('fov') || source?.fovDeg);
           const pitch = Number(url.searchParams.get('pitch') || source?.pitchDeg);
+          // Client-selected frame resolution for the projection/plane read.
+          // The active camera asks for a full-HD-high source (720p snapshot)
+          // so it is not blown up 3x onto the 1080p plane; ambient/idle ask
+          // for the cheaper 480p. Clamped to a small safe set so a client can
+          // never demand an unlimited-resolution fetch.
+          const resMap = { hd: '1280x720', sd: '640x480' };
+          const resolution = resMap[String(url.searchParams.get('res') || 'sd')] || '640x480';
 
           // Only use server-registered upstream URLs — never accept client-supplied URLs
           // (prevents SSRF via ?upstream= query parameter)
@@ -5031,7 +5353,21 @@ function cctvProxy() {
             source?.snapshotUrl
             || (!isVideoFeedType(normalizeFeedType(source?.feedType)) ? source?.url : '');
 
-          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate);
+          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate, { resolution });
+          if (upstreamImage?.blocked) {
+            // A catalog URL redirected to a non-public host: fail closed with
+            // 502 and do NOT fetch the redirect target (SSRF defense).
+            cctvLog(`frame ${cameraId}: upstream redirect to non-public host refused`);
+            setHealth(cameraId, {
+              status: 'degraded',
+              sourceKind: 'blocked',
+              label: source?.provider || 'Configured source',
+              message: 'Upstream redirect target refused',
+            });
+            res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ error: 'Upstream redirect target refused' }));
+            return;
+          }
           if (upstreamImage?.ok) {
             cctvLog(`frame ${cameraId}: UPSTREAM OK (${upstreamImage.contentType}, ${upstreamImage.body.length} B) via ${upstreamCandidate.split('/').slice(0, 3).join('/')}`);
             setHealth(cameraId, {
@@ -5430,18 +5766,37 @@ function extractChatCompletionsText(data) {
  * @param {*} context
  * @returns {Promise<{summary: string|null, source: string, error: string|null, status?: number}>}
  */
-async function requestHudSummary(provider, context) {
+async function requestHudSummary(provider, context, { signal = null } = {}) {
   const messages = [
     { role: 'system', content: HUD_SUMMARY_PROMPT },
     { role: 'user', content: JSON.stringify(context) },
   ];
+  // Compose the caller's signal (client disconnect) with the per-request
+  // timeout: either finishing the fetch early is a win.
+  const timeoutSignal = AbortSignal.timeout(OLLAMA_HUD_SUMMARY_TIMEOUT_MS);
   const common = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(OLLAMA_HUD_SUMMARY_TIMEOUT_MS),
+    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
   };
   let response;
   let data = null;
+  // HUD summaries are ~100 tokens; 256 KB is generous while refusing a
+  // misbehaving upstream that streams gigabytes into memory. Falls back to
+  // the plain reader when the response lacks standard header/text methods
+  // (non-undici clients / test stubs) — the cap still applies to the string.
+  const readJsonCapped = async (res) => {
+    try {
+      return JSON.parse(await readResponseTextCapped(res, 256 * 1024));
+    } catch {
+      try {
+        const fallback = await res.json();
+        return fallback && typeof fallback === 'object' ? fallback : {};
+      } catch {
+        return {};
+      }
+    }
+  };
   if (provider.source === 'local') {
     response = await fetch(provider.url, {
       ...common,
@@ -5452,7 +5807,7 @@ async function requestHudSummary(provider, context) {
         options: { num_predict: 100, temperature: 0.3 },
       }),
     });
-    data = await response.json().catch(() => ({}));
+    data = await readJsonCapped(response);
   } else {
     const bearer = { ...common, headers: { ...common.headers, Authorization: `Bearer ${provider.apiKey}` } };
     if (provider.source === 'openai-compatible') {
@@ -5460,7 +5815,7 @@ async function requestHudSummary(provider, context) {
         ...bearer,
         body: JSON.stringify({ model: provider.model, messages, max_tokens: 100 }),
       });
-      data = await response.json().catch(() => ({}));
+      data = await readJsonCapped(response);
     } else {
       response = await fetch(provider.url, {
         ...bearer,
@@ -5472,7 +5827,7 @@ async function requestHudSummary(provider, context) {
           max_output_tokens: 100,
         }),
       });
-      data = await response.json().catch(() => ({}));
+      data = await readJsonCapped(response);
     }
   }
   if (!response.ok) {
@@ -5501,11 +5856,116 @@ async function requestHudSummary(provider, context) {
  */
 export function openAiRealtimeProxy() {
   function install(middlewares) {
+    // ── Server-side voice spend ledger (H1) ──────────────────────────────
+    // The client-side meter is the fast path; this persisted ledger is the
+    // backstop gate on /api/realtime/token. Loaded lazily (like the TomTom
+    // budget) so .env values applied by loadEnv are visible, then normalized
+    // against today's UTC day key + the current API key identity on every
+    // read. Persisted on every mutation.
+    const VOICE_LEDGER_PATH = path.join(process.cwd(), '.gev-cache', 'openai-realtime-ledger.json');
+    let voiceLedger = null;
+    let voiceLedgerLoaded = false;
+
+    function voiceDailyBudgetUsd() {
+      const raw = Number(process.env.GEV_VOICE_DAILY_BUDGET_USD);
+      return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_VOICE_DAILY_BUDGET_USD;
+    }
+
+    function voiceDailyMintCap() {
+      const raw = Number(process.env.GEV_VOICE_DAILY_MINT_CAP);
+      return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_VOICE_DAILY_MINT_CAP;
+    }
+
+    function currentVoiceLedger() {
+      if (!voiceLedgerLoaded) {
+        voiceLedgerLoaded = true;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(VOICE_LEDGER_PATH, 'utf8'));
+          if (parsed && parsed.version === VOICE_LEDGER_VERSION) voiceLedger = parsed;
+        } catch { /* no ledger file yet */ }
+      }
+      voiceLedger = normalizeLedger(voiceLedger, {
+        dayKey: voiceUtcDayKey(),
+        budgetUsd: voiceDailyBudgetUsd(),
+        mintCap: voiceDailyMintCap(),
+        identity: ledgerIdentity(process.env.OPENAI_API_KEY),
+      });
+      return voiceLedger;
+    }
+
+    function persistVoiceLedger() {
+      try {
+        fs.mkdirSync(path.dirname(VOICE_LEDGER_PATH), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(VOICE_LEDGER_PATH, JSON.stringify(voiceLedger, null, 2), { mode: 0o600 });
+      } catch (error) {
+        console.warn('[openai-realtime-proxy] ledger write failed:', error?.message || error);
+      }
+    }
+
+    // Host-header validation shared by the cost-bearing routes. Mirrors the
+    // Provider Settings gate (src/keySetupCore.mjs localAuthority): tunnel and
+    // DNS-rebinding traffic carries a foreign Host even over a loopback socket.
+    function isLocalHostRequest(req) {
+      return Boolean(localAuthority(req.headers?.host, req.socket?.encrypted ? 'https:' : 'http:'));
+    }
+
+    // Admission gate for /api/realtime/revoke, mirroring the Provider Settings
+    // checks (loopback socket, local Host, exact Origin on POST, JSON content
+    // type, no reverse-proxy forwarding headers) with revoke-appropriate
+    // messages. A hostile web page can POST to localhost; these checks close
+    // the DNS-rebinding / CSRF write primitive on a cost-bearing route.
+    function admitRealtimeRevoke(req) {
+      if (!LOOPBACK_ADDRESSES.has(String(req.socket?.remoteAddress || ''))) {
+        return { ok: false, status: 403, error: 'Realtime revoke answers only the machine running the server' };
+      }
+      const authority = localAuthority(req.headers?.host, req.socket?.encrypted ? 'https:' : 'http:');
+      if (!authority) {
+        return { ok: false, status: 403, error: 'Realtime revoke answers only local hostnames' };
+      }
+      const origin = req.headers?.origin;
+      if (origin === undefined || origin === null || origin === '') {
+        return { ok: false, status: 403, error: 'Realtime revoke requires an exact local Origin' };
+      }
+      let parsedOrigin;
+      try {
+        parsedOrigin = new URL(String(origin));
+      } catch {
+        return { ok: false, status: 403, error: 'Unrecognized Origin refused' };
+      }
+      const exactOrigin = parsedOrigin.username === ''
+        && parsedOrigin.password === ''
+        && parsedOrigin.pathname === '/'
+        && parsedOrigin.search === ''
+        && parsedOrigin.hash === ''
+        && parsedOrigin.origin === authority;
+      if (!exactOrigin) {
+        return { ok: false, status: 403, error: 'Cross-origin requests are refused' };
+      }
+      if (!String(req.headers?.['content-type'] || '').toLowerCase().startsWith('application/json')) {
+        return { ok: false, status: 415, error: 'Content-Type must be application/json' };
+      }
+      const PROXY_SIGNALS = ['forwarded', 'via', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'x-real-ip', 'cf-connecting-ip', 'cf-ray'];
+      if (PROXY_SIGNALS.some((name) => String(req.headers?.[name] || '').trim() !== '')) {
+        return { ok: false, status: 403, error: 'Realtime revoke does not answer proxied requests' };
+      }
+      return { ok: true };
+    }
+
     middlewares.use('/api/openai/hud-summary', async (req, res) => {
       if (req.method !== 'POST') {
         res.statusCode = 405;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+
+      // Host-header validation (same helper as /api/realtime/token): tunnel and
+      // DNS-rebinding traffic carries a foreign Host even over a loopback
+      // socket, so a local socket alone is not proof of a local caller.
+      if (!isLocalHostRequest(req)) {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'HUD summary endpoint answers only local hostnames' }));
         return;
       }
 
@@ -5523,15 +5983,24 @@ export function openAiRealtimeProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN). Keyless HUD
-      // fallback has no provider cost and resolves above without consuming a
-      // paid-endpoint quota slot.
-      if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
+      // Per-IP throttle for the HUD summary. DEFAULT-ON (M11): when
+      // GEV_RATELIMIT_OPENAI_PER_MIN is unset this route still gets a 25/min
+      // cap instead of unlimited — every request is a paid provider call and
+      // the client polls every 15 s. Keyless HUD fallback has no provider cost
+      // and resolves above without consuming a quota slot.
+      if (!enforceOptInRateLimit(openAiHudSummaryRateLimiter(), req, res)) return;
 
       try {
         const body = await readRequestBody(req, 64 * 1024);
         const context = JSON.parse(body || '{}');
-        const outcome = await requestHudSummary(provider, context);
+        // Client disconnect aborts the upstream provider call: the 5 s client
+        // timeout must not leave a paid summary request burning server-side.
+        const clientAbort = new AbortController();
+        const onClose = () => {
+          try { clientAbort.abort('client-disconnected'); } catch { /* already aborted */ }
+        };
+        if (typeof res.on === 'function') res.on('close', onClose);
+        const outcome = await requestHudSummary(provider, context, { signal: clientAbort.signal });
         console.log(`[hud-summary] provider=${outcome.source}`, outcome.error ? `error=${outcome.error}` : `summary=${outcome.summary}`);
         res.statusCode = outcome.error ? outcome.status || 502 : 200;
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -5588,6 +6057,16 @@ export function openAiRealtimeProxy() {
         return;
       }
 
+      // Host-header validation (mirrors the Provider Settings gate): tunnel and
+      // DNS-rebinding traffic carries a foreign Host even over a loopback
+      // socket, so a local socket alone is not proof of a local caller.
+      if (!isLocalHostRequest(req)) {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Realtime token endpoint answers only local hostnames' }));
+        return;
+      }
+
       // Opt-in per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN). No-op when unset.
       if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
 
@@ -5596,6 +6075,37 @@ export function openAiRealtimeProxy() {
         res.statusCode = 503;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: 'OPENAI_API_KEY is not set' }));
+        return;
+      }
+
+      // Server-side spend ledger (H1): refuse to mint once the daily budget is
+      // exhausted. The client-side meter is the fast path; this is the backstop
+      // gate, so a local process or DNS-rebinding page cannot mint secrets
+      // without bound. The mint cap is defense in depth against a caller that
+      // never reports cost (the budget only counts reported spend).
+      const ledger = currentVoiceLedger();
+      if (isBudgetExhausted(ledger)) {
+        res.statusCode = 429;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Retry-After', '3600');
+        res.end(JSON.stringify({
+          error: 'Voice spend budget exhausted for today',
+          budgetUsd: ledger.budgetUsd,
+          estimatedCostUsd: Number(ledger.dayEstimatedCostUsd.toFixed(4)),
+          resetsAt: `${voiceUtcDayKey()}T00:00:00.000Z`,
+        }));
+        return;
+      }
+      if (isMintCapReached(ledger)) {
+        res.statusCode = 429;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Retry-After', '3600');
+        res.end(JSON.stringify({
+          error: 'Voice session mint cap reached for today',
+          mintCap: ledger.mintCap,
+          mints: ledger.dayMints,
+          resetsAt: `${voiceUtcDayKey()}T00:00:00.000Z`,
+        }));
         return;
       }
 
@@ -5734,6 +6244,18 @@ export function openAiRealtimeProxy() {
           body: JSON.stringify(sessionConfig),
         });
         const body = await response.text();
+        // Record the mint in the spend ledger (best-effort — the ledger must
+        // never fail the response). The secret id is parsed from the upstream
+        // body so a later cap-trip revoke can target it.
+        if (response.ok) {
+          let secretId = null;
+          try {
+            const parsed = JSON.parse(body);
+            secretId = parsed?.id || parsed?.client_secret?.id || null;
+          } catch { /* non-JSON upstream body */ }
+          voiceLedger = recordMint(currentVoiceLedger(), { secretId });
+          persistVoiceLedger();
+        }
         res.statusCode = response.status;
         res.setHeader('Content-Type', response.headers.get('content-type') || 'application/json');
         // Which tier/model this secret was actually minted for. The upstream
@@ -5750,6 +6272,75 @@ export function openAiRealtimeProxy() {
         res.statusCode = 502;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: error?.message || 'Failed to create Realtime token' }));
+      }
+    });
+
+    middlewares.use('/api/realtime/revoke', async (req, res) => {
+      if (req.method !== 'POST') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      // Validated like the Provider Settings endpoints (see admitRealtimeRevoke).
+      const admission = admitRealtimeRevoke(req);
+      if (!admission.ok) {
+        res.statusCode = admission.status;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: admission.error }));
+        return;
+      }
+
+      try {
+        const body = await readRequestBody(req, 16 * 1024);
+        const parsed = JSON.parse(body || '{}');
+        const secretId = String(parsed.secretId || '').trim();
+        const estimatedCostUsd = Number(parsed.estimatedCostUsd);
+        if (!secretId) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'secretId is required' }));
+          return;
+        }
+        // Record the reported spend FIRST — even if the upstream revoke fails,
+        // the budget gate must count the session. The ledger is the backstop.
+        voiceLedger = recordCost(currentVoiceLedger(), { secretId, costUsd: estimatedCostUsd });
+        voiceLedger = markRevoked(voiceLedger, { secretId });
+        persistVoiceLedger();
+
+        const apiKey = process.env.OPENAI_API_KEY;
+        if (!apiKey) {
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ ok: true, revoked: false, reason: 'no_api_key' }));
+          return;
+        }
+        const response = await fetch(
+          `https://api.openai.com/v1/realtime/client_secrets/${encodeURIComponent(secretId)}`,
+          {
+            method: 'DELETE',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              'OpenAI-Safety-Identifier': 'gev-local-dev',
+            },
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        const revoked = response.ok;
+        if (!revoked) {
+          console.warn(`[openai-realtime-proxy] upstream revoke failed for ${secretId}: HTTP ${response.status}`);
+        }
+        res.statusCode = revoked ? 200 : 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          ok: revoked,
+          revoked,
+          error: revoked ? null : `Upstream revoke failed: HTTP ${response.status}`,
+        }));
+      } catch (error) {
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: error?.message || 'Failed to revoke Realtime secret' }));
       }
     });
   }
@@ -8007,7 +8598,16 @@ function keySetupEndpoint() {
       // bytes for UTF-8, corrupt the file, and wedge the next launch. We always
       // write back UTF-8, which is exactly what the launcher normalizes to.
       if (pinokioManaged()) return readPinokioEnvironmentSource(storePath());
-      return fs.readFileSync(storePath(), 'utf8');
+      // O_NOFOLLOW mirrors the write-side symlink refusal: a credential store
+      // must never be read THROUGH a symlink. ELOOP is a refusal, not an
+      // absent store — it must abort the save exactly like any other
+      // unreadable-store fault (it already throws ELOOP past this catch below).
+      const fd = fs.openSync(storePath(), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      try {
+        return fs.readFileSync(fd, 'utf8');
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch (error) {
       if (error?.code === 'ENOENT') return ''; // The first saved key births the file.
       const unreadable = new Error('the existing configuration could not be read, so nothing was changed');
