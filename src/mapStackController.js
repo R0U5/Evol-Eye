@@ -240,8 +240,16 @@ export class MapStackController {
   }
 
   async setStack(id, { silent = false } = {}) {
-    const stack = this.getStack(id) || this.getStack('photoreal');
-    if (!stack) return null;
+    const stack = this.getStack(id);
+    if (!stack) {
+      // L9: an unknown id must not silently activate photoreal — the operator
+      // asked for a map that does not exist. Report it and leave the current
+      // stack untouched (share links with a stale map= land here).
+      const message = `Unknown map stack: ${id}`;
+      this._lastError = message;
+      this._onError?.(message, null);
+      return this.getState();
+    }
 
     if (!this.isStackAvailable(stack.id)) {
       const message = this._unavailableReason(stack);
@@ -421,9 +429,15 @@ export class MapStackController {
     }
 
     const resolution = { provider, effectiveStackId, fallbackMessage };
-    this._imageryProviders.set(stack.id, resolution);
-    if (effectiveStackId === 'osm' && !this._imageryProviders.has('osm')) {
-      this._imageryProviders.set('osm', { provider, effectiveStackId: 'osm', fallbackMessage: null });
+    if (effectiveStackId === stack.id) {
+      this._imageryProviders.set(stack.id, resolution);
+    } else {
+      // L10: never cache a FALLBACK resolution under the requested id — a
+      // later selection of the original stack re-probes it (it may have
+      // recovered). The fallback is still cached under its actual provider.
+      if (!this._imageryProviders.has('osm')) {
+        this._imageryProviders.set('osm', { provider, effectiveStackId: 'osm', fallbackMessage: null });
+      }
     }
     return resolution;
   }
