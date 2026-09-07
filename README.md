@@ -68,6 +68,18 @@ that baseline was excellent to build on.
   `CCTV_PROXY_DEBUG=1` (dev server) or open the console and set
   `window.__CCTV_DEBUG__ = true` to trace per-camera frame fetches and load
   results.
+- **Click-to-focus always flies** — clicking any camera icon or card (even the
+  already-active camera) flies the view to its optimal observation angle.
+  Previously a re-click on the active camera was a silent no-op.
+- **Auto-hop moves the view** — timed camera hopping now also flies the globe
+  to the next camera when its location is known (it used to switch the feed
+  without moving the camera, leaving the monitor plane off-screen).
+- **Redesigned CCTV panel** — the feed window is 20% larger, with an
+  industry-standard layout: big 16:9 feed with an always-on **nameplate
+  overlay** (camera name left, live source state right), organized toolbar
+  rows (transport / layer controls / presentation), and calibration tucked
+  into a collapsible section. The panel opens as a dropdown from the
+  right rail.
 - **CCTV flash fix** — the projection buffer now uses a single persistent swap
   canvas, eliminating a periodic white-flash frame.
 - **Address-search spinner** — the location search shows a spinner while

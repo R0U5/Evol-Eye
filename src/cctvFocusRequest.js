@@ -21,7 +21,13 @@ export function activateCctvCameraFromWorldClick(
   eventTarget = window,
 ) {
   if (!cameraId || typeof activate !== 'function') return false;
-  if (activate(cameraId) !== CCTV_ACTIVATION_RESULT.ACTIVATED) return false;
+  const result = activate(cameraId);
+  // UNCHANGED means the camera is already the active one. A user clicking an
+  // icon/card is still explicit intent to LOOK at it, so we still dispatch the
+  // focus request (re-flying into the already-active camera's optimal view).
+  // Only NOT_FOUND (no such camera) suppresses the request.
+  if (result !== CCTV_ACTIVATION_RESULT.ACTIVATED
+    && result !== CCTV_ACTIVATION_RESULT.UNCHANGED) return false;
   eventTarget.dispatchEvent(new CustomEvent(CCTV_FOCUS_REQUEST_EVENT, {
     detail: { cameraId },
   }));
