@@ -1,6 +1,7 @@
 name: Installer Build
 
 on:
+  pull_request:
   push:
     tags:
       - 'installer-v*'
@@ -10,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: installer-${{ github.ref }}
+  group: installer-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -43,6 +44,7 @@ jobs:
   build:
     name: Build release bundle
     needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -76,6 +78,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
