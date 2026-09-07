@@ -4,6 +4,7 @@
    ═══════════════════════════════════════════════ */
 
 :root {
+  color-scheme: dark;
   --bg-dark: #0a0a0f;
   --glass-bg: rgba(12, 12, 20, 0.72);
   --glass-border: rgba(255, 255, 255, 0.08);
@@ -1397,6 +1398,13 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   letter-spacing: 0.6px;
   padding: 2px 6px;
   outline: none;
+}
+
+/* Native dropdown popup theming: color-scheme:dark handles most browsers,
+   but explicit option styling is belt-and-suspenders for the spy aesthetic. */
+select option {
+  background: var(--bg-dark);
+  color: var(--text-primary);
 }
 
 /* Proximity / All segmented control under the 3D toggle */
@@ -9634,6 +9642,27 @@ body.scene-playback-mode #first-run-launcher {
   cursor: wait;
   opacity: 0.5;
   pointer-events: none;
+}
+
+.key-setup-import {
+  padding: 0.5rem 0.95rem;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.09rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.38rem;
+  cursor: pointer;
+  transition: filter var(--transition-fast), border-color var(--transition-fast);
+}
+
+.key-setup-import:hover,
+.key-setup-import:focus-visible {
+  filter: brightness(1.12);
+  border-color: rgba(255, 255, 255, 0.3);
+  outline: none;
 }
 
 .key-setup-note {
