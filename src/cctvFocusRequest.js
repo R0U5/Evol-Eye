@@ -63,7 +63,9 @@ export function registerCctvFocusRequestListener(eventTarget, listener) {
  */
 export function routeCctvFocusRequest(event, runExplicitFocus, focusCamera) {
   const cameraId = event?.detail?.cameraId;
-  if (typeof cameraId !== 'string' || !cameraId || typeof runExplicitFocus !== 'function') {
+  if (typeof cameraId !== 'string' || !cameraId
+      || typeof runExplicitFocus !== 'function'
+      || typeof focusCamera !== 'function') {
     return false;
   }
   return runExplicitFocus(
