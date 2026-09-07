@@ -376,6 +376,9 @@ export class GevRealtimeController {
     try {
       const minted = await fetchRealtimeToken(this.voiceTier);
       const token = minted.token;
+      // Remember the minted secret so a cap trip can revoke it server-side
+      // (H1). Cleared by stop() and by handleCostCap after reporting.
+      this.activeSecretId = minted.secretId || null;
       if (this.abandonStart(epoch, { localStream, localPc })) return;
       // Bind the session meter to the model actually served. An env override
       // (OPENAI_REALTIME_MODEL[_MINI]) can point a tier at a different model,
@@ -837,6 +840,7 @@ export class GevRealtimeController {
     this.pendingResponseInstructions = null;
     this.pendingUserTextResponse = false;
     this.activeResponseId = null;
+    this.activeSecretId = null;
     this.supersededResponseIds.clear();
     this.pendingRadioPlaybackResult = null;
     this.lastViewportItemId = null;
@@ -1908,6 +1912,21 @@ export class GevRealtimeController {
       tier: state.tier,
       modelId: state.modelId,
     });
+    // Report the cap trip to the server so it can revoke the minted client
+    // secret and record the session's estimated cost in the spend ledger (H1).
+    // The client-side meter is the fast path; this is what makes the server
+    // ledger a real gate. Fire-and-forget: the session is ending regardless,
+    // and a failed report must not wedge the teardown.
+    const secretId = this.activeSecretId;
+    const estimatedCostUsd = Number(state.totalUsd) || 0;
+    this.activeSecretId = null;
+    if (secretId) {
+      void fetch('/api/realtime/revoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secretId, estimatedCostUsd }),
+      }).catch(() => {});
+    }
     try {
       this.stop({ preserveStatus: true });
     } finally {
@@ -2332,7 +2351,10 @@ async function fetchRealtimeToken(tier = DEFAULT_VOICE_TIER) {
   }
   const token = data?.value || data?.client_secret?.value || data?.client_secret;
   if (!token) throw new Error('Realtime token response did not include a client secret');
-  return { token, model: servedModel, tier: servedTier };
+  // The minted secret's id, so a cap trip can ask the server to revoke it
+  // (H1). Absent on older/foreign upstream shapes — revocation is best-effort.
+  const secretId = data?.id || data?.client_secret?.id || null;
+  return { token, secretId, model: servedModel, tier: servedTier };
 }
 
 function extractFunctionCalls(event) {
