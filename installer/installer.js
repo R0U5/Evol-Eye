@@ -247,7 +247,7 @@ async function launch() {
     const res = await fetch('/api/launch', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ installDir }),
+      body: JSON.stringify({ installDir, token: $('token').value.trim() }),
     });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}));
