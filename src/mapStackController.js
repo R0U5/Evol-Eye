@@ -194,10 +194,13 @@ export class MapStackController {
    * @param {boolean} enabled
    */
   setRadarOverlayEnabled(enabled) {
-    // Never show the overlay on the photoreal globe — it doesn't make sense over
-    // 3D tiles and would introduce visual artifacts at building edges.
-    const onGlobeStack = !this.getStack(this._activeId)?.kind?.startsWith('photoreal');
-    this._radarOverlay.setEnabled(enabled && onGlobeStack);
+    // The radar overlay applies on EVERY map stack, including photoreal. The
+    // old code suppressed it over the Google 3D tiles (a design opinion about
+    // visual coherence), which made the Radar button a silent no-op on the
+    // DEFAULT photoreal stack — the reported bug. The flat precipitation layer
+    // now draws over any basemap; it already uses translucent alpha (0.65) so
+    // the underlying imagery stays legible.
+    this._radarOverlay.setEnabled(enabled);
   }
 
   /** Toggle the radar overlay. Returns the new visibility state. */
@@ -318,9 +321,10 @@ export class MapStackController {
     this._syncEsriAttribution(null); // Esri is no longer on screen.
     if (this.googleTileset) this.googleTileset.show = true;
     this.viewer.scene.globe.show = false;
-    // Radar overlay is never shown over photoreal — it has its own sky/atmosphere
-    // and 3D terrain that a flat radar image doesn't make sense on.
-    this._radarOverlay.setEnabled(false);
+    // Radar overlay is intentionally NOT touched here: it keeps its own
+    // persisted preference across every map stack (previously forced off over
+    // photoreal — see setRadarOverlayEnabled). It overlays the 3D tiles with
+    // translucent alpha rather than being hidden.
     // Terrain is left UNTOUCHED here. The photoreal globe is hidden
     // (`globe.show = false`), so the terrain provider is inert — it renders and
     // streams nothing. Routing this through `_setWorldTerrainEnabled(false)`

@@ -3232,10 +3232,17 @@ export class StyleManager {
   _updateRadarButtonState() {
     const controller = this.mapStackController?._radarOverlay;
     if (!controller || !this._radarBtn) return;
-    const visible = controller.isVisible;
-    this._radarBtn.classList.toggle('active', visible);
-    this._radarBtn.setAttribute('aria-pressed', String(visible));
-    this._radarBtn.title = visible ? 'Disable RainViewer Radar Overlay' : 'Enable RainViewer Radar Overlay';
+    // Reflect the INTENDED enabled state (matches what a click sets), not just
+    // the rendered layer — so the toggle gives instant visual feedback even on
+    // the frame or two before the imagery layer finishes building.
+    const active = controller._enabled === true && controller.isVisible === true;
+    const pending = controller._enabled === true && controller.isVisible === false;
+    this._radarBtn.classList.toggle('active', active);
+    this._radarBtn.setAttribute('aria-pressed', String(active));
+    this._radarBtn.classList.toggle('pending', pending);
+    this._radarBtn.title = controller._enabled
+      ? 'Disable RainViewer Radar Overlay'
+      : 'Enable RainViewer Radar Overlay';
   }
 
   /**
