@@ -1370,6 +1370,7 @@ function radioBrowserProxy() {
 // ---------------------------------------------------------------------------
 /** Upstream fetch timeout for GBFS requests (ms). */
 const GBFS_PROXY_TIMEOUT_MS = 12000;
+const GBFS_REDIRECT_MAX_HOPS = 3;
 /** Allowlisted GBFS hostnames; wildcard *.publicbikesystem.net also accepted. */
 const GBFS_ALLOWED_HOSTS = new Set([
   'gbfs.lyft.com',
@@ -1511,7 +1512,10 @@ async function getOpenSkyToken() {
 
       let data = null;
       try {
-        data = await res.json();
+        // Cap the token body: an OAuth token response is a few KB, so 64 KB
+        // is generous while still refusing a malicious/oversized endpoint.
+        const text = await readResponseTextCapped(res, 64 * 1024);
+        data = JSON.parse(text);
       } catch {
         data = null;
       }
@@ -3514,6 +3518,59 @@ function isAllowedGbfsHost(hostname) {
 }
 
 /**
+ * Fetch a GBFS target with redirects manually re-validated (SSRF tie-in).
+ *
+ * Mirrors fetchCctvUpstream: `redirect: 'manual'` so a 3xx that points at a
+ * non-allowlisted host is refused instead of followed. Each hop is re-checked
+ * against the hostname + path allowlists (CDN/LB rotation stays safe because
+ * the connection is taken to the PUBLIC host, never a private one).
+ *
+ * @param {URL} url - Validated upstream URL.
+ * @param {{ signal?: AbortSignal }} [options]
+ * @returns {Promise<Response|null>} Upstream response, or null when refused/errored.
+ */
+async function fetchGbfsUpstream(url, { signal = null } = {}) {
+  let current = url;
+  for (let hop = 0; hop <= GBFS_REDIRECT_MAX_HOPS; hop += 1) {
+    let upstream;
+    try {
+      upstream = await fetch(current.toString(), {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'devils-eye-gbfs-proxy/1.0',
+        },
+        signal,
+        redirect: 'manual',
+      });
+    } catch {
+      return null;
+    }
+    if (upstream.status < 300 || upstream.status >= 400) {
+      return upstream;
+    }
+    const location = upstream.headers.get('location');
+    try {
+      await upstream.body?.cancel();
+    } catch {
+      /* no-op */
+    }
+    if (!location) return null;
+    let next;
+    try {
+      next = new URL(location, current);
+    } catch {
+      return null;
+    }
+    if (next.protocol !== 'https:' || !isAllowedGbfsHost(next.hostname) || !isAllowedGbfsPath(next.pathname)) {
+      return null;
+    }
+    current = next;
+  }
+  return null; // too many hops — refuse
+}
+
+/**
  * Only allow station_information.json and station_status.json endpoints.
  *
  * @param {string} pathname
@@ -3609,16 +3666,14 @@ function gbfsProxy() {
           const timeoutId = setTimeout(() => controller.abort(), GBFS_PROXY_TIMEOUT_MS);
           let upstream;
           try {
-            upstream = await fetch(upstreamUrl.toString(), {
-              method: 'GET',
-              headers: {
-                Accept: 'application/json',
-                'User-Agent': 'devils-eye-gbfs-proxy/1.0',
-              },
-              signal: controller.signal,
-            });
+            upstream = await fetchGbfsUpstream(upstreamUrl, { signal: controller.signal });
           } finally {
             clearTimeout(timeoutId);
+          }
+          if (!upstream) {
+            res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ error: 'GBFS upstream unavailable or redirect refused' }));
+            return;
           }
 
           // Limit response size to prevent memory exhaustion from malicious upstream
@@ -5688,18 +5743,37 @@ function extractChatCompletionsText(data) {
  * @param {*} context
  * @returns {Promise<{summary: string|null, source: string, error: string|null, status?: number}>}
  */
-async function requestHudSummary(provider, context) {
+async function requestHudSummary(provider, context, { signal = null } = {}) {
   const messages = [
     { role: 'system', content: HUD_SUMMARY_PROMPT },
     { role: 'user', content: JSON.stringify(context) },
   ];
+  // Compose the caller's signal (client disconnect) with the per-request
+  // timeout: either finishing the fetch early is a win.
+  const timeoutSignal = AbortSignal.timeout(OLLAMA_HUD_SUMMARY_TIMEOUT_MS);
   const common = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(OLLAMA_HUD_SUMMARY_TIMEOUT_MS),
+    signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
   };
   let response;
   let data = null;
+  // HUD summaries are ~100 tokens; 256 KB is generous while refusing a
+  // misbehaving upstream that streams gigabytes into memory. Falls back to
+  // the plain reader when the response lacks standard header/text methods
+  // (non-undici clients / test stubs) — the cap still applies to the string.
+  const readJsonCapped = async (res) => {
+    try {
+      return JSON.parse(await readResponseTextCapped(res, 256 * 1024));
+    } catch {
+      try {
+        const fallback = await res.json();
+        return fallback && typeof fallback === 'object' ? fallback : {};
+      } catch {
+        return {};
+      }
+    }
+  };
   if (provider.source === 'local') {
     response = await fetch(provider.url, {
       ...common,
@@ -5710,7 +5784,7 @@ async function requestHudSummary(provider, context) {
         options: { num_predict: 100, temperature: 0.3 },
       }),
     });
-    data = await response.json().catch(() => ({}));
+    data = await readJsonCapped(response);
   } else {
     const bearer = { ...common, headers: { ...common.headers, Authorization: `Bearer ${provider.apiKey}` } };
     if (provider.source === 'openai-compatible') {
@@ -5718,7 +5792,7 @@ async function requestHudSummary(provider, context) {
         ...bearer,
         body: JSON.stringify({ model: provider.model, messages, max_tokens: 100 }),
       });
-      data = await response.json().catch(() => ({}));
+      data = await readJsonCapped(response);
     } else {
       response = await fetch(provider.url, {
         ...bearer,
@@ -5730,7 +5804,7 @@ async function requestHudSummary(provider, context) {
           max_output_tokens: 100,
         }),
       });
-      data = await response.json().catch(() => ({}));
+      data = await readJsonCapped(response);
     }
   }
   if (!response.ok) {
@@ -5896,7 +5970,14 @@ export function openAiRealtimeProxy() {
       try {
         const body = await readRequestBody(req, 64 * 1024);
         const context = JSON.parse(body || '{}');
-        const outcome = await requestHudSummary(provider, context);
+        // Client disconnect aborts the upstream provider call: the 5 s client
+        // timeout must not leave a paid summary request burning server-side.
+        const clientAbort = new AbortController();
+        const onClose = () => {
+          try { clientAbort.abort('client-disconnected'); } catch { /* already aborted */ }
+        };
+        if (typeof res.on === 'function') res.on('close', onClose);
+        const outcome = await requestHudSummary(provider, context, { signal: clientAbort.signal });
         console.log(`[hud-summary] provider=${outcome.source}`, outcome.error ? `error=${outcome.error}` : `summary=${outcome.summary}`);
         res.statusCode = outcome.error ? outcome.status || 502 : 200;
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
