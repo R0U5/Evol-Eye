@@ -5,17 +5,17 @@
   "description": "A real-time intelligence console for planet Earth — photorealistic 3D globe, live aircraft/ships/satellites/earthquakes/CCTV, and hands-free voice control. Runs in a browser.",
   "type": "module",
   "license": "MIT",
-  "author": "Bilawal Sidhu",
-  "homepage": "https://github.com/bilawalsidhu/devils-eye#readme",
+  "author": "R0U5",
+  "homepage": "https://github.com/R0U5/Devils-Eye#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bilawalsidhu/devils-eye.git"
+    "url": "https://github.com/R0U5/Devils-Eye.git"
   },
   "bugs": {
-    "url": "https://github.com/bilawalsidhu/devils-eye/issues"
+    "url": "https://github.com/R0U5/Devils-Eye/issues"
   },
   "engines": {
-    "node": ">=24.14.0 <25 || >=26 <27"
+    "node": ">=18"
   },
   "keywords": [
     "cesium",
