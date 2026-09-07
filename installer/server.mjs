@@ -33,8 +33,22 @@ const MIME = {
   '.png': 'image/png',
 };
 
-export function admitInstallerRequest({ remoteAddress, host, origin, referer, hostOverride }) {
+export function admitInstallerRequest({ remoteAddress, host, origin, referer, hostOverride, serverToken, requestToken, path, method }) {
+  // Mutating endpoints execute code on this machine (npm install + build,
+  // app launch). When the operator overrides the bind host to a non-loopback
+  // address, those endpoints require a server token — otherwise any remote
+  // peer could drive an unauthenticated install (RCE). Non-mutating routes
+  // (health/plan/static UI) stay reachable so the operator can still see why.
+  const isMutating = method === 'POST' && (path === '/api/install' || path === '/api/launch');
   if (hostOverride && hostOverride !== '127.0.0.1') {
+    if (isMutating) {
+      if (!serverToken) {
+        return { allowed: false, reason: 'non-loopback host requires a server token' };
+      }
+      if (typeof requestToken !== 'string' || requestToken.length === 0 || requestToken !== serverToken) {
+        return { allowed: false, reason: 'invalid or missing token' };
+      }
+    }
     return { allowed: true, reason: 'explicit-host' };
   }
   if (!LOOPBACK_PEERS.has(remoteAddress)) {
@@ -177,6 +191,13 @@ export async function createInstallerServer(options = {}) {
   const hostOverride = options.host ?? '127.0.0.1';
   const staticDir = options.staticDir ?? here;
   let serverToken = options.token ?? null;
+  if (hostOverride && hostOverride !== '127.0.0.1' && !serverToken) {
+    console.warn(
+      '[installer] WARNING: serving on a non-loopback host without a server token. '
+      + 'Mutating endpoints (/api/install, /api/launch) are DISABLED. '
+      + 'Set --token or GEV_INSTALLER_TOKEN to enable them.',
+    );
+  }
   const context = {
     manifest,
     opts: { ...options, sourceArchiveUrl: options.sourceArchiveUrl ?? null, runtimeDistBase: options.runtimeDistBase ?? null },
@@ -204,12 +225,30 @@ export async function createInstallerServer(options = {}) {
 
   const server = http.createServer(async (req, res) => {
     const urlPath = (req.url || '/').split('?')[0];
+    const isMutating = req.method === 'POST' && (urlPath === '/api/install' || urlPath === '/api/launch');
+
+    // Mutating endpoints carry the auth token in their JSON body, so the body
+    // must be read before admission can decide. The 64 KiB cap keeps this cheap.
+    let body = null;
+    if (isMutating) {
+      try {
+        body = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        sendJson(res, 400, { error: 'invalid JSON body' });
+        return;
+      }
+    }
+
     const admission = admitInstallerRequest({
       remoteAddress: req.socket.remoteAddress,
       host: req.headers.host,
       origin: req.headers.origin,
       referer: req.headers.referer,
       hostOverride,
+      serverToken,
+      requestToken: body && typeof body.token === 'string' ? body.token : null,
+      path: urlPath,
+      method: req.method,
     });
     if (!admission.allowed) {
       sendJson(res, 403, { error: 'forbidden', reason: admission.reason });
@@ -229,14 +268,6 @@ export async function createInstallerServer(options = {}) {
       }
 
       if (req.method === 'POST' && urlPath === '/api/install') {
-        const raw = await readBody(req);
-        let body = {};
-        try {
-          body = JSON.parse(raw || '{}');
-        } catch {
-          sendJson(res, 400, { error: 'invalid JSON body' });
-          return;
-        }
         const token = typeof body.token === 'string' && body.token.length > 0 ? body.token.slice(0, 1024) : serverToken;
 
         let installDir;
@@ -298,14 +329,6 @@ export async function createInstallerServer(options = {}) {
       }
 
       if (req.method === 'POST' && urlPath === '/api/launch') {
-        const raw = await readBody(req);
-        let body = {};
-        try {
-          body = JSON.parse(raw || '{}');
-        } catch {
-          sendJson(res, 400, { error: 'invalid JSON body' });
-          return;
-        }
         if (typeof body.installDir !== 'string' || body.installDir.length === 0) {
           sendJson(res, 400, { error: 'installDir is required' });
           return;

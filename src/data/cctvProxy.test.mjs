@@ -6,6 +6,7 @@ import {
   extractFirstJpegFromMjpg,
   fetchCctvImageFromUpstream,
   isMjpgStreamUrl,
+  isPublicCctvUrl,
 } from '../../vite.config.js';
 
 test('CCTV upstream frame fetch supplies a bounded abort signal', async () => {
@@ -55,6 +56,18 @@ test('deriveAxisSnapshotUrls rewrites MJPG stream URLs to still endpoints', () =
     'http://85.4.30.236:8080/axis-cgi/jpg/image.cgi?resolution=640x480',
   ]);
   assert.deepEqual(deriveAxisSnapshotUrls('https://example.com/frame.jpg'), []);
+});
+
+test('deriveAxisSnapshotUrls honors a requested resolution for hi-res active reads', () => {
+  const hd = deriveAxisSnapshotUrls('http://85.4.30.236:8080/mjpg/video.mjpg', '1280x720');
+  assert.deepEqual(hd, [
+    'http://85.4.30.236:8080/mjpg/1/image.jpg?resolution=1280x720',
+    'http://85.4.30.236:8080/axis-cgi/jpg/image.cgi?resolution=1280x720',
+  ]);
+  assert.deepEqual(deriveAxisSnapshotUrls('http://x.local/mjpg/video.mjpg', ''), [
+    'http://x.local/mjpg/1/image.jpg?resolution=640x480',
+    'http://x.local/axis-cgi/jpg/image.cgi?resolution=640x480',
+  ]);
 });
 
 test('extractFirstJpegFromMjpg pulls the first frame out of a multipart body', () => {
@@ -120,4 +133,62 @@ test('fetchCctvImageFromUpstream buffers an MJPG stream and extracts a frame whe
   assert.equal(result?.ok, true);
   assert.equal(result?.contentType, 'image/jpeg');
   assert.deepEqual(result?.body, Buffer.from([0xff, 0xd8, 0x01, 0x02, 0xff, 0xd9]));
+});
+
+test('fetchCctvImageFromUpstream refuses a redirect to a non-public host', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === 'https://example.com/frame.jpg') {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: 'http://169.254.169.254/latest/meta-data/' },
+      });
+    }
+    return new Response('unexpected', { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+  };
+  const result = await fetchCctvImageFromUpstream('https://example.com/frame.jpg', {
+    timeoutMs: 100,
+    fetchImpl,
+  });
+  assert.deepEqual(result, { blocked: true });
+  assert.deepEqual(calls, ['https://example.com/frame.jpg'], 'the redirect target must never be fetched');
+});
+
+test('fetchCctvImageFromUpstream follows a redirect to a public host', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === 'https://example.com/frame.jpg') {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: 'https://cdn.example.net/frame.jpg' },
+      });
+    }
+    return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), {
+      status: 200,
+      headers: { 'Content-Type': 'image/jpeg' },
+    });
+  };
+  const result = await fetchCctvImageFromUpstream('https://example.com/frame.jpg', {
+    timeoutMs: 100,
+    fetchImpl,
+  });
+  assert.equal(result?.ok, true);
+  assert.equal(result?.contentType, 'image/jpeg');
+  assert.deepEqual(calls, ['https://example.com/frame.jpg', 'https://cdn.example.net/frame.jpg']);
+});
+
+test('isPublicCctvUrl rejects private, loopback, link-local, and credential URLs', () => {
+  assert.equal(isPublicCctvUrl('http://85.4.30.236:8080/mjpg/video.mjpg'), true);
+  assert.equal(isPublicCctvUrl('https://cctv.austinmobility.io/image/x.jpg'), true);
+  assert.equal(isPublicCctvUrl('http://127.0.0.1:8080/mjpg/video.mjpg'), false);
+  assert.equal(isPublicCctvUrl('http://10.0.0.5/mjpg/video.mjpg'), false);
+  assert.equal(isPublicCctvUrl('http://192.168.1.10/mjpg/video.mjpg'), false);
+  assert.equal(isPublicCctvUrl('http://169.254.169.254/latest/meta-data/'), false);
+  assert.equal(isPublicCctvUrl('http://localhost:8080/mjpg/video.mjpg'), false);
+  assert.equal(isPublicCctvUrl('http://[::1]/mjpg/video.mjpg'), false);
+  assert.equal(isPublicCctvUrl('http://user:pass@example.com/frame.jpg'), false);
+  assert.equal(isPublicCctvUrl('ftp://example.com/frame.jpg'), false);
+  assert.equal(isPublicCctvUrl('not a url'), false);
 });

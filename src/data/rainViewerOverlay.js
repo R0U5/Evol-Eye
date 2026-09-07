@@ -256,6 +256,17 @@ export class RainViewerOverlayController {
   }
 
   /**
+   * Whether the layer is ready yet. Until `_init()` builds the imagery layer
+   * (it fetches the latest radar frame first), `_layer` is null and a toggle
+   * looks like a silent no-op. Used by the map-stack controller to surface a
+   * synthetic "pending" state rather than a false "off".
+   * @returns {boolean}
+   */
+  get isReady() {
+    return this._layer != null;
+  }
+
+  /**
    * Refresh to the latest radar frame. Safe to call on a timer or on demand.
    * @returns {Promise<void>}
    */

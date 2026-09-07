@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: installer-${{ github.workflow }}-${{ github.ref }}
@@ -114,7 +114,9 @@ jobs:
           git log --oneline --no-merges "$(git tag --sort=-version:refname | head -n 2 | tail -n 1 )..HEAD" 2>/dev/null > release-notes.txt || true
 
       - name: Create or update release
-        uses: softprops/action-gh-release@v2
+        # L15: SHA-pinned (was @v2) — the tag moved on 2026-09-07;
+        # resolve with: gh api repos/softprops/action-gh-release/git/ref/tags/v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Devil's Eye Installer ${{ steps.tag.outputs.tag }}
