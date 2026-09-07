@@ -13,6 +13,7 @@
  */
 
 import * as Cesium from 'cesium';
+import { registerExternalCameraMotion } from '../cameraVerbs.js';
 import { SCENE_RECIPES } from './recipes.js';
 import { sceneLayerPlan, sceneRequiresContextModeExit } from './scenePolicy.js';
 import {
@@ -318,6 +319,8 @@ export class SceneDirector {
     this._lastRun = null;
     /** @type {string} JSON string of _lastRun for download */
     this._lastRunJson = '';
+    /** @type {{ camera: Object|null, visual: Object|null, layers: Object }|null} Pre-run snapshot restored in _finishRun */
+    this._preRunSnapshot = null;
     this._onKeyDown = this._onKeyDown.bind(this);
 
     this._project = this._loadProject();
@@ -778,15 +781,81 @@ export class SceneDirector {
    * and the policy is also where Cockpit gets to refuse.
    * @returns {boolean} False when the camera is unavailable (Cockpit/disposed).
    */
-  _claimCameraOwnership() {
+  _claimCameraOwnership({ quiet = false } = {}) {
     // Older/headless style managers may predate the facade — proceed then.
     if (typeof this.styleManager?.runImmediateNavigation !== 'function') return true;
     const claimed = this.styleManager.runImmediateNavigation('scene', () => true);
     if (claimed === false) {
-      this._updateStatus('Camera unavailable — exit cockpit first');
+      if (!quiet) this._updateStatus('Camera unavailable — exit cockpit first');
       return false;
     }
     return true;
+  }
+
+  /**
+   * Capture the operator's pre-run camera/visual state so a COMPLETED run can
+   * hand it back. Best-effort: every reader is guarded, so a headless or
+   * partially-constructed manager yields nulls, never a throw.
+   *
+   * Layers are deliberately NOT restored: a finished scene leaves its final
+   * composition on screen (like a movie's last frame), and stopped runs freeze
+   * where they are — both behaviors are pinned by the director test suite.
+   * @returns {{ camera: Object|null, visual: Object|null }}
+   */
+  _capturePreRunState() {
+    const camera = (() => {
+      try {
+        const cam = this.viewer?.camera;
+        const carto = cam?.positionCartographic;
+        if (!cam || !carto) return null;
+        return {
+          lon: Cesium.Math.toDegrees(carto.longitude),
+          lat: Cesium.Math.toDegrees(carto.latitude),
+          alt: carto.height || 0,
+          heading: Cesium.Math.toDegrees(cam.heading || 0),
+          pitch: Cesium.Math.toDegrees(cam.pitch || 0),
+          roll: Cesium.Math.toDegrees(cam.roll || 0),
+        };
+      } catch {
+        return null;
+      }
+    })();
+
+    let visual = null;
+    try {
+      visual = this.styleManager?.getVisualState?.() || null;
+    } catch {
+      visual = null;
+    }
+    return { camera, visual };
+  }
+
+  /**
+   * Restore the operator's pre-run camera/visual state after a COMPLETED run.
+   * Runs through the same seams the shot loop used, guarded so a newer run,
+   * a stop, or a camera owner (cockpit) supersedes it instead of fighting it.
+   * @param {{ camera: Object|null, visual: Object|null }} snapshot
+   */
+  _restorePreRunState(snapshot) {
+    if (!snapshot) return;
+    // Visual first — style, bloom, HUD, context panel all live here.
+    try {
+      this.styleManager.applyVisualState(snapshot.visual || {}, {
+        isCurrent: () => !this._running,
+      });
+    } catch {
+      /* best effort */
+    }
+
+    if (this._running || !snapshot.camera) return;
+    // A new camera owner (e.g. cockpit) takes precedence over restoring the
+    // pre-run view — do not yank the operator's camera.
+    if (!this._claimCameraOwnership({ quiet: true })) return;
+    try {
+      this._flyCamera(snapshot.camera, 0.8, { cancelled: false });
+    } catch {
+      /* best effort */
+    }
   }
 
   /**
@@ -892,6 +961,11 @@ export class SceneDirector {
       return { started: false, reason: 'camera-unavailable' };
     }
 
+    // Snapshot the operator's state BEFORE any shot mutates it. The camera
+    // claim is held, so nothing else can move the globe under the snapshot;
+    // the run restores through the same seams in _finishRun.
+    this._preRunSnapshot = this._capturePreRunState();
+
     // A run supersedes any LOAD still suspended on its own awaits, so that
     // load cannot land a stale shot's layers on top of the run's first shot.
     // Aborting cancels a layer transition already in flight; bumping the
@@ -905,6 +979,18 @@ export class SceneDirector {
     document.body.classList.add('scene-playback-mode');
     this._setButtons(true);
     this._setProgress(0);
+
+    // Register with the shared camera-motion seam so voice diagnostics see the
+    // playback motion and a voice/scene "stop" cancels the run mid-flight
+    // instead of reporting success over a flight that keeps flying.
+    registerExternalCameraMotion({
+      describe: () => (this._running ? { kind: 'scene-flight', mode: 'playback' } : null),
+      cancel: (reason) => {
+        if (!this._running) return false;
+        this.stopScene(`Stopped (${reason || 'interrupt'})`);
+        return true;
+      },
+    });
 
     // Create a cancellation token shared across async steps. Held in a local
     // as well: _finishRun() clears this._runToken, so the loop must not read
@@ -1312,6 +1398,15 @@ export class SceneDirector {
 
     this._runToken = null;
     this._setButtons(false);
+
+    // Release the shared-motion registration so voice no longer sees a scene
+    // flight, then hand the operator back their pre-run view — but only for a
+    // COMPLETED run. A stopped run freezes where it is (pinned by the
+    // cancellation tests: STOP lands no further layer changes or flights).
+    registerExternalCameraMotion(null);
+    const snapshot = this._preRunSnapshot;
+    this._preRunSnapshot = null;
+    if (snapshot && !this._lastRun?.wasCancelled) void this._restorePreRunState(snapshot);
   }
 
   /**
