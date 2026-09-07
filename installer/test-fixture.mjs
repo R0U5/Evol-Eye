@@ -47,6 +47,7 @@ process.exit(0);
       await fsp.mkdir(path.dirname(binDst), { recursive: true });
       await fsp.mkdir(path.dirname(npmDst), { recursive: true });
       await fsp.writeFile(binDst, binBytes);
+      await fsp.chmod(binDst, 0o755);
       await fsp.writeFile(npmDst, npmStub);
       execFileSync('tar', ['-czf', path.join(staging, spec.archiveFile), spec.topDir], { cwd: staging });
       buffer = await fsp.readFile(path.join(staging, spec.archiveFile));
