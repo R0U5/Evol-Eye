@@ -201,6 +201,8 @@ Use **POWER UP → Provider Settings** to add keys. None is required to start.
 | 🟡 | **Cesium ion** | Google Photorealistic 3D, world terrain, ion stacks. Free Community plan for eligible personal/non-commercial use | [cesium.com/ion](https://cesium.com/ion) — public `assets:read` token |
 | 🔴 | **Google Maps** | Direct Google 3D + place search (Map Tiles API) | [Google Cloud Console](https://console.cloud.google.com/) — URL-restrict it |
 | 🔴 | **OpenAI** | Voice + AI HUD summary (metered; the app shows a live session spend, $2 warning, $5 hard cap) | [platform.openai.com](https://platform.openai.com) |
+| 🟡 | **LOCAL INTEL** | On-premise AI HUD summary via Ollama — no network egress, no API bill | [ollama.com](https://ollama.com) — free, local |
+| 🔴 | **OpenAI-compatible** | Point the AI HUD summary at any OpenAI-compatible endpoint (vLLM, LM Studio, Azure, ...) | bring your own endpoint + key |
 | 🟡 | **AISStream** | Live global ships | [aisstream.io](https://aisstream.io) — free signup |
 | 🟡 | **NASA FIRMS** | Live active fires | [firms.modaps.eosdis.nasa.gov](https://firms.modaps.eosdis.nasa.gov) — free key |
 | 🟡 | **TomTom** | Live flow speeds / congestion colors | [developer.tomtom.com](https://developer.tomtom.com) — free tier |

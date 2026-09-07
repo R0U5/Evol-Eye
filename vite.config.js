@@ -516,6 +516,16 @@ function googleRateLimiter() {
 }
 
 /**
+ * @private Test-only: drop the lazily-built rate-limiter cache so a test can
+ * rebuild `openAiRateLimiter()`/`googleRateLimiter()` against its own env.
+ * Never called by the app itself.
+ */
+export function resetRateLimiterCacheForTests() {
+  _openAiRateLimiter = undefined;
+  _googleRateLimiter = undefined;
+}
+
+/**
  * Apply an opt-in limiter to a request, writing a 429 when over the cap.
  * When `limiter` is null (unlimited, the default) this is a no-op returning
  * `true`, so the handler proceeds exactly as before.
@@ -1380,6 +1390,19 @@ const OPENAI_REALTIME_REASONING_DEFAULT = 'low';
 const OPENAI_REALTIME_CONTEXT_TOKENS_DEFAULT = 3000;
 const OPENAI_REALTIME_CONTEXT_RETENTION_DEFAULT = 0.5;
 const OPENAI_HUD_SUMMARY_MODEL_DEFAULT = 'gpt-5-nano';
+const OLLAMA_HUD_SUMMARY_TIMEOUT_MS = 30000;
+const HUD_SUMMARY_PROMPT = [
+  "Write one concise intelligence-HUD summary for Devil's Eye.",
+  'Use only the supplied place, street, nearby-place, and enabled-layer text labels.',
+  'Prefer the clearest named place and include a relevant enabled layer only when useful.',
+  'Do not infer from coordinates or invent a place.',
+  'Output exactly five words with no title, punctuation, markdown, or introductory phrase.',
+].join(' ');
+const HUD_SUMMARY_PROVIDER_LABELS = Object.freeze({
+  local: 'Local Ollama',
+  'openai-compatible': 'OpenAI-compatible',
+  openai: 'OpenAI',
+});
 const REALTIME_DEBUG_LOG_DIR = path.join(__dirname, '.gev-logs');
 const REALTIME_DEBUG_LOG_FILE = path.join(REALTIME_DEBUG_LOG_DIR, 'realtime-conversations.jsonl');
 const REALTIME_DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
@@ -5345,10 +5368,136 @@ function trackBackfillProxies() {
 }
 
 /**
+ * HUD summary provider selection + the Vite plugin below it.
+ *
+ * Choose the active provider from the server environment. Precedence:
+ * LOCAL (Ollama) > OPENAI-COMPATIBLE > OPENAI > unconfigured. LOCAL wins even
+ * when an OpenAI key is also present — an on-premise model is always preferred
+ * over a paid, network-egress endpoint.
+ *
+ * @param {{OLLAMA_BASE_URL?: string, OLLAMA_HUD_SUMMARY_MODEL?: string, OPENAI_API_KEY?: string, OPENAI_BASE_URL?: string, OPENAI_HUD_SUMMARY_MODEL?: string}} [env]
+ * @returns {null|{source: 'local'|'openai-compatible'|'openai', url: string, model: string, apiKey?: string}}
+ */
+export function hudSummaryProvider(env = {}) {
+  const base = (value) => String(value || '').trim().replace(/\/+$/, '');
+  const ollamaBaseUrl = base(env.OLLAMA_BASE_URL);
+  const ollamaModel = String(env.OLLAMA_HUD_SUMMARY_MODEL || '').trim();
+  if (ollamaBaseUrl && ollamaModel) {
+    return {
+      source: 'local',
+      url: `${ollamaBaseUrl}/api/chat`,
+      model: ollamaModel,
+    };
+  }
+  const apiKey = String(env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) return null;
+  const openAiBaseUrl = base(env.OPENAI_BASE_URL);
+  return {
+    source: openAiBaseUrl ? 'openai-compatible' : 'openai',
+    url: openAiBaseUrl ? `${openAiBaseUrl}/v1/chat/completions` : 'https://api.openai.com/v1/responses',
+    model: String(env.OPENAI_HUD_SUMMARY_MODEL || '').trim() || OPENAI_HUD_SUMMARY_MODEL_DEFAULT,
+    apiKey,
+  };
+}
+
+/**
+ * Read a chat-style response body into text. Handles both shapes the two
+ * chat providers return: Ollama's non-streaming `/api/chat` (`message.content`)
+ * and OpenAI-compatible `choices[0].message.content` (which may be a plain
+ * string or an array of typed parts).
+ * @param {*} data
+ * @returns {string}
+ */
+function extractChatCompletionsText(data) {
+  const direct = data?.message?.content;
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content === 'string' && content.trim()) return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+      .join(' ')
+      .trim();
+  }
+  return '';
+}
+
+/**
+ * Ask the selected provider for a raw HUD summary. Every provider shares the
+ * same 30s timeout and the same `{ summary, source, error, status }` outcome
+ * shape, so the endpoint behaves identically no matter which one serves.
+ * @param {{source: string, url: string, model: string, apiKey?: string}} provider
+ * @param {*} context
+ * @returns {Promise<{summary: string|null, source: string, error: string|null, status?: number}>}
+ */
+async function requestHudSummary(provider, context) {
+  const messages = [
+    { role: 'system', content: HUD_SUMMARY_PROMPT },
+    { role: 'user', content: JSON.stringify(context) },
+  ];
+  const common = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(OLLAMA_HUD_SUMMARY_TIMEOUT_MS),
+  };
+  let response;
+  let data = null;
+  if (provider.source === 'local') {
+    response = await fetch(provider.url, {
+      ...common,
+      body: JSON.stringify({
+        model: provider.model,
+        messages,
+        stream: false,
+        options: { num_predict: 100, temperature: 0.3 },
+      }),
+    });
+    data = await response.json().catch(() => ({}));
+  } else {
+    const bearer = { ...common, headers: { ...common.headers, Authorization: `Bearer ${provider.apiKey}` } };
+    if (provider.source === 'openai-compatible') {
+      response = await fetch(provider.url, {
+        ...bearer,
+        body: JSON.stringify({ model: provider.model, messages, max_tokens: 100 }),
+      });
+      data = await response.json().catch(() => ({}));
+    } else {
+      response = await fetch(provider.url, {
+        ...bearer,
+        body: JSON.stringify({
+          model: provider.model,
+          instructions: HUD_SUMMARY_PROMPT,
+          input: JSON.stringify(context),
+          reasoning: { effort: 'minimal' },
+          max_output_tokens: 100,
+        }),
+      });
+      data = await response.json().catch(() => ({}));
+    }
+  }
+  if (!response.ok) {
+    const label = HUD_SUMMARY_PROVIDER_LABELS[provider.source] || provider.source;
+    const upstream = typeof data?.error === 'string' ? data.error : data?.error?.message;
+    return {
+      summary: null,
+      source: provider.source,
+      error: String(upstream || `${label} HUD summary request failed`),
+      status: response.status,
+    };
+  }
+  const raw = provider.source === 'openai'
+    ? extractOpenAiResponseText(data)
+    : extractChatCompletionsText(data);
+  return { summary: toFiveWordHudSummary(raw) || null, source: provider.source, error: null };
+}
+
+/**
  * Vite plugin: OpenAI Realtime ephemeral client secret.
  *
  * Keeps OPENAI_API_KEY server-side while the browser connects to the
- * Realtime API over WebRTC with a short-lived secret.
+ * Realtime API over WebRTC with a short-lived secret. Also owns the
+ * `/api/openai/hud-summary` route, which brokers the HUD summary to whichever
+ * of the local (Ollama), OpenAI-compatible, or OpenAI providers is configured.
  */
 export function openAiRealtimeProxy() {
   function install(middlewares) {
@@ -5360,8 +5509,12 @@ export function openAiRealtimeProxy() {
         return;
       }
 
-      const apiKey = process.env.OPENAI_API_KEY;
-      const keyless = keylessHudSummaryResponse(apiKey);
+      const provider = hudSummaryProvider(process.env);
+      const keyless = keylessHudSummaryResponse({
+        openAiKey: process.env.OPENAI_API_KEY,
+        ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
+        ollamaModel: process.env.OLLAMA_HUD_SUMMARY_MODEL,
+      });
       if (keyless) {
         res.statusCode = keyless.statusCode;
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -5378,42 +5531,24 @@ export function openAiRealtimeProxy() {
       try {
         const body = await readRequestBody(req, 64 * 1024);
         const context = JSON.parse(body || '{}');
-        const response = await fetch('https://api.openai.com/v1/responses', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-          },
-          // A hung upstream would otherwise leave the HUD summary hanging with
-          // no fallback (this is a paid call — bound it).
-          signal: AbortSignal.timeout(30000),
-          body: JSON.stringify({
-            model: process.env.OPENAI_HUD_SUMMARY_MODEL || OPENAI_HUD_SUMMARY_MODEL_DEFAULT,
-            instructions: [
-              "Write one concise intelligence-HUD summary for Devil's Eye.",
-              'Use only the supplied place, street, nearby-place, and enabled-layer text labels.',
-              'Prefer the clearest named place and include a relevant enabled layer only when useful.',
-              'Do not infer from coordinates or invent a place.',
-              'Output exactly five words with no title, punctuation, markdown, or introductory phrase.',
-            ].join(' '),
-            input: JSON.stringify(context),
-            reasoning: { effort: 'minimal' },
-            max_output_tokens: 100,
-          }),
-        });
-        const data = await response.json().catch(() => ({}));
-        const summary = toFiveWordHudSummary(extractOpenAiResponseText(data));
-        res.statusCode = response.ok && summary ? 200 : response.status || 502;
+        const outcome = await requestHudSummary(provider, context);
+        console.log(`[hud-summary] provider=${outcome.source}`, outcome.error ? `error=${outcome.error}` : `summary=${outcome.summary}`);
+        res.statusCode = outcome.error ? outcome.status || 502 : 200;
         res.setHeader('Content-Type', 'application/json; charset=utf-8');
         res.setHeader('Cache-Control', 'no-store');
         res.end(JSON.stringify({
-          summary: summary || null,
-          error: response.ok ? null : data.error?.message || 'OpenAI HUD summary request failed',
+          summary: outcome.summary,
+          source: outcome.source,
+          error: outcome.error,
         }));
       } catch (error) {
         res.statusCode = 502;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ error: error?.message || 'OpenAI HUD summary request failed' }));
+        res.end(JSON.stringify({
+          summary: null,
+          source: provider?.source || null,
+          error: error?.message || 'HUD summary request failed',
+        }));
       }
     });
 
