@@ -9853,7 +9853,15 @@ export class StyleManager {
    */
   _initShareButton() {
     this._shareBtn.addEventListener('click', async () => {
-      const success = await this.shareLinkManager.copyLink();
+      // A disposed manager rejects copyLink() — guard + catch so a stale click
+      // can never surface as an unhandled async exception.
+      if (this._disposed) return;
+      let success = false;
+      try {
+        success = await this.shareLinkManager.copyLink();
+      } catch {
+        success = false;
+      }
       this._showToast(success ? 'Link copied!' : 'Copy failed');
     });
   }
