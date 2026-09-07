@@ -4293,12 +4293,54 @@ async function loadTflSourcesFromOpenData() {
 }
 
 /**
+ * Return whether a CCTV upstream URL is safe for the proxy to fetch.
+ *
+ * Mirrors the Radio Browser host checks (isNonGlobalIpv4 / isPublicRadioAddress)
+ * but allows plain http and non-standard ports — public Axis cameras are
+ * commonly served over http on arbitrary ports. Rejects loopback, private,
+ * link-local, reserved, and credential-bearing URLs so a file/env catalog
+ * entry can never point the proxy at internal infrastructure.
+ *
+ * @param {string} value - Candidate upstream URL.
+ * @returns {boolean} True when the URL is http(s) with a public host.
+ */
+export function isPublicCctvUrl(value) {
+  let url;
+  try {
+    url = new URL(String(value ?? ''));
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  if (url.username || url.password) return false;
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!hostname) return false;
+  if (hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) return false;
+  if (hostname.includes(':')) return isPublicRadioAddress(hostname); // IPv6 literal
+  return !isNonGlobalIpv4(hostname);
+}
+
+/**
  * Normalize a raw CCTV source item into a canonical shape with safe defaults.
  *
  * @param {object} item - Raw source from file, env, or Austin Open Data.
  * @returns {object} Normalized source with all expected fields populated.
  */
 function normalizeSourceItem(item) {
+  const rawUrl = typeof item.url === 'string' ? item.url : '';
+  const rawSnapshotUrl = typeof item.snapshotUrl === 'string' ? item.snapshotUrl : '';
+  // Host-validate catalog URLs at normalize time (SSRF defense): a file/env
+  // entry pointing at a private/LAN/loopback/link-local host is blanked so it
+  // can never be fetched by /frame or /media. The shipped catalogs and the
+  // live open-data packs all use public hosts and pass unchanged.
+  const url = isPublicCctvUrl(rawUrl) ? rawUrl : '';
+  const snapshotUrl = isPublicCctvUrl(rawSnapshotUrl) ? rawSnapshotUrl : '';
+  if (rawUrl && !url) {
+    console.warn(`[CCTV] Dropping non-public url for source "${String(item.id || '')}": ${rawUrl}`);
+  }
+  if (rawSnapshotUrl && !snapshotUrl) {
+    console.warn(`[CCTV] Dropping non-public snapshotUrl for source "${String(item.id || '')}": ${rawSnapshotUrl}`);
+  }
   return {
     id: String(item.id || '').trim(),
     name: String(item.name || item.id || '').trim(),
@@ -4315,8 +4357,8 @@ function normalizeSourceItem(item) {
     mountHeightM: toFiniteNumber(item.mountHeightM),
     groundElevationM: toFiniteNumber(item.groundElevationM),
     feedType: normalizeFeedType(item.feedType || item.type || ''),
-    url: typeof item.url === 'string' ? item.url : '',
-    snapshotUrl: typeof item.snapshotUrl === 'string' ? item.snapshotUrl : '',
+    url,
+    snapshotUrl,
     license: String(item.license || item.licenseNote || ''),
     sourceKind: String(item.sourceKind || item.kind || 'configured'),
     // Optional CAL badge input (cctv-v2 design §3b/§9.2, additive-only per the
@@ -4681,6 +4723,70 @@ function bufferHasJpegMarkers(buf, soi, eoi) {
   return buf.indexOf(eoi, start + 2) !== -1;
 }
 
+/** Redirect statuses that fetch() would otherwise follow automatically. */
+const CCTV_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** Maximum redirect hops the CCTV proxy will follow, each re-validated. */
+const CCTV_REDIRECT_MAX_HOPS = 3;
+
+/**
+ * Fetch an upstream CCTV URL with redirects manually re-validated.
+ *
+ * Always sets `redirect: 'manual'` so a catalog URL that 302s to an internal
+ * host is never followed blindly. Redirect targets are re-validated with the
+ * same public-host check used at catalog-normalize time; a redirect to a
+ * non-public host fails closed ({ blocked: true }) and is never fetched.
+ *
+ * @param {string} url - Server-registered upstream URL.
+ * @param {object} [options]
+ * @param {typeof fetch} [options.fetchImpl=fetch] - Fetch implementation.
+ * @param {number} [options.timeoutMs=CCTV_FRAME_FETCH_TIMEOUT_MS] - Per-hop abort timeout.
+ * @param {Record<string,string>} [options.headers] - Extra request headers.
+ * @returns {Promise<{upstream: Response|null, blocked: boolean}>}
+ */
+async function fetchCctvUpstream(url, {
+  fetchImpl = fetch,
+  timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS,
+  headers = {},
+} = {}) {
+  let current = url;
+  for (let hop = 0; hop <= CCTV_REDIRECT_MAX_HOPS; hop += 1) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort(new DOMException('CCTV upstream fetch timed out', 'TimeoutError'));
+    }, timeoutMs);
+    let upstream;
+    try {
+      upstream = await fetchImpl(current, {
+        headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0', ...headers },
+        signal: controller.signal,
+        redirect: 'manual',
+      });
+    } catch {
+      return { upstream: null, blocked: false };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!CCTV_REDIRECT_STATUSES.has(upstream.status)) {
+      return { upstream, blocked: false };
+    }
+    const location = upstream.headers.get('location');
+    try { await upstream.body?.cancel(); } catch { /* no-op */ }
+    if (!location) return { upstream: null, blocked: false };
+    let target;
+    try {
+      target = new URL(location, current);
+    } catch {
+      return { upstream: null, blocked: false };
+    }
+    if (!isPublicCctvUrl(target.href)) {
+      cctvLog(`redirect to non-public host refused: ${target.href}`);
+      return { upstream: null, blocked: true };
+    }
+    current = target.href;
+  }
+  return { upstream: null, blocked: false };
+}
+
 /**
  * Fetch one upstream CCTV image within the frame-refresh budget.
  *
@@ -4697,7 +4803,7 @@ function bufferHasJpegMarkers(buf, soi, eoi) {
  * @param {object} [options]
  * @param {typeof fetch} [options.fetchImpl=fetch] - Fetch implementation.
  * @param {number} [options.timeoutMs=CCTV_FRAME_FETCH_TIMEOUT_MS] - Abort timeout.
- * @returns {Promise<{ok:true,body:Buffer,contentType:string}|null>}
+ * @returns {Promise<{ok:true,body:Buffer,contentType:string}|{blocked:true}|null>}
  */
 export async function fetchCctvImageFromUpstream(url, {
   fetchImpl = fetch,
@@ -4711,6 +4817,7 @@ export async function fetchCctvImageFromUpstream(url, {
     for (const stillUrl of deriveAxisSnapshotUrls(url)) {
       cctvLog(`  still candidate: ${stillUrl}`);
       const still = await fetchSingleImage(stillUrl, { fetchImpl, timeoutMs });
+      if (still?.blocked) return { blocked: true };
       if (still) {
         cctvLog(`  still endpoint OK: ${stillUrl}`);
         return still;
@@ -4720,6 +4827,7 @@ export async function fetchCctvImageFromUpstream(url, {
     cctvLog(`still endpoints missed; buffering stream ${url} to extract a frame`);
     try {
       const body = await fetchBoundedBody(url, { fetchImpl, timeoutMs, maxBytes: 2 * 1024 * 1024 });
+      if (body?.blocked) return { blocked: true };
       if (body) {
         const frame = extractFirstJpegFromMjpg(body.body, body.contentType);
         if (frame) {
@@ -4734,95 +4842,65 @@ export async function fetchCctvImageFromUpstream(url, {
   }
 
   // --- Normal static-image path ------------------------------------------
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort(new DOMException('CCTV upstream frame fetch timed out', 'TimeoutError'));
-  }, timeoutMs);
-  try {
-    const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
-      signal: controller.signal,
-    });
-    const contentType = upstream.headers.get('content-type') || '';
-    if (!upstream.ok || !contentType.startsWith('image/')) {
-      cctvLog(`static fetch missed: ${url} → HTTP ${upstream.status} ${contentType || 'no-content-type'}`);
-      return null;
-    }
-    return {
-      ok: true,
-      body: Buffer.from(await upstream.arrayBuffer()),
-      contentType,
-    };
-  } catch {
+  const { upstream, blocked } = await fetchCctvUpstream(url, { fetchImpl, timeoutMs });
+  if (blocked) return { blocked: true };
+  if (!upstream) return null;
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!upstream.ok || !contentType.startsWith('image/')) {
+    cctvLog(`static fetch missed: ${url} → HTTP ${upstream.status} ${contentType || 'no-content-type'}`);
     return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  return {
+    ok: true,
+    body: Buffer.from(await upstream.arrayBuffer()),
+    contentType,
+  };
 }
 
 /** Fetch a single static image with a budget; returns null on any miss. */
 async function fetchSingleImage(url, { fetchImpl = fetch, timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS } = {}) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
-      signal: controller.signal,
-    });
-    const contentType = upstream.headers.get('content-type') || '';
-    if (!upstream.ok || !contentType.startsWith('image/')) return null;
-    const body = Buffer.from(await upstream.arrayBuffer());
-    if (body.length === 0) return null;
-    if (upstream.status === 301 || upstream.status === 302 || upstream.status === 303 || upstream.status === 307 || upstream.status === 308) return null;
-    return { ok: true, body, contentType };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  const { upstream, blocked } = await fetchCctvUpstream(url, { fetchImpl, timeoutMs });
+  if (blocked) return { blocked: true };
+  if (!upstream) return null;
+  const contentType = upstream.headers.get('content-type') || '';
+  if (!upstream.ok || !contentType.startsWith('image/')) return null;
+  const body = Buffer.from(await upstream.arrayBuffer());
+  if (body.length === 0) return null;
+  return { ok: true, body, contentType };
 }
 
 /** Buffer a response body up to byteBytes; aborts on timeout. Returns null on miss. */
 async function fetchBoundedBody(url, { fetchImpl = fetch, timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS, maxBytes = 2 * 1024 * 1024 } = {}) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const upstream = await fetchImpl(url, {
-      headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
-      signal: controller.signal,
-    });
-    if (!upstream.ok) return null;
-    const reader = upstream.body?.getReader?.();
-    if (!reader) return null;
-    const chunks = [];
-    let total = 0;
-    let done = false;
-    const SOI = Buffer.from([0xff, 0xd8]);
-    const EOI = Buffer.from([0xff, 0xd9]);
-    while (!done && total < maxBytes) {
-      const { value, done: d } = await reader.read();
-      done = d;
-      if (value) {
-        chunks.push(value);
-        total += value.length;
-        // Stop the moment we hold at least one complete JPEG (SOI + EOI
-        // present). MJPG streams otherwise never terminate — without this
-        // the buffer would fill the whole 2 MiB budget needlessly.
-        if (total > 4096) {
-          const probe = Buffer.concat(chunks, total);
-          if (probe.indexOf(SOI) !== -1 && probe.indexOf(EOI) !== -1) break;
-        }
+  const { upstream, blocked } = await fetchCctvUpstream(url, { fetchImpl, timeoutMs });
+  if (blocked) return { blocked: true };
+  if (!upstream) return null;
+  if (!upstream.ok) return null;
+  const reader = upstream.body?.getReader?.();
+  if (!reader) return null;
+  const chunks = [];
+  let total = 0;
+  let done = false;
+  const SOI = Buffer.from([0xff, 0xd8]);
+  const EOI = Buffer.from([0xff, 0xd9]);
+  while (!done && total < maxBytes) {
+    const { value, done: d } = await reader.read();
+    done = d;
+    if (value) {
+      chunks.push(value);
+      total += value.length;
+      // Stop the moment we hold at least one complete JPEG (SOI + EOI
+      // present). MJPG streams otherwise never terminate — without this
+      // the buffer would fill the whole 2 MiB budget needlessly.
+      if (total > 4096) {
+        const probe = Buffer.concat(chunks, total);
+        if (probe.indexOf(SOI) !== -1 && probe.indexOf(EOI) !== -1) break;
       }
     }
-    await reader.cancel?.().catch?.(() => {});
-    const body = Buffer.concat(chunks, total);
-    if (body.length === 0) return null;
-    return { body, contentType: upstream.headers.get('content-type') || '' };
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
+  await reader.cancel?.().catch?.(() => {});
+  const body = Buffer.concat(chunks, total);
+  if (body.length === 0) return null;
+  return { body, contentType: upstream.headers.get('content-type') || '' };
 }
 
 /**
@@ -5072,6 +5150,20 @@ function cctvProxy() {
             || (!isVideoFeedType(normalizeFeedType(source?.feedType)) ? source?.url : '');
 
           const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate);
+          if (upstreamImage?.blocked) {
+            // A catalog URL redirected to a non-public host: fail closed with
+            // 502 and do NOT fetch the redirect target (SSRF defense).
+            cctvLog(`frame ${cameraId}: upstream redirect to non-public host refused`);
+            setHealth(cameraId, {
+              status: 'degraded',
+              sourceKind: 'blocked',
+              label: source?.provider || 'Configured source',
+              message: 'Upstream redirect target refused',
+            });
+            res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+            res.end(JSON.stringify({ error: 'Upstream redirect target refused' }));
+            return;
+          }
           if (upstreamImage?.ok) {
             cctvLog(`frame ${cameraId}: UPSTREAM OK (${upstreamImage.contentType}, ${upstreamImage.body.length} B) via ${upstreamCandidate.split('/').slice(0, 3).join('/')}`);
             setHealth(cameraId, {
