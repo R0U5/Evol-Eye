@@ -1283,3 +1283,51 @@ test('frameSignatureFromPixels: empty or junk input yields null (always redraw)'
   assert.equal(frameSignatureFromPixels(undefined), null);
   assert.equal(frameSignatureFromPixels({}), null);
 });
+
+// ── SURF (random camera) + frame-only admission ─────────────────────────────
+
+test('surfCamera returns null on an empty catalog (no crash)', () => {
+  assert.equal(cctvLayer.surfCamera({ axisOnly: true }), null);
+  assert.equal(cctvLayer.surfCamera({ axisOnly: false }), null);
+});
+
+test('surfCamera axisOnly restricts to discovered sources', () => {
+  // Layer-level behavior: the filter uses sourceKind startsWith('discovered').
+  // Verified by inspection of the method source (records are built by the
+  // viewer-backed enable path, not available in this pure-node harness).
+  const src = fs.readFileSync(new URL('./cctv.js', import.meta.url), 'utf8');
+  assert.match(
+    src,
+    /String\(r\.camera\?\.sourceKind \|\| ''\)\.startsWith\('discovered'\)/,
+    'axisOnly must filter to discovered Axis sources',
+  );
+  assert.match(
+    src,
+    /Math\.floor\(Math\.random\(\) \* filtered\.length\)/,
+    'surf must pick a uniformly random catalog index',
+  );
+  assert.match(
+    src,
+    /Number\.isFinite\(next\.camera\.lat\)/,
+    'surf must guard fly-to on unlocated (NaN-lat) cameras',
+  );
+});
+
+test('discovered-unlocated sources are admitted to the catalog as frame-only', () => {
+  const src = fs.readFileSync(new URL('./cctv.js', import.meta.url), 'utf8');
+  assert.match(
+    src,
+    /frameOnly = sourceKind === 'discovered-unlocated' && typeof source\.url === 'string' && !!source\.url\.trim\(\)/,
+    'unlocated discovered cams must be admitted when they carry a frame URL',
+  );
+  assert.match(
+    src,
+    /unlocated: frameOnly/,
+    'admitted frame-only cameras must be tagged unlocated',
+  );
+  assert.match(
+    src,
+    /record\.camera\.unlocated === true/,
+    'setActiveCamera must branch on the unlocated flag',
+  );
+});

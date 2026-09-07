@@ -3517,6 +3517,11 @@ function isVideoFeedType(feedType) {
 // ---------------------------------------------------------------------------
 /** Path to the optional static CCTV source list (JSON array). */
 const DEFAULT_CCTV_SOURCE_FILE = 'config/cctv_sources.austin.json';
+/** Merged discovered-Axis catalog (see scripts/merge-axis-catalog.py). When
+ * present, its cameras are added to the CCTV source pool — geolocated ones
+ * feed the globe, unlocated ones (sourceKind 'discovered-unlocated', NaN
+ * coords) render as frame-only feeds for the SURF control. */
+const AXIS_CATALOG_FILE = 'config/cctv_sources_axis.json';
 /** Austin Open Data portal endpoint for traffic camera records. */
 const DEFAULT_AUSTIN_ROWS_URL = 'https://data.austintexas.gov/api/views/b4k4-adkb/rows.json?accessType=DOWNLOAD';
 /** Default cap on Austin cameras after distance-based prioritization. */
@@ -3605,6 +3610,31 @@ function loadSourcesFromFile() {
     return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
     console.warn('[CCTV] failed to read source file:', resolved, error?.message || error);
+    return [];
+  }
+}
+
+/**
+ * Load the merged discovered-Axis catalog (config/cctv_sources_axis.json).
+ *
+ * Pure additive: returns [] when absent so a fresh clone (no catalog yet)
+ * behaves exactly as before. Unlocated entries (lat/lon absent) pass through
+ * unchanged — normalizeSourceItem turns missing coords into NaN, which the
+ * globe projection path already tolerates (no pin, frame-only).
+ *
+ * @returns {Array<object>} Raw Axis camera objects, or [] on error/absence.
+ */
+function loadAxisCatalogFromFile() {
+  const resolved = path.isAbsolute(AXIS_CATALOG_FILE)
+    ? AXIS_CATALOG_FILE
+    : path.resolve(__dirname, AXIS_CATALOG_FILE);
+  try {
+    if (!fs.existsSync(resolved)) return [];
+    const raw = fs.readFileSync(resolved, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.warn('[CCTV] failed to read Axis catalog:', resolved, error?.message || error);
     return [];
   }
 }
@@ -4235,6 +4265,7 @@ async function getCctvSources() {
  */
 async function refreshCctvSources() {
   const fromFile = loadSourcesFromFile();
+  const fromAxis = loadAxisCatalogFromFile();
   const fromEnv = loadSourcesFromEnv();
 
   const forceAustin = String(process.env.CCTV_FORCE_AUSTIN || '').trim() === '1';
@@ -4259,7 +4290,7 @@ async function refreshCctvSources() {
     fromTfl = tflResult.status === 'fulfilled' ? tflResult.value : [];
   }
   // Live sources first so file/env overrides win on duplicate IDs (Map last-write).
-  const merged = [...fromAustin, ...fromCaltrans, ...fromTfl, ...fromFile, ...fromEnv];
+  const merged = [...fromAustin, ...fromCaltrans, ...fromTfl, ...fromFile, ...fromAxis, ...fromEnv];
 
   // Deduplicate by camera ID (last-write wins because of Map.set)
   const byId = new Map();

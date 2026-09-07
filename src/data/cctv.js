@@ -1128,7 +1128,16 @@ function buildCatalogFromSources(rawSources) {
 
     const lat = safeNumber(source.lat, seed?.lat ?? NaN);
     const lon = safeNumber(source.lon, seed?.lon ?? NaN);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    // Frame-only camera: a discovered Axis cam with no geolocation still
+    // provides a live frame (SURF can land on it, the panel shows the feed)
+    // even though it has no globe pin. Every other source without coords is
+    // unusable and skipped. `unlocated` tags the record so geometry/projection
+    // paths can skip pin/viewshed work instead of pushing NaN into the globe.
+    const sourceKind = String(source.sourceKind || source.kind || (source.url ? 'configured' : 'seed')).toLowerCase();
+    const frameOnly = sourceKind === 'discovered-unlocated' && typeof source.url === 'string' && !!source.url.trim();
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      if (!frameOnly) continue;
+    }
 
     const sourceHeading = safeNumber(source.headingDeg, NaN);
     const headingDeg = normalizeHeading(
@@ -1154,7 +1163,8 @@ function buildCatalogFromSources(rawSources) {
       cityId,
       city: String(source.city || city?.name || seed?.city || 'Global'),
       provider: String(source.provider || seed?.provider || 'Configured CCTV Source'),
-      sourceKind: String(source.sourceKind || source.kind || (source.url ? 'configured' : 'seed')).toLowerCase(),
+      sourceKind,
+      unlocated: frameOnly,
       feedType,
       feedConfigured: typeof source.url === 'string' && !!source.url.trim(),
       lat,
@@ -1802,6 +1812,7 @@ function destroyProjectionRuntime(runtime) {
  * @param {boolean} [force=false] - Bypass the interval check.
  */
 function refreshProjectionImage(record, force = false) {
+  if (!record?.position) return; // frame-only (unlocated): no projection plane
   const runtime = record?.projection;
   if (!runtime || runtime.mode !== 'image' || !runtime.image) return;
   // Hidden-state gate (perf wave 2): no new frame fetch/decode for a canvas
@@ -3683,6 +3694,21 @@ export function setActiveCamera(cameraId) {
   if (!cameraId || !_recordById.has(cameraId)) return CCTV_ACTIVATION_RESULT.NOT_FOUND;
   const record = _recordById.get(cameraId);
   const previousActiveRecord = getActiveRecord();
+  // Frame-only (unlocated) cameras: no globe pin, plane, viewshed, or probe —
+  // the panel frame + source badge carry the feed. Activating one still
+  // publishes the active state so the UI shows its frame; the geometry and
+  // projection paths would only push NaN into the globe.
+  if (record.camera.unlocated === true) {
+    if (!cctvRecordNeedsActivation(cameraId, _activeCameraId, record)) {
+      return CCTV_ACTIVATION_RESULT.UNCHANGED;
+    }
+    _activeCameraId = cameraId;
+    _autoHopSuspended = false;
+    refreshProjectionImage(record, true); // no-op with null position guard below
+    record.activationDone = true;
+    notifyListeners();
+    return CCTV_ACTIVATION_RESULT.ACTIVATED;
+  }
   // Re-selecting the already-active camera is a no-op: re-running the
   // activation path re-probes and rewrites the plane entity's geometry, and
   // that async primitive rebuild visibly flashes the monitor plane (owner
@@ -4047,6 +4073,8 @@ export function focusCctvRecord(viewer, record, duration = 2.2) {
     return CCTV_FOCUS_RESULT.TRACKING_HOLDS_VIEW;
   }
   const { camera } = record;
+  // Frame-only (unlocated) cameras have no position — nothing to fly to.
+  if (!record.position) return CCTV_FOCUS_RESULT.FOCUSED;
   const range = Math.max(280, camera.rangeM * 1.18);
   viewer.camera.flyToBoundingSphere(
     new Cesium.BoundingSphere(record.position, Math.max(40, camera.rangeM * 0.36)),
@@ -4236,8 +4264,15 @@ const cctvLayer = {
         ? groundPrior.ellipsoid
         : (Number(camera.groundElevationM) || 0);
       camera.absoluteHeightM = priorGround + camera.mountHeightM;
-      const position = Cesium.Cartesian3.fromDegrees(camera.lon, camera.lat, camera.absoluteHeightM);
-      const billboard = _billboards.add({
+      // Unlocated (frame-only) cameras have no position: no globe pin, no
+      // billboard — they exist for the SURF/panel frame feed only. Records
+      // still enter _records so the layer can select them; geometry and
+      // projection paths no-op on the null position.
+      const located = camera.unlocated !== true && Number.isFinite(camera.lat) && Number.isFinite(camera.lon);
+      const position = located
+        ? Cesium.Cartesian3.fromDegrees(camera.lon, camera.lat, camera.absoluteHeightM)
+        : null;
+      const billboard = !located ? null : _billboards.add({
         id: camera.id,
         image: CAMERA_ICON,
         position,
@@ -4802,6 +4837,52 @@ const cctvLayer = {
       focusCamera(nextId, options.durationSec || 1.8);
     }
     return nextId;
+  },
+
+  /**
+   * Jumps to a random camera in the catalog — the SURF control.
+   *
+   * Samples uniformly from the full catalog, or (with `axisOnly`) from just
+   * the discovered Axis pool (geolocated + unlocated). Unlocated cameras are
+   * frame-only feeds: they have no globe pin, so setActiveCamera still runs
+   * the normal activation path (obstruction probe, projection runtime) but
+   * with NaN coords the globe visuals simply won't place a pin — the panel
+   * frame and source badge still drive. On flat (non-globe) stacks this is
+   * invisible; on globe stacks an unlocated selection shows the frame with
+   * the fly-to skipped.
+   *
+   * @param {Object} [options={}]
+   * @param {boolean} [options.axisOnly=false] Restrict to discovered sources.
+   * @param {boolean} [options.focus=true] Fly to the new camera when located.
+   * @param {number} [options.durationSec] Fly-to duration in seconds.
+   * @returns {string|null} The newly active camera ID, or null if none found.
+   */
+  surfCamera(options = {}) {
+    if (!_records.length) return null;
+    const axisOnly = options.axisOnly === true;
+    const filtered = axisOnly
+      ? _records.filter((r) => String(r.camera?.sourceKind || '').startsWith('discovered'))
+      : _records;
+    if (!filtered.length) return null;
+    const nextIdx = Math.floor(Math.random() * filtered.length);
+    const next = filtered[nextIdx];
+    // Avoid re-selecting the current camera when the pool has more than one.
+    if (filtered.length > 1 && next.camera?.id === getActiveRecord()?.camera?.id) {
+      const alt = filtered[(nextIdx + 1) % filtered.length];
+      if (alt.camera?.id !== getActiveRecord()?.camera?.id) {
+        setActiveCamera(alt.camera.id);
+        if (options.focus !== false && Number.isFinite(alt.camera.lat)) {
+          focusCamera(alt.camera.id, options.durationSec || 1.4);
+        }
+        return alt.camera.id;
+      }
+    }
+    setActiveCamera(next.camera.id);
+    // Unlocated cams (NaN lat) get no fly-to — the frame shows where they are.
+    if (options.focus !== false && Number.isFinite(next.camera.lat)) {
+      focusCamera(next.camera.id, options.durationSec || 1.4);
+    }
+    return next.camera.id;
   },
 
   /**
