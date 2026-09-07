@@ -1496,6 +1496,9 @@ function refreshProjectionTextures(record) {
 function frameUrlFor(camera, refreshMs = ACTIVE_FRAME_REFRESH_MS) {
   const cadenceMs = Math.max(1000, safeNumber(refreshMs, ACTIVE_FRAME_REFRESH_MS));
   const tick = Math.floor(Date.now() / cadenceMs);
+  // Resolution request: the ACTIVE camera (10 s cadence) asks for the full
+  // source (hd / 720p snapshot), idle/ambient (60 s) for the cheap sd/480p.
+  const res = refreshMs <= ACTIVE_FRAME_REFRESH_MS ? 'hd' : 'sd';
   const params = new URLSearchParams({
     label: camera.name,
     city: camera.city,
@@ -1504,6 +1507,7 @@ function frameUrlFor(camera, refreshMs = ACTIVE_FRAME_REFRESH_MS) {
     heading: String(Math.round(camera.headingDeg)),
     fov: String(Math.round(camera.fovDeg)),
     pitch: String(Math.round(camera.pitchDeg || -10)),
+    res,
     ts: String(tick),
   });
   return `${FRAME_ENDPOINT}/${encodeURIComponent(camera.id)}?${params.toString()}`;
@@ -1715,6 +1719,9 @@ function createProjectionRuntime(record) {
   canvas.width = PROJECTION_CANVAS_WIDTH;
   canvas.height = PROJECTION_CANVAS_HEIGHT;
   const ctx = canvas.getContext('2d', { alpha: true });
+  // Smooth the 720p/480p stills up to the 1080p plane — without this the
+  // upscale shows hard pixelation (the reported "degraded when I look").
+  ctx.imageSmoothing = true;
 
   const feedType = normalizeFeedType(record.camera.feedType);
   const mode = isVideoFeedType(feedType) ? 'video' : 'image';
@@ -2951,6 +2958,12 @@ function refreshAmbientCards() {
  * that keeps the pin while the gesture lasts.
  */
 function pushAmbientCardEntries() {
+  // Occlusion guard (owner issue 2): while a camera is ACTIVELY shown on the
+  // projection plane, the ambient thumbnail tiles would draw on top of the
+  // selected image. Drop the ambient card set (the camera ICONS/billboards
+  // stay — only the image tiles that occlude the plane are suppressed), keep
+  // an explicit hover pin and the active camera's own plane card if enabled.
+  const suppressAmbient = _showProjection && _activeCameraId && getActiveRecord() != null;
   const entries = [];
   let rank = 0;
   const push = (id, { pinned = false, active = false } = {}) => {
@@ -2967,9 +2980,11 @@ function pushAmbientCardEntries() {
       active,
     }));
   };
-  for (const id of _cardIds) push(id, { pinned: id === _hoverCardId });
-  if (_hoverCardId && !_cardIds.has(_hoverCardId) && _hoverCardId !== _activeCameraId) {
-    push(_hoverCardId, { pinned: true });
+  if (!suppressAmbient) {
+    for (const id of _cardIds) push(id, { pinned: id === _hoverCardId });
+    if (_hoverCardId && !_cardIds.has(_hoverCardId) && _hoverCardId !== _activeCameraId) {
+      push(_hoverCardId, { pinned: true });
+    }
   }
   if (_activeCameraCardEnabled && _activeCameraId) {
     push(_activeCameraId, { active: true });

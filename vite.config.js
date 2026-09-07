@@ -3781,6 +3781,16 @@ function isVideoFeedType(feedType) {
   return feedType === 'mp4' || feedType === 'webm' || feedType === 'hls';
 }
 
+/**
+ * Whether a feed type is a live STREAM the proxy must pipe unbuffered (as
+ * opposed to a static still fetched per-frame). MJPEG is included: browsers
+ * decode multipart/x-mixed-replace natively in an <img>, so it is served
+ * through the same streaming proxy as HLS/MP4 and plays in realtime.
+ */
+function isLiveStreamFeedType(feedType) {
+  return feedType === 'mjpeg' || isVideoFeedType(feedType);
+}
+
 // ---------------------------------------------------------------------------
 // CCTV proxy constants and source cache state
 // ---------------------------------------------------------------------------
@@ -4849,14 +4859,15 @@ export function isMjpgStreamUrl(url) {
  * @param {string} url - MJPG stream URL.
  * @returns {string[]} Candidate still-image URLs to try in order.
  */
-export function deriveAxisSnapshotUrls(url) {
+export function deriveAxisSnapshotUrls(url, resolution = '640x480') {
   if (!isMjpgStreamUrl(url)) return [];
   try {
     const u = new URL(url);
     const base = `${u.protocol}//${u.host}`;
+    const res = String(resolution || '640x480');
     return [
-      `${base}/mjpg/1/image.jpg?resolution=640x480`,
-      `${base}/axis-cgi/jpg/image.cgi?resolution=640x480`,
+      `${base}/mjpg/1/image.jpg?resolution=${encodeURIComponent(res)}`,
+      `${base}/axis-cgi/jpg/image.cgi?resolution=${encodeURIComponent(res)}`,
     ];
   } catch {
     return [];
@@ -4989,13 +5000,14 @@ async function fetchCctvUpstream(url, {
 export async function fetchCctvImageFromUpstream(url, {
   fetchImpl = fetch,
   timeoutMs = CCTV_FRAME_FETCH_TIMEOUT_MS,
+  resolution = '640x480',
 } = {}) {
   if (!url || !/^https?:\/\//i.test(url)) return null;
 
   // --- MJPG special handling ---------------------------------------------
   if (isMjpgStreamUrl(url)) {
-    cctvLog(`MJPG stream for ${url} — probing still endpoints`);
-    for (const stillUrl of deriveAxisSnapshotUrls(url)) {
+    cctvLog(`MJPG stream for ${url} — probing still endpoints @${resolution}`);
+    for (const stillUrl of deriveAxisSnapshotUrls(url, resolution)) {
       cctvLog(`  still candidate: ${stillUrl}`);
       const still = await fetchSingleImage(stillUrl, { fetchImpl, timeoutMs });
       if (still?.blocked) return { blocked: true };
@@ -5323,6 +5335,13 @@ function cctvProxy() {
           const heading = Number(url.searchParams.get('heading') || source?.headingDeg);
           const fov = Number(url.searchParams.get('fov') || source?.fovDeg);
           const pitch = Number(url.searchParams.get('pitch') || source?.pitchDeg);
+          // Client-selected frame resolution for the projection/plane read.
+          // The active camera asks for a full-HD-high source (720p snapshot)
+          // so it is not blown up 3x onto the 1080p plane; ambient/idle ask
+          // for the cheaper 480p. Clamped to a small safe set so a client can
+          // never demand an unlimited-resolution fetch.
+          const resMap = { hd: '1280x720', sd: '640x480' };
+          const resolution = resMap[String(url.searchParams.get('res') || 'sd')] || '640x480';
 
           // Only use server-registered upstream URLs — never accept client-supplied URLs
           // (prevents SSRF via ?upstream= query parameter)
@@ -5330,7 +5349,7 @@ function cctvProxy() {
             source?.snapshotUrl
             || (!isVideoFeedType(normalizeFeedType(source?.feedType)) ? source?.url : '');
 
-          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate);
+          const upstreamImage = await fetchCctvImageFromUpstream(upstreamCandidate, { resolution });
           if (upstreamImage?.blocked) {
             // A catalog URL redirected to a non-public host: fail closed with
             // 502 and do NOT fetch the redirect target (SSRF defense).
