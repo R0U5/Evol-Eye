@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Devil's Eye — Installer</title>
+  <link rel="stylesheet" href="/installer.css" />
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-eye">◉</span>
+      <div>
+        <h1>Devil's Eye</h1>
+        <p class="tagline">Installer</p>
+      </div>
+    </div>
+    <div class="meta-line" id="header-meta">Contacting installer…</div>
+  </header>
+
+  <main>
+    <section id="plan-view">
+      <h2>Pre-flight check</h2>
+      <div id="deps" class="deps"></div>
+      <div id="reach" class="reach"></div>
+    </section>
+
+    <section id="options-view">
+      <h2>Install options</h2>
+
+      <div class="field">
+        <label for="install-dir">Install into</label>
+        <input id="install-dir" type="text" spellcheck="false" />
+        <p class="hint">The app and its launcher live here. You can move this folder without breaking anything.</p>
+      </div>
+
+      <div class="field">
+        <label>Mode</label>
+        <div class="segmented">
+          <label class="seg">
+            <input type="radio" name="mode" value="production" checked />
+            <span>Production build <small>recommended — fastest startup</small></span>
+          </label>
+          <label class="seg">
+            <input type="radio" name="mode" value="development" />
+            <span>Development <small>live-reload server</small></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field" id="token-field" hidden>
+        <label for="token">GitHub token</label>
+        <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="ghp_… or github_pat_…" />
+        <p class="hint">This repo is private. The token is used once, stays in memory, and is never written to disk. Create a fine-grained token with <code>Contents: Read</code> for this repo.</p>
+      </div>
+
+      <div class="checks">
+        <label class="check"><input type="checkbox" id="opt-bundle" checked /> Bundle a private Node.js runtime <small>lets you launch even without a system Node</small></label>
+        <label class="check"><input type="checkbox" id="opt-shortcut" checked /> Create a desktop shortcut</label>
+        <label class="check"><input type="checkbox" id="opt-build" checked /> Build the production bundle</label>
+      </div>
+
+      <div class="actions">
+        <button id="start-btn" class="primary" disabled>Install Devil's Eye</button>
+        <button id="cancel-btn" class="ghost" hidden>Cancel</button>
+      </div>
+    </section>
+
+    <section id="progress-view" hidden>
+      <h2>Installing</h2>
+      <ol id="steps" class="steps"></ol>
+      <div class="progressbar"><div id="progress-fill" class="progressfill"></div></div>
+      <div id="log" class="log"></div>
+    </section>
+
+    <section id="done-view" hidden>
+      <div class="done-card">
+        <div class="done-icon">✔</div>
+        <h2>Devil's Eye installed</h2>
+        <dl id="done-summary" class="summary"></dl>
+        <div class="actions">
+          <button id="launch-btn" class="primary">Launch Devil's Eye</button>
+          <button id="again-btn" class="ghost">Install to another location</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="error-view" hidden>
+      <div class="error-card">
+        <div class="error-icon">▲</div>
+        <h2>Installation failed</h2>
+        <p id="error-message" class="error-message"></p>
+        <pre id="error-code" class="error-code"></pre>
+        <div class="actions">
+          <button id="retry-btn" class="primary">Try again</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">Open-source intelligence, on your machine. Data sources stay keyed to your own accounts.</footer>
+  <script type="module" src="/installer.js"></script>
+</body>
+</html>
