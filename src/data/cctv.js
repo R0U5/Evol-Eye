@@ -305,11 +305,10 @@ let _activeCameraId = null;
 // frustum wireframe (the green reticle rectangle around the feed) is clutter.
 // It stays one click away via the COVERAGE button (off -> wireframes -> viewshed).
 let _coverageMode = 'off'; // 'off' | 'on' (wireframes) | 'viewshed' (color-coded volumes)
-// Default the 3D projected "monitor plane" OFF: the flat 2D feed in the
-// right-rail CCTV panel is the primary viewer (owner directive 2026-09-07).
-// A globe-projected plane is clipped by terrain and shows a green wireframe
-// border, so keep it opt-in via the PROJECTION toggle rather than the default.
-let _showProjection = false;
+// Projection is ALWAYS ON (owner directive 2026-09-07): the PROJECTION OFF
+// toggle was half-wired (hid the plane but left the outline) and is removed.
+// The projected screen renders whenever CCTV is enabled with an active camera.
+let _showProjection = true;
 let _autoHop = false;
 // An explicit empty-space deselect keeps AUTO HOP configured but prevents its
 // timer from silently choosing a replacement. A later explicit activation or
@@ -1677,7 +1676,11 @@ function updatePlanePlacement(record) {
     }
   }
   runtime.planeEntity.position = planePos;
-  runtime.planeEntity.orientation = planeFlatOrientation(planePos);
+  // Lock the projected screen to the frustum box and the camera's view
+  // direction (owner directive 2026-09-07): orient the plane perpendicular to
+  // the view axis with its normal facing back toward the mount, so the feed
+  // reads as a screen mounted at the far cap — NOT laid flat facing the sky.
+  runtime.planeEntity.orientation = planeOrientationFor(record.camera, planePos);
   if (runtime.planeEntity.plane) {
     runtime.planeEntity.plane.dimensions = new Cesium.Cartesian2(
       geometry.halfW * 2,
@@ -1736,10 +1739,10 @@ function createProjectionPlane(record, runtime, geometry, positions) {
     properties: { cctvCameraId: record.camera.id },
     show: false,
     position: positions.capCenter,
-    // Lay the monitor plane FLAT (normal straight up toward the sky) so a
-    // top-down focus reads the feed perfectly (owner fix) — the frustum
-    // WIREFRAME keeps its oblique orientation via its own entities.
-    orientation: planeFlatOrientation(positions.capCenter),
+    // Orient the projected screen at the far cap facing back along the camera's
+    // view axis (owner directive 2026-09-07) — matches updatePlanePlacement so
+    // there is no flat-face-up flash before the first placement pass.
+    orientation: planeOrientationFor(record.camera, positions.capCenter),
     plane: {
       plane: new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, 0.0),
       dimensions: new Cesium.Cartesian2(geometry.halfW * 2, geometry.halfH * 2),
