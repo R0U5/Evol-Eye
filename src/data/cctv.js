@@ -3509,7 +3509,11 @@ export function refreshCoverageStyles() {
       // show a clean image with no reticle; the wireframe appears only when
       // the user toggles COVERAGE (off -> wireframes -> viewshed). This kills
       // the "green border" around the flat feed.
-      entity.show = !!(_enabled && coverageOn && inVisibleSet);
+      //
+      // Owner directive (2026-09-08): projection OFF must mean NO lines,
+      // period — the wireframe is the projection cone, so it is gated on
+      // _showProjection as well as coverage mode.
+      entity.show = !!(_enabled && _showProjection && coverageOn && inVisibleSet);
       if (!entity.polyline) continue;
       // Viewshed mode swaps the cyan/green scheme for the camera's own hue so
       // adjacent cones read as distinct coverage claims (design §3b); the
@@ -3534,10 +3538,10 @@ export function refreshCoverageStyles() {
       }
     }
 
-    // Viewshed volume lifecycle: exists iff enabled + viewshed mode + in the
-    // visible set. Rebuild on active-tint flips (rare); otherwise leave the
-    // primitive alone so idle refreshes never churn geometry.
-    const wantVolume = !!(_enabled && viewshedOn && inVisibleSet && record.frustumPositions);
+    // Viewshed volume lifecycle: exists iff enabled + projection on + viewshed
+    // mode + in the visible set. Rebuild on active-tint flips (rare); otherwise
+    // leave the primitive alone so idle refreshes never churn geometry.
+    const wantVolume = !!(_enabled && _showProjection && viewshedOn && inVisibleSet && record.frustumPositions);
     if (wantVolume) {
       if (!record.viewshedPrimitive || record.viewshedActiveTint !== isActive) {
         rebuildViewshedVolume(record, isActive);

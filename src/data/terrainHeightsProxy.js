@@ -11,6 +11,16 @@ export const TERRAIN_RETRY_BUDGET_MS = 10_000;
 /** One initial attempt plus three bounded retries. */
 export const TERRAIN_MAX_ATTEMPTS = 4;
 
+/**
+ * Per-attempt upstream timeout. Raised from 30s (2026-09-08): the Re:Earth
+ * terrain service is slow under load and a 30s abort caused the "refresh
+ * incomplete (aborted due to timeout)" churn — the request aborted before the
+ * upstream could answer, then retried into the same wall. 60s gives a slow
+ * but working upstream room to complete; the retry budget still bounds the
+ * total added time so a genuinely dead upstream fails fast.
+ */
+export const TERRAIN_ATTEMPT_TIMEOUT_MS = 60_000;
+
 /** @param {number} ms */
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -89,7 +99,7 @@ export async function fetchTerrainChunkWithRetry(points, {
   random = Math.random,
   now = Date.now,
   makeSignal = (timeoutMs) => AbortSignal.timeout(timeoutMs),
-  attemptTimeoutMs = 30_000,
+  attemptTimeoutMs = TERRAIN_ATTEMPT_TIMEOUT_MS,
   retryBudgetMs = TERRAIN_RETRY_BUDGET_MS,
   maxAttempts = TERRAIN_MAX_ATTEMPTS,
 } = {}) {
