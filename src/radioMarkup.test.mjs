@@ -183,7 +183,10 @@ test('no unchanged Realtime tool definition drifts silently', () => {
     .update(JSON.stringify(unchanged))
     .digest('hex')
     .slice(0, 16);
-  assert.equal(digest, 'a4490ea91f55fb41', 'an unchanged Realtime tool definition drifted');
+  // Re-pinned 2026-09-08 (rebrand): descriptions changed "Devil's Eye" →
+  // "EVOL Eye" / "GEV" → "EVOL" inside the unchanged tools. No tool logic,
+  // name, or signature moved — the rename is the only drift.
+  assert.equal(digest, 'efe8e86ed39115c4', 'an unchanged Realtime tool definition drifted');
 });
 
 test('Radio volume and mission speed share the Sharpen slider visual language', () => {

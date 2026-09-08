@@ -6920,7 +6920,7 @@ const EVOL_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'set_panel_open',
-    description: 'Open or close a EVOL UI panel/dropdown.',
+    description: 'Open or close an EVOL UI panel/dropdown.',
     parameters: {
       type: 'object',
       additionalProperties: false,
