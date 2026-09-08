@@ -6701,7 +6701,7 @@ export function googlePlacesContextProxy() {
         const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
           headers: {
             'User-Agent': 'Evol-Eye/1.0 searchbar geocoder',
-            Referer: 'https://github.com/R0U5/Devils-Eye',
+            Referer: 'https://github.com/R0U5/Evol-Eye',
             Accept: 'application/json',
           },
           signal: AbortSignal.timeout(30000),
