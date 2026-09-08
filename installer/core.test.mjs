@@ -23,7 +23,7 @@ import {
 test('default manifest normalizes cleanly', () => {
   const m = normalizeManifest();
   assert.equal(m.owner, 'R0U5');
-  assert.equal(m.repo, 'Evol-Eye');
+  assert.equal(m.repo, 'Devils-Eye');
   assert.equal(m.repoIsPrivate, true);
 });
 
@@ -40,7 +40,7 @@ test('manifest rejects bad slugs and coerces invalid ports', () => {
 
 test('githubArchiveUrl uses the default branch', () => {
   assert.equal(
-    githubArchiveUrl({ owner: 'R0U5', repo: 'Evol-Eye', defaultBranch: 'main' }),
+    githubArchiveUrl({ owner: 'R0U5', repo: 'Devils-Eye', defaultBranch: 'main' }),
     'https://github.com/R0U5/Devils-Eye/archive/refs/heads/main.zip',
   );
 });

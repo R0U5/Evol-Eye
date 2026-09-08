@@ -18,7 +18,7 @@ export const INSTALL_STEPS = [
 export const DEFAULT_MANIFEST = Object.freeze({
   name: "EVOL Eye",
   owner: 'R0U5',
-  repo: 'Evol-Eye',
+  repo: 'Devils-Eye',
   defaultBranch: 'main',
   repoIsPrivate: true,
   installerPort: DEFAULT_INSTALLER_PORT,
