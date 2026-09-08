@@ -341,6 +341,144 @@ export function findPoiByName(query) {
 /** Distinguishes an authority veto from a genuine not-found result. */
 export const CANCELLED_SEARCH = Object.freeze({ cancelled: true });
 
+// ── Address-qualified detection & normalization ──────────────────────────────
+// The camera-fence bug (2026-09-08): Nominatim's viewbox + bounded=1 HARD-restricts
+// results to the camera box, so a fully-qualified address ("5524 53rd ave Sacramento
+// California") returned "no address found" whenever the camera wasn't already over
+// the target. A fully-qualified address must NOT be geofenced to the camera. These
+// helpers detect address-qualified queries and normalize address variations so
+// Google and Nominatim see one canonical form.
+
+/** US state codes → full names (for location-token detection and validation). */
+const US_STATES = {
+  al: 'alabama', ak: 'alaska', az: 'arizona', ar: 'arkansas', ca: 'california',
+  co: 'colorado', ct: 'connecticut', de: 'delaware', fl: 'florida', ga: 'georgia',
+  hi: 'hawaii', id: 'idaho', il: 'illinois', in: 'indiana', ia: 'iowa',
+  ks: 'kansas', ky: 'kentucky', la: 'louisiana', me: 'maine', md: 'maryland',
+  ma: 'massachusetts', mi: 'michigan', mn: 'minnesota', ms: 'mississippi',
+  mo: 'missouri', mt: 'montana', ne: 'nebraska', nv: 'nevada', nh: 'new hampshire',
+  nj: 'new jersey', nm: 'new mexico', ny: 'new york', nc: 'north carolina',
+  nd: 'north dakota', oh: 'ohio', ok: 'oklahoma', or: 'oregon', pa: 'pennsylvania',
+  ri: 'rhode island', sc: 'south carolina', sd: 'south dakota', tn: 'tennessee',
+  tx: 'texas', ut: 'utah', vt: 'vermont', va: 'virginia', wa: 'washington',
+  wv: 'west virginia', wi: 'wisconsin', wy: 'wyoming',
+};
+
+/** A street number (leading, or before a street suffix) marks an address, not a place name. */
+const ADDRESS_STREET_RE = /(^\s*\d+|\b\d+\s*(st|nd|rd|th)?\s*(ave|avenue|street|st|blvd|boulevard|rd|road|dr|drive|ln|lane|way|ct|court|pl|place|hwy|highway)(\.|,|\s|$))/i;
+
+/** A city/state/postal token that qualifies an address. */
+const LOCATION_TOKEN_RE = /\b(sacramento|sac|california|cal)\b|\b(?:al|ak|az|ar|ca|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mi|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\b|\b\d{5}\b/i;
+
+/**
+ * True when a query is a fully-qualified street address (a street number AND a
+ * city/state/postal token). Such queries must NOT be geofenced to the camera —
+ * "5524 53rd ave Sacramento California" is unambiguous and must resolve wherever
+ * the camera is. Place/street names ("Sixth Street", "Zilker Park") stay fenced.
+ * @param {string} query
+ * @returns {boolean}
+ */
+export function isAddressQualified(query) {
+  const q = String(query || '').trim();
+  if (!q) return false;
+  return ADDRESS_STREET_RE.test(q) && LOCATION_TOKEN_RE.test(q);
+}
+
+/** Correct ordinal suffix for a number (1st/2nd/3rd/4th…, 11th-13th). */
+function canonicalOrdinalSuffix(n) {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return 'th';
+  const mod10 = n % 10;
+  if (mod10 === 1) return 'st';
+  if (mod10 === 2) return 'nd';
+  if (mod10 === 3) return 'rd';
+  return 'th';
+}
+
+/**
+ * Normalize address variations to one canonical form before geocoding:
+ *  - expand abbreviations (sac→sacramento, cal→california, ca→california)
+ *  - canonicalize malformed ordinals (5rd→5th, 53rd stays 53rd)
+ *  - collapse whitespace, trim, strip trailing punctuation
+ * Does NOT "correct" digits themselves (no 5rd→53rd guessing) — the city/state
+ * expansion + unfenced retry + result validation kill the wrong-city class.
+ * @param {string} query
+ * @returns {string}
+ */
+export function normalizeAddressQuery(query) {
+  let q = String(query || '').trim();
+  if (!q) return q;
+
+  // Expand abbreviations (word-boundary, case-insensitive). "cal" in "california"
+  // is protected by \b — only a standalone token is expanded.
+  q = q.replace(/\bsac\b/gi, 'sacramento');
+  q = q.replace(/\bcal\b/gi, 'california');
+  q = q.replace(/\bca\b/gi, 'california');
+
+  // Canonicalize malformed ordinals: 5rd→5th, 53rd stays 53rd, 11st→11th.
+  q = q.replace(/\b(\d+)(st|nd|rd|th)\b/gi, (match, num) => {
+    const n = parseInt(num, 10);
+    return `${num}${canonicalOrdinalSuffix(n)}`;
+  });
+
+  // Clean joins: collapse whitespace, trim, strip trailing commas/punctuation.
+  q = q.replace(/\s+/g, ' ').trim();
+  q = q.replace(/[,\s]+$/, '');
+
+  return q;
+}
+
+/** Extract explicit city/state tokens from a query for result validation. */
+function extractLocationTokens(query) {
+  const lower = String(query || '').toLowerCase();
+  const tokens = [];
+
+  if (/\bsacramento\b/.test(lower)) tokens.push({ type: 'city', value: 'sacramento' });
+  if (/\bsac\b/.test(lower)) tokens.push({ type: 'city', value: 'sacramento' });
+
+  if (/\bcalifornia\b/.test(lower)) tokens.push({ type: 'state', value: 'california' });
+  if (/\bcal\b/.test(lower)) tokens.push({ type: 'state', value: 'california' });
+  if (/\bca\b/.test(lower)) tokens.push({ type: 'state', value: 'california' });
+
+  for (const [code, name] of Object.entries(US_STATES)) {
+    if (code === 'ca') continue; // already handled above
+    if (new RegExp(`\\b${code}\\b`).test(lower)) tokens.push({ type: 'state', value: name });
+    if (new RegExp(`\\b${name}\\b`).test(lower)) tokens.push({ type: 'state', value: name });
+  }
+
+  return tokens;
+}
+
+/**
+ * Validate a geocode result's label against the ORIGINAL query's explicit
+ * city/state tokens. If the query says Sacramento/CA and the result label says
+ * Chicago (or omits the state/city), treat it as not-found — the Chicago-class
+ * wrong answer must stay dead.
+ * @param {string} originalQuery
+ * @param {string|null} label Google formatted_address / Nominatim display_name
+ * @returns {boolean}
+ */
+function resultMatchesQueryTokens(originalQuery, label) {
+  if (!label) return true;
+  const labelLower = label.toLowerCase();
+  const tokens = extractLocationTokens(originalQuery);
+  if (tokens.length === 0) return true;
+
+  return tokens.every(({ type, value }) => {
+    if (type === 'city') {
+      return labelLower.includes(value);
+    }
+    if (type === 'state') {
+      const code = Object.keys(US_STATES).find((c) => US_STATES[c] === value);
+      if (code) {
+        return labelLower.includes(value) || new RegExp(`\\b${code}\\b`).test(labelLower);
+      }
+      return labelLower.includes(value);
+    }
+    return true;
+  });
+}
+
 /**
  * Geocode a place name using Google Geocoding API, then fly there at a scale
  * appropriate to the request. Countries and cities use their viewport by
@@ -348,6 +486,10 @@ export const CANCELLED_SEARCH = Object.freeze({ cancelled: true });
  */
 export async function searchAndFlyTo(viewer, query, options = {}) {
   const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env?.GOOGLE_MAPS_API_KEY;
+
+  const originalQuery = query;
+  const normalizedQuery = normalizeAddressQuery(query);
+  const addressQualified = isAddressQualified(originalQuery);
 
   const beforeFly = typeof options.beforeFly === 'function' ? options.beforeFly : null;
   const mayFly = () => beforeFly === null || beforeFly() !== false;
@@ -358,18 +500,38 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
   // E 6th bug). Any failed/declined Google call falls through to the keyless
   // Nominatim path below, so a default checkout with no (or unenabled) Google APIs
   // still turns the search bar into a working address finder.
+  //
+  // A fully-qualified address (street number + city/state) is NOT geofenced: the
+  // camera box would hard-restrict "5524 53rd ave Sacramento California" to zero
+  // results whenever the camera isn't already over Sacramento. Address-qualified
+  // queries drop the bounds/viewbox bias entirely.
   let geocode = null;
   if (apiKey) {
     try {
-      geocode = await googleGeocode(query, apiKey, viewportBias(viewer));
+      geocode = await googleGeocode(normalizedQuery, apiKey, addressQualified ? null : viewportBias(viewer));
     } catch {
       geocode = null;
     }
   }
   let viaNominatim = false;
   if (!geocode) {
-    geocode = await nominatimSearch(query, viewer);
+    geocode = await nominatimSearch(normalizedQuery, viewer, { addressQualified });
     viaNominatim = geocode !== null;
+  }
+
+  // Belt & braces: if the search returned null and the query is address-qualified,
+  // retry once unfenced. This covers any detection miss where a fenced search
+  // hard-restricted the result.
+  if (!geocode && addressQualified) {
+    geocode = await nominatimSearch(normalizedQuery, viewer, { addressQualified: true });
+    viaNominatim = geocode !== null;
+  }
+
+  // Part C: validate the result against the ORIGINAL query's explicit city/state
+  // tokens. "5524 5rd ave sacramento" resolving to Chicago must surface as
+  // "no address found", not fly the user to the wrong city.
+  if (geocode && !resultMatchesQueryTokens(originalQuery, geocode.label)) {
+    geocode = null;
   }
 
   let lat = geocode?.lat;
@@ -585,12 +747,17 @@ export function nominatimGoogleTypes(result) {
  * Returns the same Google-shaped contract searchAndFlyTo consumes, or null when
  * nothing resolves.
  */
-async function nominatimSearch(query, viewer) {
+async function nominatimSearch(query, viewer, options = {}) {
   const params = new URLSearchParams({ q: query, format: 'jsonv2', addressdetails: '1', limit: '1' });
-  const viewbox = nominatimViewbox(viewer);
-  if (viewbox) {
-    params.set('viewbox', viewbox);
-    params.set('bounded', '1');
+  // Address-qualified queries skip the camera viewbox entirely — the proxy's
+  // bounded=1 would otherwise HARD-restrict results to the camera box and return
+  // zero for a fully-qualified address whenever the camera isn't over the target.
+  if (!options.addressQualified) {
+    const viewbox = nominatimViewbox(viewer);
+    if (viewbox) {
+      params.set('viewbox', viewbox);
+      params.set('bounded', '1');
+    }
   }
   const response = await fetch(`/api/geocode/nominatim?${params.toString()}`);
   if (!response.ok) return null;
