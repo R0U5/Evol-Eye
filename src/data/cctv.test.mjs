@@ -26,6 +26,7 @@ import cctvLayer, {
   _updateCctvProjectionPlaneForTest,
   _setCctvCoverageStateForTest,
   _pushAmbientCardEntriesForTest,
+  _setAmbientCardStateForTest,
   _setCctvOverlayHostForTest,
   activationProbeClampRange,
   bindCctvWorldClickGesture,
@@ -1095,6 +1096,130 @@ test('active CCTV camera is absent from host by default and protected only when 
     assert.equal(activeEntry.protected, true);
   } finally {
     setCctvCardPresentationOptions({ activeCameraCardEnabled: false });
+    _setCctvOverlayHostForTest();
+    _setCctvCoverageStateForTest({ enabled: false });
+  }
+});
+
+test('ambient thumbnail cards publish only while projection is ON (and not occluding)', () => {
+  // The projection rule: projection OFF = NO thumbnail cards for any camera; projection
+  // ON = current behavior (active plane + other cameras' cards OK). The ambient
+  // card SELECTION and frame fetching stay running (background loading) — only
+  // the published entries are gated here.
+  const publications = [];
+  const ambientRecord = {
+    camera: { id: 'ambient-cam', name: 'AMBIENT CAM' },
+    position: { x: 1, y: 2, z: 3 },
+  };
+  const activeRecord = {
+    camera: { id: 'active-cam', name: 'ACTIVE CAM' },
+    position: { x: 4, y: 5, z: 6 },
+  };
+  _setCctvOverlayHostForTest({
+    setEntries(sourceId, entries) {
+      publications.push({ sourceId, entries });
+    },
+  });
+  try {
+    // Projection OFF: no ambient entries, even with a populated selection.
+    _setCctvCoverageStateForTest({
+      records: [ambientRecord, activeRecord],
+      activeCameraId: activeRecord.camera.id,
+      enabled: true,
+      showProjection: false,
+    });
+    _setAmbientCardStateForTest({ cardIds: ['ambient-cam'] });
+    _pushAmbientCardEntriesForTest();
+    assert.deepEqual(
+      publications.at(-1),
+      { sourceId: 'cctv', entries: [] },
+      'projection OFF must publish no ambient thumbnail entries',
+    );
+
+    // Projection ON, no active plane occluding: ambient entries publish.
+    _setCctvCoverageStateForTest({
+      records: [ambientRecord, activeRecord],
+      activeCameraId: null,
+      enabled: true,
+      showProjection: true,
+    });
+    _setAmbientCardStateForTest({ cardIds: ['ambient-cam'] });
+    _pushAmbientCardEntriesForTest();
+    const onEntries = publications.at(-1).entries;
+    assert.equal(onEntries.length, 1, 'projection ON publishes the ambient card');
+    assert.equal(onEntries[0].id, 'ambient-cam');
+
+    // Projection ON + active plane occluding: ambient entries suppressed.
+    _setCctvCoverageStateForTest({
+      records: [ambientRecord, activeRecord],
+      activeCameraId: activeRecord.camera.id,
+      enabled: true,
+      showProjection: true,
+    });
+    _setAmbientCardStateForTest({ cardIds: ['ambient-cam'] });
+    _pushAmbientCardEntriesForTest();
+    assert.deepEqual(
+      publications.at(-1),
+      { sourceId: 'cctv', entries: [] },
+      'projection ON with an occluding active plane suppresses ambient entries',
+    );
+  } finally {
+    _setAmbientCardStateForTest({ cardIds: [], hoverCardId: null });
+    _setCctvOverlayHostForTest();
+    _setCctvCoverageStateForTest({ enabled: false });
+  }
+});
+
+test('hover-summoned pin stays visible when projection is OFF (explicit gesture)', () => {
+  // The hover card is user-initiated (pointer-over), not ambient chrome, so it
+  // survives projection OFF. Under projection ON it remains subject to the
+  // occlusion guard (current behavior).
+  const publications = [];
+  const hoverRecord = {
+    camera: { id: 'hover-cam', name: 'HOVER CAM' },
+    position: { x: 1, y: 2, z: 3 },
+  };
+  const activeRecord = {
+    camera: { id: 'active-cam', name: 'ACTIVE CAM' },
+    position: { x: 4, y: 5, z: 6 },
+  };
+  _setCctvOverlayHostForTest({
+    setEntries(sourceId, entries) {
+      publications.push({ sourceId, entries });
+    },
+  });
+  try {
+    // Projection OFF + active camera: hover pin still publishes.
+    _setCctvCoverageStateForTest({
+      records: [hoverRecord, activeRecord],
+      activeCameraId: activeRecord.camera.id,
+      enabled: true,
+      showProjection: false,
+    });
+    _setAmbientCardStateForTest({ cardIds: [], hoverCardId: 'hover-cam' });
+    _pushAmbientCardEntriesForTest();
+    const offEntries = publications.at(-1).entries;
+    assert.equal(offEntries.length, 1, 'hover pin publishes when projection is OFF');
+    assert.equal(offEntries[0].id, 'hover-cam');
+    assert.equal(offEntries[0].pinned, true);
+
+    // Projection ON + active plane occluding: hover pin suppressed (current
+    // behavior preserved).
+    _setCctvCoverageStateForTest({
+      records: [hoverRecord, activeRecord],
+      activeCameraId: activeRecord.camera.id,
+      enabled: true,
+      showProjection: true,
+    });
+    _setAmbientCardStateForTest({ cardIds: [], hoverCardId: 'hover-cam' });
+    _pushAmbientCardEntriesForTest();
+    assert.deepEqual(
+      publications.at(-1),
+      { sourceId: 'cctv', entries: [] },
+      'hover pin stays subject to the occlusion guard when projection is ON',
+    );
+  } finally {
+    _setAmbientCardStateForTest({ cardIds: [], hoverCardId: null });
     _setCctvOverlayHostForTest();
     _setCctvCoverageStateForTest({ enabled: false });
   }
