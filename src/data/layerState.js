@@ -215,12 +215,16 @@ const OPTION_GROUPS = Object.freeze({
     integerOption('selectedSatTrackingId', 't', null),
   ]),
   cctv: Object.freeze([
-    enumOption('coverageMode', 'c', 'on', ['off', 'on', 'viewshed'], {
+    // Default OFF (owner directive 2026-09-07): the frustum wireframe (the
+    // blue axis line + cap rectangle where the projection would sit) must not
+    // render by default or on state restore. It only appears when the user
+    // explicitly toggles COVERAGE (off -> wireframes -> viewshed).
+    enumOption('coverageMode', 'c', 'off', ['off', 'on', 'viewshed'], {
       off: '0',
       on: '1',
       viewshed: 'v',
     }),
-    booleanOption('showProjection', 'p', true),
+    booleanOption('showProjection', 'p', false),
     booleanOption('autoHop', 'a', false),
   ]),
   radio: Object.freeze([
