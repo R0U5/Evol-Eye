@@ -545,7 +545,7 @@ function nominatimViewbox(viewer) {
  * (streets → street-corridor, cities → city-overview, countries → region-overview,
  * everything else → the precise-place default).
  */
-function nominatimGoogleTypes(result) {
+export function nominatimGoogleTypes(result) {
   const cls = result.class;
   const type = String(result.type || '');
   const address = result.address || {};
@@ -556,14 +556,23 @@ function nominatimGoogleTypes(result) {
   }
   const administrative = cls === 'place' || cls === 'boundary' || cls === 'population';
   if (administrative) {
-    if (type === 'country' || address.country_code) return ['country'];
-    if (type === 'county' || address.county) return ['administrative_area_level_2'];
-    if (type === 'state' || type === 'region' || type === 'province' || address.state) {
+    if (type === 'country') return ['country'];
+    if (type === 'county') return ['administrative_area_level_2'];
+    if (type === 'state' || type === 'region' || type === 'province') {
       return ['administrative_area_level_1'];
     }
     if (type === 'suburb' || type === 'quarter'
         || type === 'neighbourhood' || type === 'neighborhood') {
       return ['sublocality'];
+    }
+    // A house / street-address result (OSM class "place", type "house",
+    // addresstype "place") is a precise building POI, not a locality.
+    // address.house_number catches the case where Nominatim returns a
+    // different type but still resolved to a specific address.
+    if (type === 'house' || type === 'building' || type === 'residential'
+        || type === 'apartments' || type === 'house_number'
+        || address.house_number) {
+      return ['premise'];
     }
     return ['locality'];
   }

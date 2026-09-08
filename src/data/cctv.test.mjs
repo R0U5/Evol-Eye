@@ -276,28 +276,50 @@ test('default COVERAGE refresh is clean — no wireframe cohort until coverage i
       'COVERAGE OFF hides the active frustum wireframe',
     );
 
-    // Explicitly enabling COVERAGE (wireframes) arms the full visible cohort.
-    // (The active camera was already materialized in phase 1, so this pass
-    // only adds the visible neighbors.)
+    // Explicitly enabling COVERAGE (wireframes) arms the full visible cohort
+    // ONLY when projection is also on. Owner directive (2026-09-08): projection
+    // OFF means NO lines, period — the wireframe is the projection cone.
+    // Provide a dummy projection runtime so ensureProjectionRuntime short-circuits
+    // (no document.createElement in the unit-test node environment).
+    activeRecord.projection = { planeEntity: { show: false }, cameraId: activeRecord.camera.id };
     inserted.length = 0;
     _setCctvCoverageStateForTest({
       viewer,
       records,
       activeCameraId: activeRecord.camera.id,
       coverageMode: 'on',
+      showProjection: true,
     });
     refreshCoverageStyles();
     const withCoverage = records.filter((record) => record.coverageEntities.length > 0);
-    assert.equal(inserted.length, 13 * 2, 'COVERAGE ON adds the visible neighbor cohort');
+    assert.equal(inserted.length, 13 * 2, 'COVERAGE ON + projection adds the visible neighbor cohort');
     assert.equal(withCoverage.length, 14);
     assert.equal(activeRecord.coverageEntities.length, 2, 'the enable-time active camera is materialized');
     assert.ok(
       activeRecord.coverageEntities.every((e) => e.show === true),
-      'COVERAGE ON shows the active frustum wireframe',
+      'COVERAGE ON + projection shows the active frustum wireframe',
     );
     assert.ok(
       withCoverage.some((record) => record !== activeRecord),
       'visible neighbors are materialized alongside the active camera',
+    );
+
+    // Owner directive (2026-09-08): COVERAGE ON + projection OFF must NOT
+    // show wireframes — projection OFF = NO lines, period.
+    inserted.length = 0;
+    _setCctvCoverageStateForTest({
+      viewer,
+      records,
+      activeCameraId: activeRecord.camera.id,
+      coverageMode: 'on',
+      showProjection: false,
+    });
+    refreshCoverageStyles();
+    assert.ok(
+      records.filter((r) => r.coverageEntities.length > 0).every(
+        (r) => r.coverageEntities.every((e) => e.show === false),
+      ),
+      'COVERAGE ON + projection OFF hides all wireframes',
     );
 
     // PROJECTION alone does NOT bring back the wireframe: even with the plane

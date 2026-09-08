@@ -2368,6 +2368,12 @@ function terrainHeightsProxy() {
   const inflight = new Map();
   let diskLoaded = false;
   let diskDirty = false;
+  // Cooldown for the "refresh incomplete" warn (2026-09-08): a slow upstream
+  // makes every cold-cache request in a burst fail, and each one used to log
+  // its own warn — the "3+ times in a row" spam. Log at most once per window
+  // so a degraded upstream degrades the log, not the console.
+  const WARN_COOLDOWN_MS = 60_000;
+  let lastUpstreamWarnAt = 0;
 
   /** LRU-ish insert (Map preserves insertion order; evict the oldest). */
   function memSet(key, entry) {
@@ -2457,7 +2463,7 @@ function terrainHeightsProxy() {
   /**
    * Fetch all missing chunks sequentially (upstream caps each call at 256).
    *
-   * The first try keeps its empirically required 30s timeout; network errors,
+   * The first try keeps its empirically required 60s timeout; network errors,
    * 429, and 5xx receive up to three jittered retries sharing a 10s added-time
    * budget, with Retry-After honored within that bound.
    * @param {Array<[number, number]>} points
@@ -2519,10 +2525,17 @@ function terrainHeightsProxy() {
           });
           if (outcome.cacheChanged) diskDirty = true;
           if (outcome.upstreamError) {
-            console.warn(
-              `[terrain-heights-proxy] refresh incomplete (${outcome.upstreamError?.message || outcome.upstreamError})`
-              + ' — serving stale points when available'
-            );
+            // Dedupe (2026-09-08): a slow upstream makes every cold-cache
+            // request in a burst fail; log at most once per cooldown window
+            // instead of once per request.
+            const now = Date.now();
+            if (now - lastUpstreamWarnAt >= WARN_COOLDOWN_MS) {
+              lastUpstreamWarnAt = now;
+              console.warn(
+                `[terrain-heights-proxy] refresh incomplete (${outcome.upstreamError?.message || outcome.upstreamError})`
+                + ' — serving stale points when available'
+              );
+            }
           }
           send(outcome.status, outcome.body);
         } catch (err) {

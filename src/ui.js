@@ -6615,20 +6615,12 @@ export class StyleManager {
     const activeId = state?.activeCameraId || '';
     const activeCamera = state?.activeCamera || null;
 
-    // Auto-expand the panel when the active camera CHANGES to a new non-null
-    // id while the layer is enabled. Covers click-on-globe, panel controls,
-    // and voice (selectCamera/cycleCamera/focusNearest all notify through
-    // this subscription). The last-seen guard keeps routine notifications
-    // from re-expanding a panel the user deliberately collapsed, and timed
-    // auto-hop transitions only expand on the first activation so the panel
-    // does not pop open on every hop.
+    // Owner directive (2026-09-08): the CCTV panel must NEVER auto-open on a
+    // camera change. The panel state is user-controlled only — it opens or
+    // closes when the user toggles it, never automatically. The last-seen
+    // guard is retained for any future consumer that needs to detect an
+    // active-camera transition.
     const effectiveActiveId = enabled ? (activeId || null) : null;
-    const isFirstActivation = this._lastSeenCctvActiveId === null;
-    if (effectiveActiveId
-      && effectiveActiveId !== this._lastSeenCctvActiveId
-      && (!state?.autoHop || isFirstActivation)) {
-      this.setPanelCollapsed('cctv-panel', false, { explicit: Boolean(state?.explicitSelection) });
-    }
     this._lastSeenCctvActiveId = effectiveActiveId;
 
     this._updateCctvSyncChip(state?.loading, enabled);
