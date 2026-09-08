@@ -33,8 +33,8 @@ function paramsForLayer(id) {
   if (id === 'satellites') return { catalog: 'core', showPoints: false, showOrbits: false };
   if (id === 'cctv') {
     return {
-      coverageMode: 'on',
-      showProjection: true,
+      coverageMode: 'off',
+      showProjection: false,
       autoHop: false,
       autoHopSec: 22,
       selectedCameraId: 'secret-camera',
@@ -195,8 +195,8 @@ test('v2 codec distinguishes absent from empty and keeps canonical deterministic
   const empty = decodeLayerStateParams(new URLSearchParams('v=2&l='));
   assert.deepEqual(empty.enabledLayerIds, []);
   assert.deepEqual(empty.options.cctv, {
-    coverageMode: 'on',
-    showProjection: true,
+    coverageMode: 'off',
+    showProjection: false,
     autoHop: false,
   });
 
@@ -234,7 +234,7 @@ test('unknown and forbidden option fields are ignored while missing options use 
   assert.deepEqual(decoded.enabledLayerIds, ['cctv', 'earthquakes']);
   assert.deepEqual(decoded.options.cctv, {
     coverageMode: 'viewshed',
-    showProjection: true,
+    showProjection: false,
     autoHop: false,
   });
   assert.deepEqual(decoded.options.flights, {
@@ -670,14 +670,14 @@ test('share payload wins over local, passive restore writes nothing, and explici
   manager.setLayerParams('cctv', { selectedCameraId: 'private-camera' }, { origin: 'user' });
   assert.equal(storage.writes.length, 2);
   assert.deepEqual(coordinator.getDurableState().options.cctv, {
-    coverageMode: 'on',
-    showProjection: true,
+    coverageMode: 'off',
+    showProjection: false,
     autoHop: false,
   });
 
-  manager.setLayerParams('cctv', { coverageMode: 'off' }, { origin: 'scene' });
+  manager.setLayerParams('cctv', { coverageMode: 'on' }, { origin: 'scene' });
   assert.equal(storage.writes.length, 2);
-  assert.equal(coordinator.getDurableState().options.cctv.coverageMode, 'on');
+  assert.equal(coordinator.getDurableState().options.cctv.coverageMode, 'off');
 
   manager.setLayerParams('cctv', { coverageMode: 'viewshed' }, { origin: 'voice' });
   assert.equal(storage.writes.length, 3);

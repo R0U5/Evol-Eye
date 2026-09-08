@@ -4094,6 +4094,11 @@ function buildCoverageEntities(record) {
   const addPolyline = (role, linePositions) => _viewer.entities.add({
     id: `cctv-${camera.id}-${role}`,
     properties: { cctvCameraId: camera.id },
+    // Hidden by default (owner directive 2026-09-07): the frustum wireframe
+    // must NEVER flash on screen until refreshCoverageStyles explicitly shows
+    // it. Cesium entities default to show:true, which is how the blue lines
+    // leaked in even with projection/coverage off.
+    show: false,
     polyline: {
       positions: linePositions,
       width: 1.2,
