@@ -23,7 +23,7 @@ import {
 test('default manifest normalizes cleanly', () => {
   const m = normalizeManifest();
   assert.equal(m.owner, 'R0U5');
-  assert.equal(m.repo, 'Devils-Eye');
+  assert.equal(m.repo, 'Evol-Eye');
   assert.equal(m.repoIsPrivate, true);
 });
 
@@ -40,7 +40,7 @@ test('manifest rejects bad slugs and coerces invalid ports', () => {
 
 test('githubArchiveUrl uses the default branch', () => {
   assert.equal(
-    githubArchiveUrl({ owner: 'R0U5', repo: 'Devils-Eye', defaultBranch: 'main' }),
+    githubArchiveUrl({ owner: 'R0U5', repo: 'Evol-Eye', defaultBranch: 'main' }),
     'https://github.com/R0U5/Devils-Eye/archive/refs/heads/main.zip',
   );
 });
@@ -91,9 +91,9 @@ test('nodeDistSpec maps platforms and builds official URLs', () => {
 
 test('defaultInstallDir is per-user and platform-aware', () => {
   const win = defaultInstallDir('win32', { localAppData: 'C:\\Users\\tester\\AppData\\Local' });
-  assert.ok(win.endsWith('DevilsEye'), win);
+  assert.ok(win.endsWith('EvolEye'), win);
   const linux = defaultInstallDir('linux', { homedir: '/home/tester' });
-  assert.ok(linux.endsWith(path.join('.local', 'share', 'devils-eye')), linux);
+  assert.ok(linux.endsWith(path.join('.local', 'share', 'evol-eye')), linux);
   const darwinDefault = defaultInstallDir('darwin', { homedir: '/Users/tester' });
   assert.ok(darwinDefault.includes('Application Support'), darwinDefault);
 });
@@ -132,8 +132,8 @@ test('shasum line matching is strict about the file name', () => {
 test('sanitizeInstallDir resolves and rejects junk', () => {
   assert.equal(sanitizeInstallDir(''), null);
   assert.equal(sanitizeInstallDir(null), null);
-  const resolved = sanitizeInstallDir('C:\\Users\\x\\DevilsEye');
-  assert.ok(resolved.endsWith('DevilsEye'));
+  const resolved = sanitizeInstallDir('C:\\Users\\x\\EvolEye');
+  assert.ok(resolved.endsWith('EvolEye'));
   assert.ok(resolved.length >= 3);
 });
 
