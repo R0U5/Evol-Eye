@@ -20,6 +20,8 @@ import {
   REGION_SWATH_SPAN_KM,
   GLOBE_VIEW,
   searchAndFlyTo,
+  isAddressQualified,
+  normalizeAddressQuery,
 } from './locations.js';
 
 function stubViewer() {
@@ -32,6 +34,10 @@ function stubViewer() {
         longitude: Cesium.Math.toRadians(-97.7431),
         latitude: Cesium.Math.toRadians(30.2672),
         height: 1200,
+      },
+      computeViewRectangle() {
+        // Austin view bounds — the same box the real camera would report.
+        return Cesium.Rectangle.fromDegrees(-97.95, 30.10, -97.55, 30.50);
       },
       cancelFlight() {},
       flyTo(options) { flights.push(options); },
@@ -53,6 +59,15 @@ const AUSTIN_RESULT = {
     },
   },
 };
+
+/** A mock `window` that also satisfies resolveBuildingBounds' timer + overpass needs. */
+function mockWindow(overrides = {}) {
+  return {
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (id) => clearTimeout(id),
+    ...overrides,
+  };
+}
 
 async function runSearch(viewer, options, { result = AUSTIN_RESULT, query = 'austin' } = {}) {
   const hadWindow = Object.hasOwn(globalThis, 'window');
@@ -733,6 +748,208 @@ test('searchAndFlyTo resolves through Nominatim even when no Google key is confi
     assert.equal(nominatimCalls, 1);
     assert.equal(plan.navigationMode, 'street-corridor');
     assert.equal(plan.label, '6th Street, Downtown Austin, Travis County, Texas, United States');
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+    else delete globalThis.window;
+  }
+});
+
+// ── Address-qualified detection & normalization (2026-09-08 camera-fence fix) ─
+// The camera-fence bug: Nominatim's viewbox + bounded=1 HARD-restricts results to
+// the camera box, so "[address redacted]" returned "no address
+// found" whenever the camera wasn't already over Sacramento. A fully-qualified
+// address must NOT be geofenced. These fixtures are the contract.
+
+test('normalizeAddressQuery: canonical input is a no-op (exact form)', () => {
+  assert.equal(
+    normalizeAddressQuery('[address redacted]'),
+    '[address redacted]',
+  );
+});
+
+test('normalizeAddressQuery: expands sac/cal abbreviations, preserves avenue suffix', () => {
+  const normalized = normalizeAddressQuery('[address redacted]');
+  assert.ok(normalized.includes('sacramento'), `expected sacramento, got ${normalized}`);
+  assert.ok(normalized.includes('california'), `expected california, got ${normalized}`);
+  assert.ok(normalized.includes('avenue'), `avenue suffix must be preserved, got ${normalized}`);
+});
+
+test('normalizeAddressQuery: fixes a malformed ordinal (5rd → 5th)', () => {
+  assert.equal(normalizeAddressQuery('[address redacted]'), '[address redacted]');
+});
+
+test('normalizeAddressQuery: keeps a correct ordinal (53rd stays 53rd)', () => {
+  assert.equal(normalizeAddressQuery('[address redacted]'), '[address redacted]');
+});
+
+test('normalizeAddressQuery: does not expand "cal" inside "california"', () => {
+  // "cal" in "california" is protected by \b — only a standalone token expands.
+  assert.equal(normalizeAddressQuery('[address redacted]'), '[address redacted]');
+});
+
+test('isAddressQualified: fully-qualified addresses qualify', () => {
+  assert.equal(isAddressQualified('[address redacted]'), true);
+  assert.equal(isAddressQualified('[address redacted]'), true);
+  assert.equal(isAddressQualified('[address redacted], ca'), true);
+  assert.equal(isAddressQualified('[address redacted]'), true);
+});
+
+test('isAddressQualified: place and street names do NOT qualify', () => {
+  assert.equal(isAddressQualified('Sixth Street'), false);
+  assert.equal(isAddressQualified('Zilker Park'), false);
+  assert.equal(isAddressQualified('Austin'), false);
+});
+
+test('isAddressQualified: a street number alone (no location token) does not qualify', () => {
+  // "[address redacted]" has a street number but no city/state/postal token.
+  assert.equal(isAddressQualified('[address redacted]'), false);
+});
+
+test('Nominatim: address-qualified query sends NO viewbox param', async () => {
+  const viewer = stubViewer();
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  globalThis.window = mockWindow();
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    if (String(url).startsWith('/api/overpass')) {
+      return { ok: true, json: async () => ({ elements: [] }) };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        status: 'OK',
+        results: [{
+          lat: '38.5035669',
+          lon: '-121.4404964',
+          display_name: '[address redacted]',
+          class: 'place',
+          type: 'house',
+          boundingbox: ['38.50', '38.51', '-121.45', '-121.44'],
+        }],
+      }),
+    };
+  };
+  try {
+    await searchAndFlyTo(viewer, '[address redacted]', {});
+    const nominatimUrl = requested.find((u) => u.startsWith('/api/geocode/nominatim?'));
+    assert.ok(nominatimUrl, 'expected a Nominatim call');
+    assert.ok(!nominatimUrl.includes('viewbox='), `address-qualified must NOT send viewbox, got ${nominatimUrl}`);
+    assert.ok(!nominatimUrl.includes('bounded='), `address-qualified must NOT send bounded, got ${nominatimUrl}`);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+    else delete globalThis.window;
+  }
+});
+
+test('Nominatim: a place query still sends the viewbox param (Austin/Sixth-Street bias)', async () => {
+  const viewer = stubViewer();
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  globalThis.window = mockWindow();
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    return {
+      ok: true,
+      json: async () => ({
+        status: 'OK',
+        results: [{
+          lat: '30.2672',
+          lon: '-97.7431',
+          display_name: '6th Street, Downtown Austin, Travis County, Texas, United States',
+          class: 'highway',
+          type: 'residential',
+          boundingbox: ['30.26', '30.28', '-97.76', '-97.73'],
+        }],
+      }),
+    };
+  };
+  try {
+    await searchAndFlyTo(viewer, 'Sixth Street', {});
+    const nominatimUrl = requested.find((u) => u.startsWith('/api/geocode/nominatim?'));
+    assert.ok(nominatimUrl, 'expected a Nominatim call');
+    assert.ok(nominatimUrl.includes('viewbox='), `a place query must keep the viewbox bias, got ${nominatimUrl}`);
+    assert.ok(nominatimUrl.includes('bounded='), `a place query must keep bounded=1, got ${nominatimUrl}`);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+    else delete globalThis.window;
+  }
+});
+
+test('validation: a Chicago result for a Sacramento query is treated as not-found', async () => {
+  const viewer = stubViewer();
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  globalThis.window = mockWindow();
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith('/api/geocode/nominatim?')) {
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'OK',
+          results: [{
+            lat: '41.8781',
+            lon: '-87.6298',
+            display_name: 'Chicago, Cook County, Illinois, United States',
+            class: 'place',
+            type: 'city',
+            boundingbox: ['41.64', '42.02', '-87.94', '-87.52'],
+          }],
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  try {
+    const plan = await searchAndFlyTo(viewer, '[address redacted]', {});
+    assert.equal(plan, null, 'a Chicago result for a Sacramento query must be treated as not-found');
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (hadWindow) globalThis.window = priorWindow;
+    else delete globalThis.window;
+  }
+});
+
+test('validation: a matching Sacramento/CA result passes validation', async () => {
+  const viewer = stubViewer();
+  const hadWindow = Object.hasOwn(globalThis, 'window');
+  const priorWindow = globalThis.window;
+  const priorFetch = globalThis.fetch;
+  globalThis.window = mockWindow();
+  globalThis.fetch = async (url) => {
+    if (String(url).startsWith('/api/overpass')) {
+      return { ok: true, json: async () => ({ elements: [] }) };
+    }
+    if (String(url).startsWith('/api/geocode/nominatim?')) {
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'OK',
+          results: [{
+            lat: '38.5035669',
+            lon: '-121.4404964',
+            display_name: '[address redacted]',
+            class: 'place',
+            type: 'house',
+            boundingbox: ['38.50', '38.51', '-121.45', '-121.44'],
+          }],
+        }),
+      };
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  try {
+    const plan = await searchAndFlyTo(viewer, '[address redacted]', {});
+    assert.ok(plan, 'a matching Sacramento result must pass validation');
+    assert.equal(plan.navigationMode, 'precise-place');
   } finally {
     globalThis.fetch = priorFetch;
     if (hadWindow) globalThis.window = priorWindow;
