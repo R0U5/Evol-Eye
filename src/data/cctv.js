@@ -305,10 +305,11 @@ let _activeCameraId = null;
 // frustum wireframe (the green reticle rectangle around the feed) is clutter.
 // It stays one click away via the COVERAGE button (off -> wireframes -> viewshed).
 let _coverageMode = 'off'; // 'off' | 'on' (wireframes) | 'viewshed' (color-coded volumes)
-// Projection is ALWAYS ON (owner directive 2026-09-07): the PROJECTION OFF
-// toggle was half-wired (hid the plane but left the outline) and is removed.
-// The projected screen renders whenever CCTV is enabled with an active camera.
-let _showProjection = true;
+// Projection toggle restored (owner directive 2026-09-07 round 3): OFF by
+// default so CCTV shows camera ICONS ONLY — no projected plane, no blue
+// outlines. Clicking an icon opens the flat real-time feed in the right-rail
+// sidebar. The PROJECTION button opts into the 3D projected screen on demand.
+let _showProjection = false;
 let _autoHop = false;
 // An explicit empty-space deselect keeps AUTO HOP configured but prevents its
 // timer from silently choosing a replacement. A later explicit activation or
