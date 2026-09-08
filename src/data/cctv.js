@@ -1748,8 +1748,13 @@ function createProjectionPlane(record, runtime, geometry, positions) {
       plane: new Cesium.Plane(Cesium.Cartesian3.UNIT_Z, 0.0),
       dimensions: new Cesium.Cartesian2(geometry.halfW * 2, geometry.halfH * 2),
       material: runtime.planeMaterial,
-      outline: true,
-      outlineColor: PLANE_OUTLINE_COLOR,
+      // No border on the projected feed (owner directive 2026-09-07): the
+      // plane used to render with its own cyan outline, so the image always
+      // had a rectangle drawn around it even with the frustum wireframe off.
+      // The image plane is now borderless — the COVERAGE toggle alone decides
+      // whether any frame lines appear.
+      outline: false,
+      outlineColor: undefined,
     },
   });
   return runtime.planeEntity;
@@ -4328,34 +4333,39 @@ export function focusCctvRecord(viewer, record, duration = 2.2) {
   // Frame-only (unlocated) cameras have no position — nothing to fly to.
   if (!record.position) return CCTV_FOCUS_RESULT.FOCUSED;
   if (typeof record.position === 'function') return CCTV_FOCUS_RESULT.FOCUSED;
-  // Top-down framing (owner fix): fly DIRECTLY above the monitor plane looking
-  // straight down (pitch −90°, heading 0) and zoom so the plane fills the view.
-  // The plane is oriented to face flat toward the sky (see planeOrientationFor),
-  // so the selected camera's feed is seen perfectly instead of being pitched
-  // under the 3D terrain occlusion and viewed at an oblique angle.
+  // Head-on framing (owner directive 2026-09-07): fly along the camera's view
+  // axis and stop in front of the projected image so the entire feed fills
+  // the cone of vision — NOT top-down. The plane is oriented perpendicular to
+  // the view axis (planeOrientationFor, normal facing back toward the mount),
+  // so a viewer on the mount side looking along the heading sees the image
+  // head-on with no foreshortening.
   const geometry = record.frustumGeometry;
   const halfW = Number(geometry?.halfW) || Math.max(40, camera.rangeM * 0.36);
   const halfH = Number(geometry?.halfH) || Math.max(40, camera.rangeM * 0.2);
-  const FOCUS_FOV_RAD = toRad(60); // camera frustum FOV used for framing
-  // Use the plane's SMALLER half-extent so the whole rectangle stays in frame,
-  // with a 1.25x margin. At altitude `range`, the limiting half-edge subtends
-  //   tan(fov/2) ≈ (limitingHalf * 1.25) / range  ⇒  range = limitingHalf*1.25/tan(fov/2)
-  const limitingHalf = Math.max(20, Math.min(halfW, halfH));
-  const range = Math.max(140, limitingHalf * 1.25 / Math.tan(FOCUS_FOV_RAD / 2));
-  // Center on the plane's CAP CENTER (where the image is), falling back to the
-  // mount. The plane is rendered flat at the cap center, so hover directly
-  // above it, looking straight down (pitch −90°, heading 0) so the feed fills
-  // the view with no terrain occlusion.
+  const FOCUS_FOV_RAD = toRad(60);
+  // Use the LARGER half-extent so the whole rectangle fills the cone with
+  // ~1.4x margin:  range = limitingHalf*1.4 / tan(fov/2)
+  const limitingHalf = Math.max(20, Math.max(halfW, halfH));
+  const range = Math.max(280, limitingHalf * 1.4 / Math.tan(FOCUS_FOV_RAD / 2));
   const capCenter = record.frustumPositions?.capCenter || record.position;
-  const up = Cesium.Cartographic.fromCartesian(capCenter);
-  const dir = Cesium.Cartesian3.fromRadians(
-    up.longitude,
-    up.latitude,
-    (up.height || 0) + range
+  // Position the viewer `range` back along the view axis (mount side), looking
+  // straight down the axis at the image — head-on, the feed fills the cone.
+  const frame = frustumFrameEcef(
+    { ...camera, pitchDeg: safeNumber(camera.pitchDeg, -17) },
+    capCenter,
+  );
+  const dest = Cesium.Cartesian3.subtract(
+    capCenter,
+    Cesium.Cartesian3.multiplyByScalar(frame.dir, range, new Cesium.Cartesian3()),
+    new Cesium.Cartesian3(),
   );
   viewer.camera.flyTo({
-    destination: dir,
-    orientation: { heading: 0, pitch: toRad(-90), roll: 0 },
+    destination: dest,
+    orientation: {
+      heading: toRad(safeNumber(camera.headingDeg, 0)),
+      pitch: toRad(safeNumber(camera.pitchDeg, -17)),
+      roll: 0,
+    },
     duration: Math.max(0.2, duration || 0),
     easingFunction: Cesium.EasingFunction.CUBIC_IN_OUT,
   });
