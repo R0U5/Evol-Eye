@@ -3999,8 +3999,13 @@ export function setActiveCamera(cameraId) {
   // any idle neighbor. The following geometry rewrite welds these entities to
   // the current sampled positions.
   ensureActiveCoverageEntities(record);
-  ensureProjectionRuntime(record);
-  refreshProjectionImage(record, true);
+  // Only create the 3D monitor plane when projection is ON. When projection
+  // is OFF the plane entity (with its outline) must not exist at all — not
+  // merely be hidden — so there is nothing to leak a border.
+  if (_showProjection) {
+    ensureProjectionRuntime(record);
+    refreshProjectionImage(record, true);
+  }
   // FIX B9b: an explicit user (re)select re-arms one real ground sample for the
   // newly-active camera, then freezes. Idle neighbors keep their resolved state.
   // FIX B9c: if tiles are ready this real pass applies + re-resolves
@@ -4732,7 +4737,7 @@ const cctvLayer = {
       _autoHopSuspended = false;
     }
     const activeRecord = getActiveRecord();
-    if (activeRecord) {
+    if (activeRecord && _showProjection) {
       ensureProjectionRuntime(activeRecord);
       refreshProjectionImage(activeRecord, true);
     }
@@ -4885,6 +4890,20 @@ const cctvLayer = {
         const active = getActiveRecord();
         if (active) ensureProjectionRuntime(active);
         startProjectionLoop();
+      } else {
+        // Projection toggled OFF: destroy every projection runtime so the
+        // plane entity (and its outline) is removed from the scene entirely,
+        // not merely hidden. This is the only way to guarantee no blue border
+        // leaks when projection is off.
+        for (const record of _records) {
+          if (record?.projection) {
+            destroyProjectionRuntime(record.projection);
+            record.projection = null;
+          }
+        }
+        // Clear the projection entity collection so destroyCoverageEntities
+        // doesn't iterate stale runtimes on the next disable/destroy cycle.
+        _projectionEntities = [];
       }
     }
     if (typeof params.autoHop === 'boolean') {
