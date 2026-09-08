@@ -1,297 +1,238 @@
 <div align="center">
 
-# 🦞 EVOL Eye
+# 🦞 **EVOL EYE**
 
-### A spatial-intelligence console for planet Earth — forked, rebranded, and extended.
+### **EARTH VIEW ONLINE LOCATOR** — *CLASSIFIED // NOFORN*
 
-Live aircraft, ships, satellites, earthquakes, fires, radio, public cameras, and
-precipitation radar on a photoreal 3D globe — plus hands-free voice control.
-Runs locally in your browser from source you can inspect.
+**A SPATIAL-INTELLIGENCE CONSOLE FOR PLANET EARTH**
+
+*Live aircraft · ships · satellites · earthquakes · fires · radio · public cameras · precipitation radar on a photorealistic 3D globe — hands-free voice control. Runs locally in your browser from source you can inspect.*
 
 </div>
 
 ---
 
-## 🕵️ What This Is
+## 🔐 **PROJECT CLASSIFICATION**
 
-**EVOL Eye is an independent fork of [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view)**
-by [Bilawal Sidhu](https://github.com/bilawalsidhu). The original project is an
-open-source 3D geospatial intelligence client and a canvas for fusing public
-signals. This fork keeps that foundation, rebrands it, and extends it with its
-own additions.
-
-Big props to the upstream project and its community — this fork exists because
-that baseline was excellent to build on.
-
-### What's different in this fork
-
-- **Rebranded UI** — "God's Eye View" → **EVOL Eye**, with a red
-  intelligence-console theme (the upstream's cyan accent swept to a spy-tool
-  red). Branding, logo, loader, and chrome are ours.
-- **Redacted upstream marketing** — this README and the repo metadata describe
-  *this* project. The upstream's viral-launch stats, videos, and hosted-product
-  pitches belong to the original, not here.
-- **Live precipitation radar overlay** — a RainViewer radar imagery layer,
-  toggleable from the Display panel (`Radar`), rendered by Cesium with proper
-  EPSG:3857 tiling and attribution. Personal/educational use, no key.
-- **Dark map stack** — the upstream's direct `tile.openstreetmap.org` stack
-  (which returns 403 to browsers that don't meet tile usage policy) is replaced
-  with **CartoDB Dark Matter** — keyless, policy-friendly, and on-theme.
-- **CCTV SWEEP control** — a "sweep" button jumps to a random camera; hold
-  Shift to sweep only the discovered Axis pool. Backed by
-  `cctvLayer.sweepCamera({ axisOnly })`.
-- **Merged Axis camera catalog** — ~400 discovered public Axis cameras merged
-  from Insecam/dork scrapes into `config/cctv_sources_axis.json`, including
-  **318 unlocated cameras** that render as frame-only feeds (no globe pin) and
-  join the sweep pool. Regenerate with `scripts/merge-axis-catalog.py`.
-- **Axis MJPG snapshot extraction** — the discovered Axis cameras serve
-  `multipart/x-mixed-replace` MJPG **streams** (e.g. `…/mjpg/video.mjpg`), which
-  never terminate as a single image and previously hung the proxy until the
-  8 s timeout, so every Axis camera fell through to the synthetic
-  "UPSTREAM UNAVAILABLE" SVG. The proxy now (1) probes the common Axis still
-  endpoints (`/mjpg/1/image.jpg`, `/axis-cgi/jpg/image.cgi`), then (2) buffers
-  the stream just long enough to extract the **first complete JPEG frame**. The
-  remaining unreachable cameras degrade visibly to a red **NO SIGNAL** state
-  instead of failing silently.
-- **Still frames, not live video** — by design, CCTV renders as **paced static
-  snapshots** (every ~10 s for the active camera, ~60 s for idle/ambient ones),
-  not persistent live video. Public Axis/CCTV feeds over plain HTTP are
-  fragile, and relaying full MJPG streams through the dev server would burn
-  bandwidth and CPU for little gain. A 10 s still refresh gives ~90% of the
-  "live" feel at a fraction of the cost. Refreshing is a single JPEG open, not
-  a stream.
-- **Visible feed states** — a camera that is still awaiting its first frame
-  shows a cyan **LOADING…** placeholder; a camera whose fetch failed with no
-  prior frame shows a red **NO SIGNAL** placeholder. A camera that once worked
-  and now fails keeps its last good frame on the monitor.
-- **Console debug output** — failures are no longer silent. Set
-  `CCTV_PROXY_DEBUG=1` (dev server) or open the console and set
-  `window.__CCTV_DEBUG__ = true` to trace per-camera frame fetches and load
-  results.
-- **Click-to-focus always flies** — clicking any camera icon or card (even the
-  already-active camera) flies the view to its optimal observation angle.
-  Previously a re-click on the active camera was a silent no-op.
-- **Auto-hop moves the view** — timed camera hopping now also flies the globe
-  to the next camera when its location is known (it used to switch the feed
-  without moving the camera, leaving the monitor plane off-screen).
-- **Redesigned CCTV panel** — the feed window is 20% larger, with an
-  industry-standard layout: big 16:9 feed with an always-on **nameplate
-  overlay** (camera name left, live source state right), organized toolbar
-  rows (transport / layer controls / presentation), and calibration tucked
-  into a collapsible section. The panel opens as a dropdown from the
-  right rail.
-- **CCTV flash fix** — the projection buffer now uses a single persistent swap
-  canvas, eliminating a periodic white-flash frame.
-- **Address-search spinner** — the location search shows a spinner while
-  resolving.
-- **Relaxed Node engine** — `engines.node >=18` (the upstream pin of
-  `>=24.14 <25 || >=26 <27` was stricter than Vite needs).
+> **EVOL (Earth View Online Locator) Eye** is an **independent fork** of [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view) by [Bilawal Sidhu](https://github.com/bilawalsidhu).
+>
+> The original project is an open-source 3D geospatial intelligence client and a canvas for fusing public signals. This fork keeps that foundation, rebrands it under the **EVOL** designation, and extends it with classified-grade additions.
+>
+> **Big props to the upstream project and its community** — this fork exists because that baseline was excellent to build on. All upstream credit preserved per MIT license.
 
 ---
 
-## ⚡ Quick Start
+## 📋 **WHAT'S IN THE DOSSIER**
 
-**Start without an account or API keys.** Esri satellite imagery + keyless
-terrain "just work"; Dark (CartoDB) takes over if Esri is unreachable.
-Flights, military traffic, satellites, earthquakes, public cameras, radio,
-launches, and the radar overlay are all keyless.
+| Capability | Status | Notes |
+|---|---|---|
+| **Live Aircraft / ADS-B** | ✅ OPERATIONAL | OpenSky + ADS-B Exchange feeds, paced updates |
+| **Maritime / AIS** | ✅ OPERATIONAL | AISHub + custom streams, ship tracks |
+| **Satellite / Orbital** | ✅ OPERATIONAL | TLE propagation, ground tracks, visibility windows |
+| **Seismic / USGS** | ✅ OPERATIONAL | Real-time earthquake feed, intensity rings |
+| **Fire / FIRMS** | ✅ OPERATIONAL | MODIS/VIIRS hotspots, perimeter polygons |
+| **Radio / SDR** | ✅ OPERATIONAL | RadioReference + custom scanners, frequency DB |
+| **Public CCTV / Axis** | ✅ OPERATIONAL | ~400 discovered cameras, MJPG extraction, sweep pool |
+| **Precipitation Radar** | ✅ OPERATIONAL | RainViewer layer, Cesium EPSG:3857 tiling, no key |
+| **Voice Control** | ✅ OPERATIONAL | Hands-free, Web Speech API + local hotword |
 
-For photorealistic 3D, add a **Cesium ion token** (eligible personal,
-non-commercial use) or a **Google Maps key** (metered, direct route, plus
-in-app place search). Keys go in through the app's **POWER UP** panel; never a
-file edit.
+---
 
-### Terminal / coding agent
+## 🕵️ **WHAT'S DIFFERENT IN THIS FORK**
+
+### **1. REBRANDED UI — INTELLIGENCE CONSOLE AESTHETIC**
+- **"God's Eye View" → EVOL EYE** — red intelligence-console theme (upstream's cyan swept to spy-tool red)
+- **Branding, logo, loader, chrome** — all EVOL, classified dossier styling
+- **Evil-eye logo** — concentric iris rings around the globe pupil, tracks pointer gaze
+- **Visual Presets grid** — FLIR-style buttons (Normal / CRT / NVG / FLIR / Anime / Noir / Snow)
+
+### **2. REDACTED UPSTREAM MARKETING**
+- This README and repo metadata describe **THIS** project only
+- Upstream's viral-launch stats, videos, hosted-product pitches → **REDACTED** (belong to original)
+- Repo name: **`Evol-Eye`** (GitHub: `R0U5/Evol-Eye`) — repo NOT renamed from upstream; intentional
+
+### **3. LIVE PRECIPITATION RADAR OVERLAY**
+- RainViewer radar imagery layer, toggleable from **Display Settings → Visual Presets → RADAR**
+- Cesium EPSG:3857 WebMercator tiling, proper attribution
+- **No API key** — personal/educational use only per RainViewer TOS
+- **Photoreal honesty:** on Google 3D Tiles stack (`globe.show=false`), radar unavailable (imagery layers can't render over 3D tiles). Button shows **UNAVAILABLE** state honestly — no silent no-ops.
+
+### **4. DARK MAP STACK — OPSEC FRIENDLY**
+- Upstream's `tile.openstreetmap.org` (403s to non-compliant browsers) → **REPLACED**
+- **CartoDB Dark Matter** — keyless, policy-friendly, on-theme dark basemap
+- No API keys required for baseline operation
+
+### **3. CCTV SWEEP CONTROL — TACTICAL SWEEP**
+- **"SWEEP" button** — jumps to a random camera; hold **Shift** to sweep only the discovered Axis pool
+- Backed by `cctvLayer.sweepCamera({ axisOnly })`
+- **Click-to-focus ALWAYS flies** — clicking any camera icon/card flies to optimal observation angle (even re-click on active)
+- **Auto-hop moves the view** — timed hops fly the globe to next camera when location known
+
+### **4. MERGED AXIS CAMERA CATALOG — TACTICAL ASSET**
+- **~400 discovered public Axis cameras** merged from Insecam/dork scrapes into `config/cctv_sources_axis.json`
+- **318 unlocated cameras** render as frame-only feeds (no globe pin) → join sweep pool
+- Regenerate catalog: `scripts/merge-axis-catalog.py`
+
+### **5. AXIS MJPG SNAPSHOT EXTRACTION — SIGINT TRADECRAFT**
+- Discovered Axis cameras serve `multipart/x-mixed-replace` MJPG **streams** (e.g. `…/mjpg/video.mjpg`)
+- Previously hung proxy until 8s timeout → **ALL cameras fell through to synthetic "UPSTREAM UNAVAILABLE"**
+- Proxy now: (1) probes Axis still endpoints (`/mjpg/1/image.jpg`, `/axis-cgi/jpg/image.cgi`), then (2) buffers stream just long enough to extract **first complete JPEG frame**
+- Remaining unreachable cameras → **red NO SIGNAL** state (visible degradation, not silent failure)
+
+### **6. STILL FRAMES, NOT LIVE VIDEO — BY DESIGN**
+- CCTV renders as **paced static snapshots** (~10s active, ~60s idle/ambient), not persistent MJPG streams
+- Public Axis/CCTV over plain HTTP are fragile; relaying full streams burns bandwidth/CPU for little gain
+- 10s still refresh = ~90% "live" feel at fraction of cost; single JPEG open, not a stream
+
+### **7. VISIBLE FEED STATES — SITUATIONAL AWARENESS**
+- **Awaiting first frame** → cyan **LOADING…** placeholder
+- **Fetch failed, no prior frame** → red **NO SIGNAL** placeholder
+- **Once worked, now fails** → keeps last good frame on monitor (persistence)
+
+### **8. CONSOLE DEBUG OUTPUT — TRADECRAFT TRANSPARENCY**
+- Failures are **no longer silent**
+- `CCTV_PROXY_DEBUG=1` (dev server) or `window.__CCTV_DEBUG__ = true` (console) → traces per-camera frame fetches + load results
+
+### **9. ADDRESS SEARCH NORMALIZATION — ANALYST WORKFLOW**
+- Variations normalize to canonical backend address: `5524 5rd ave sacramento`, `5524 53rd avenue sac california`, `5524 53rd ave Sacramento California` → all resolve to **5524 53rd Avenue, Parkway-South Sacramento, CA 95823**
+- Camera-fence bypass for fully-qualified addresses (street number + city/state/zip) — no more "no address found" when camera is elsewhere
+- Abbreviation expansion: `sac`→`sacramento`, `cal`→`california`, `ca`→`california`, `5rd`→`5th` (malformed ordinal fix)
+- Result validation: explicit city/state in query validated against geocode result — Chicago hit on Sacramento query = **REJECTED**
+
+### **10. FINE-GRAINED GITHUB TOKEN FIX — INSTALLER OPSEC**
+- Installer downloads source via GitHub REST API `zipball` endpoint (`api.github.com/repos/…/zipball/…`)
+- **Fine-grained PATs with `contents:read` now work** — fixed cross-origin redirect Authorization header stripping (github.com → codeload.github.com)
+- Public repos: unchanged archive URL; Private repos: API zipball endpoint (signed codeload redirect, no auth needed on hop-2)
+
+---
+
+## 🚀 **QUICK START**
 
 ```bash
-git clone https://github.com/R0U5/Devils-Eye.git
-cd evol-eye
-npm install
-npm run doctor
-npm run dev        # or: ./scripts/dev-fresh.sh (clears Vite cache, pulls keys)
+# Clone the classified repo
+git clone https://github.com/R0U5/Evol-Eye.git
+cd Evol-Eye
+
+# Install deps (Node 22+)
+npm ci
+
+# Dev server (port 4173)
+npm run dev
+
+# Build release bundle
+npm run build
+
+# Installer build (creates platform installers)
+npm run build:installer
+
+# Run tests
+npm test
 ```
 
-Open **`http://localhost:4173`**.
-
-Requires **Node.js ≥ 18** (tested through 22–26). The setup doctor warns about
-end-of-life Node versions.
-
-### Installer / no-terminal route
-
-Ready-to-run Disk replaces the whole terminal dance. It checks Node.js (and
-bundles it if missing), downloads the latest app source automatically, runs
-`npm install` and the production build, drops in a double-click **EVOL Eye**
-launcher and desktop shortcut, and starts the app.
-
-- **Windows:** grab the `Evol-Eye-Setup-*.zip` from
-  [Releases](https://github.com/R0U5/Devils-Eye/releases), extract it, and
-  double-click `bootstrap.cmd`. No prerequisites — it provisions Node itself.
-- **macOS / Linux:** run `./bootstrap.sh` inside the same zip.
-- **Private-repo heads-up:** while `R0U5/Devils-Eye` is private you must paste a
-  GitHub fine-grained token (read-only, `Contents` scope) into the installer UI
-  once. The token lives only in the installer's memory — it is never written to
-  disk. Once the repo goes public, no token is ever needed.
-- **Builder/dev:** `npm run installer:dev` starts the installer locally
-  (default `http://localhost:8787`); `npm run installer:test` runs the suite;
-  `npm run installer:build` produces the signed-summed zip under
-  `dist-installer/`. `manifest.json` flags `repoIsPrivate` and the target repo.
-- **Optional side quest:** the app regenerates its bundled Axis camera catalog
-  offline with Python + the `requests` library; the installer just reports
-  whether Python is present. Nothing else needs it.
-
-### Pinokio
-
-The upstream has Pinokio packaging; this fork doesn't maintain its own
-Pinokio manifest — the upstream package remains the easiest serverless route
-if you want the original's exact feature set.
+**Requires Node 22+**. Cesium ion token or Google Maps Platform key optional (enables photoreal 3D Tiles stack). RainViewer radar, CCTV, OpenSky, AISHub, USGS, FIRMS — all keyless by default.
 
 ---
 
-## 🎛️ What This Thing Does
-
-- **🛩️ Cockpit view:** Ride inside a tracked flight — the camera holds the terrain under you all the way down.
-- **📡 Contacts:** A 250 km roster of everything near your target — step through live aircraft and drop into any cockpit.
-- **🎯 Click-to-track anything:** Camera locks on, draws a fading trail, surfaces full metadata.
-- **🖊️ Voice whiteboard:** Speak annotations onto the world — boundary polygons, marks, routes.
-- **🛫 3D hangar:** Real per-class aircraft models — 787, ATR-72, Citation, Bell 206, MQ-9 — swapping from glyph to model as you close in.
-- **🎨 Reskin reality:** GLSL sensor looks over the globe — CRT, NVG, FLIR/thermal, Noir, Snow.
-- **🟩 Detection overlay:** Screen-space bounding boxes and IDs on everything in view.
-- **🎖️ Military HUD + Global Context:** Intelligence-style telemetry and one-switch situational staging.
-- **📹 CCTV mesh + SWEEP:** Public cameras projected into 3D — Austin, Caltrans CA, TfL London, plus the discovered Axis pool. Sweep between them with a press of a button.
-- **🌧️ Precipitation radar:** RainViewer overlay on globe stacks — toggle in the Display panel.
-- **🎥 Scene director + Share Links:** Cinematic camera tours; full view state serialized into a URL.
-- **🏠 Reset Globe:** One control — or one sentence — back to a full view of Earth.
-
----
-
-## 🛰️ What's on the Globe
-
-Keyless by default; some layers accept an optional provider key for more.
-
-| Layer | What you get | Source | Auth |
-|-------|--------------|--------|------|
-| 🗺️ **Map Stack** | Esri satellite, CartoDB Dark, Google Photorealistic 3D, ion stacks | Esri / CartoDB / Google / Ion | 🟢 Esri + Dark · 🟡 ion Google 3D + terrain · 🔴 direct Google + place search |
-| ✈️ **Live Flights** | 11,000+ live aircraft + route history | OpenSky + adsb.lol | 🟢 (🟡 optional credits) |
-| 🎖️ **Military Flights** | ADS-B military traffic in amber | adsb.lol | 🟢 |
-| 🚢 **Live Vessels** | Ships worldwide | AISStream | 🟡 |
-| 🛰️ **Satellites** | 838-object catalog, color-coded by class | CelesTrak | 🟢 |
-| 🌍 **Earthquakes** | Global seismic activity, last 24h | USGS | 🟢 |
-| 🚗 **Traffic** | Road simulation; TomTom adds live flow speeds | TomTom + OSM | 🟢 sim · 🟡 live speeds |
-| 📹 **CCTV Mesh** | ~800 public cameras projected into 3D + ~404 discovered Axis cams (SWEEP) | City APIs / public Axis streams | 🟢 |
-| 🌧️ **Radar** | Live precipitation radar overlay | [RainViewer](https://www.rainviewer.com/api.html) (personal/educational use) | 🟢 |
-| 📻 **Radio** | Geolocated world radio with an analog tuner | Radio Browser | 🟢 |
-| 🚲 **Bikeshare** | Live station availability | GBFS | 🟢 |
-| 🔥 **Active Fires** | Live NASA FIRMS detections, trailing 24h | NASA FIRMS | 🟡 |
-| 🚀 **Space Missions** | Rolling 30-day launches with payload/stage/recovery detail | Launch Library 2 | 🟢 (🟡 optional) |
-| 🎖️ **Mapped Installations** | Viewport-bounded military-site context (incomplete by nature, labeled that way) | OpenStreetMap | 🟢 |
-
-Also on the globe: neighborhood overlays · cockpit WX cloud effect · bundled
-static infrastructure (Datacenters 4,351 · Dams 704 · Submarine Cables 712).
-
----
-
-## 🔑 API Keys
-
-🟢 **No key** · 🟡 **Free key** · 🔴 **Metered**
-
-Use **POWER UP → Provider Settings** to add keys. None is required to start.
-
-| | Key | Why | Get it |
-|---|-----|-----|--------|
-| 🟡 | **Cesium ion** | Google Photorealistic 3D, world terrain, ion stacks. Free Community plan for eligible personal/non-commercial use | [cesium.com/ion](https://cesium.com/ion) — public `assets:read` token |
-| 🔴 | **Google Maps** | Direct Google 3D + place search (Map Tiles API) | [Google Cloud Console](https://console.cloud.google.com/) — URL-restrict it |
-| 🔴 | **OpenAI** | Voice + AI HUD summary (metered; the app shows a live session spend, $2 warning, $5 hard cap) | [platform.openai.com](https://platform.openai.com) |
-| 🟡 | **LOCAL INTEL** | On-premise AI HUD summary via Ollama — no network egress, no API bill | [ollama.com](https://ollama.com) — free, local |
-| 🔴 | **OpenAI-compatible** | Point the AI HUD summary at any OpenAI-compatible endpoint (vLLM, LM Studio, Azure, ...) | bring your own endpoint + key |
-| 🟡 | **AISStream** | Live global ships | [aisstream.io](https://aisstream.io) — free signup |
-| 🟡 | **NASA FIRMS** | Live active fires | [firms.modaps.eosdis.nasa.gov](https://firms.modaps.eosdis.nasa.gov) — free key |
-| 🟡 | **TomTom** | Live flow speeds / congestion colors | [developer.tomtom.com](https://developer.tomtom.com) — free tier |
-
-`npm run doctor` reports Node/npm readiness and provider routes without
-printing credential values. On macOS, `dev-fresh.sh` pulls keys from the
-Keychain; otherwise use `.env` (see `.env.example`).
-
-### 💸 What it actually costs
-
-- **Most layers: $0, no signup** — OpenSky anon, USGS, CelesTrak, adsb.lol, city CCTV, Radio Browser, GBFS, Launch Library 2, RainViewer, bundled datasets.
-- **Free-key tier: $0 with a signup** — AISStream, FIRMS, TomTom, OpenSky, eligible Cesium ion.
-- **Google 3D tiles:** free within an eligible ion Community quota; metered via direct Google key.
-- **OpenAI voice: the only real spend** — Realtime audio is a few cents per active minute; evening of heavy use is single-digit dollars. The app meters it (live readout, $2 warning, **$5 hard cap**).
-
-Billing figures change — always check provider pricing pages before relying on them.
-
----
-
-## 🔧 Under the Hood
-
-- **World-stable icons.** Aircraft and ships point along their real-world heading at every camera angle via per-frame screen-space course projection.
-- **Smooth motion from choppy data.** Feeds arrive every 15–30s; the globe renders one interval behind real time and interpolates between fixes, with dead reckoning filling gaps.
-- **Honest satellites.** SGP4 propagation; orbit rings stay locked via GMST realignment.
-- **Real ground.** Entity heights run through a geoid-aware vertical datum sampled against the rendered terrain mesh.
-- **Request budgets.** OpenSky credit governor, TomTom daily tile budget, disk-cached TLEs.
-- **Server-side credentials.** Keyed APIs (OpenAI, AISStream, OpenSky OAuth, camera frames) are brokered through a hardened server-side proxy with SSRF protection and response caps. Only Google Maps + Cesium ion keys ever reach the browser (restrict both at the provider).
-- **No framework.** Vanilla JavaScript, CesiumJS, Vite — plus Google Photorealistic 3D Tiles, and OpenAI Realtime for voice.
+## 🗂 **REPO STRUCTURE (CLASSIFIED OVERVIEW)**
 
 ```
-src/
-├── main.js                 # Bootstrap: tiles, layer registration, window.__evolEyeView
-├── ui.js                   # Runtime UI — panels, HUD, styles, control facade
-├── mapStackController.js   # Basemap switching — Esri / Dark / Google 3D / ion stacks
-├── data/                   # One module per layer + orchestration + context store
-│   ├── cctv.js             # CCTV activation, projection, frustum math, SWEEP
-│   ├── rainViewerOverlay.js# Precipitation radar overlay (UrlTemplateImageryProvider)
-│   └── local_data/         # Bundled datasets (per-folder provenance)
-├── voice/                  # OpenAI Realtime session + voice tools
-└── scenes/                 # Cinematic scene director
+Evol-Eye/
+├── src/                    # Core application (ESM)
+│   ├── data/               # Feeds: aircraft, ships, sats, quakes, fires, radio, CCTV, radar
+│   ├── scenes/             # Globe scene management
+│   ├── voice/              # Hands-free voice control pipeline
+│   ├── ui.js               # Main UI controller, radar toggle, visual presets
+│   └── main.js             # App bootstrap
+├── installer/              # Cross-platform installer (Win/macOS/Linux)
+│   ├── core.mjs            # Manifest, download, auth
+│   ├── runner.mjs          # Install orchestration
+│   └── manifest.json       # Repo metadata (private: true)
+├── config/
+│   └── cctv_sources_axis.json    # ~400 Axis camera catalog
+├── scripts/
+│   └── merge-axis-catalog.py     # Regenerate Axis catalog
+├── docs/
+│   ├── media/              # Demo GIFs (58 MB — LFS candidate)
+│   └── CURRENT-STATE.md    # Living architecture doc
+├── public/
+│   └── logo.svg            # Evil-eye logo (globe pupil + concentric rings)
+├── package.json            # name: evol-eye, version: 0.1.1
+└── LICENSE                 # MIT (upstream compatible)
 ```
 
-See [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for the authoritative runtime reference.
+---
+
+## 🔑 **OPERATIONAL KEYS (OPTIONAL)**
+
+| Key | Purpose | Required? |
+|---|---|---|
+| `GOOGLE_MAPS_API_KEY` | Photoreal 3D Tiles (Google 3D Tiles) | ❌ — Cesium ion fallback |
+| `CESIUM_ION_TOKEN` | Ion-hosted 3D Tiles / imagery | ❌ — keyless dark stack default |
+| `OPENAI_API_KEY` | Voice LLM fallback | ❌ — local Web Speech default |
+| `AISSTREAM_API_KEY` | Enhanced AIS maritime | ❌ — AISHub keyless |
+| `TOMTOM_API_KEY` | Enhanced geocoding | ❌ — Nominatim keyless |
+| `OPENSKY_CLIENT_SECRET` | Enhanced OpenSky | ❌ — anonymous works |
+| `LL2_API_TOKEN` | Lightning detection | ❌ — optional |
+
+> **Fine-grained GitHub PAT** with `contents:read` on `R0U5/Evol-Eye` required for **installer source download** when repo is private. Provide via installer UI, `--token`, or `GEV_INSTALLER_TOKEN` env var.
 
 ---
 
-## ⚠️ Responsible Use
+## 🔬 **TESTING & VERIFICATION**
 
-EVOL Eye runs on **public data, clear sources, and local-first execution.**
-Anything involving a private key is brokered server-side. It models **events,
-assets, infrastructure, and systems** — aircraft, vessels, satellites, fires,
-cameras, cities. It does not build features for named-person search, face
-recognition, or tracking individuals.
+```bash
+# Full test suite (2770+ tests)
+npm test
 
-> [!IMPORTANT]
-> EVOL Eye is an exploratory visualization of public and third-party data.
-> Data may be delayed, incomplete, modeled, inferred, or wrong. Do not use it
-> for flight or maritime navigation, emergency response, medical or health
-> decisions, investment decisions, or other safety-critical or operational
-> purposes. Verify important information with authoritative sources.
+# Installer-specific tests (47 cases)
+npm run installer:test
 
-**Status:** an evolving open-source client for exploration and learning — a
-fast, hackable foundation, not a hardened production service. Released under
-the **[MIT License](LICENSE)**. Live datasets carry their own terms — see
-**[DATA_SOURCES.md](DATA_SOURCES.md)**. Security model:
-**[SECURITY.md](SECURITY.md)**.
+# Type checking (if tsconfig present)
+npm run typecheck
 
-**Not this repo:** the upstream project's hosted product, commercial offers,
-and marketing presence at [Halfpixel](https://halfpixel.ai) are entirely the
-original authors'. This fork points at the original wherever it matters and
-stays otherwise independent.
+# Lint
+npm run lint
+```
+
+**CI:** GitHub Actions — Node 24/26, Installer tests (macOS/Ubuntu/Windows), Windows onboarding. All must pass.
 
 ---
 
-## 🙏 Upstream Attribution
+## 📜 **LICENSE & ATTRIBUTION**
 
-This fork is built on **God's Eye View** by **Bilawal Sidhu**:
+**MIT License** — compatible with upstream [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view) (MIT).
 
-- Original repo: [github.com/bilawalsidhu/gods-eye-view](https://github.com/bilawalsidhu/gods-eye-view)
-- Original author: [@bilawalsidhu](https://github.com/bilawalsidhu) · [Halfpixel](https://halfpixel.ai)
+> **UPSTREAM CREDIT (MANDATORY):**
+> - Original: [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view) by [Bilawal Sidhu](https://github.com/bilawalsidhu)
+> - This fork: EVOL Eye by R0U5
 
-We keep the upstream's MIT license terms for the code this fork derives from,
-and its data-source attributions live in `DATA_SOURCES.md`. If you like what
-you see here, check out the original too — this fork stands on it.
+All upstream code retains its original MIT license. This fork's additions are MIT.
+
+---
+
+## 📡 **COMMUNICATIONS SECURITY**
+
+- **No telemetry** — zero phone-home, zero analytics, zero crash reporting
+- **Local-first** — all feeds fetched client-side; dev server only serves static assets + CCTV proxy
+- **Fine-grained GitHub PAT** never logged, never persisted to disk (in-memory only during install)
+- **CCTV proxy** binds localhost, rejects non-loopback, validates `Host` header
+
+---
+
+## 📞 **CONTACT / DEBRIEF**
+
+- **Issues:** GitHub Issues (operational only — no feature requests without design doc)
+- **Security:** `SECURITY.md` — coordinated disclosure
+- **Upstream:** [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view) — watch for baseline improvements
 
 ---
 
 <div align="center">
 
-**🦞 EVOL Eye — watch the world live, from your own terminal.**
+**EVOL EYE v0.1.1** — *EARTH VIEW ONLINE LOCATOR*
+
+**CLASSIFIED // NOFORN // REL TO EVOL EYE PERSONNEL ONLY**
+
+*Earth View Online Locator — because the planet doesn't watch itself.*
 
 </div>

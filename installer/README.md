@@ -11,7 +11,7 @@ machine. No source cloning, no manual Node setup, no command line required.
 2. **Starts a local installer** — a small server bound to `127.0.0.1` opens your
    browser to a guided UI.
 3. **Downloads the app from GitHub** — the source archive for
-   `R0U5/Devils-Eye` is pulled, verified, and extracted into your chosen folder.
+   `R0U5/Evol-Eye` is pulled, verified, and extracted into your chosen folder.
 4. **Installs dependencies** — `npm install` runs inside the extracted app.
 5. **Builds and installs** — the production bundle is compiled with Vite.
 6. **Writes a launcher** — a double-clickable `EVOL Eye.cmd` /
