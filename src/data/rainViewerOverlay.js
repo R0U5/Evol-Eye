@@ -153,7 +153,11 @@ function buildProvider(frame) {
     rectangle: Cesium.Rectangle.fromDegrees(-180, -90, 180, 90),
     // Tiles are in EPSG:3857 (Web Mercator). UrlTemplateImageryProvider defaults
     // to geographic if omitted, which produces a misaligned overlay.
-    tilingScheme: new Cesium.WebMapTilingScheme(),
+    // NOTE: `Cesium.WebMapTilingScheme` does not exist in Cesium >= 1.104
+    // (removed with the old WebMapServiceImageryProvider API) — constructing it
+    // throws "not a constructor", which silently killed the overlay on every
+    // build attempt. `WebMercatorTilingScheme` is the correct EPSG:3857 scheme.
+    tilingScheme: new Cesium.WebMercatorTilingScheme(),
     enablePickFeatures: false,
   });
 }
@@ -164,30 +168,54 @@ function buildProvider(frame) {
  * RainViewerOverlayController manages a Cesium ImageryLayer showing live radar
  * precipitation tiles. It is instantiated once by mapStackController.js and
  * lives for the session; the globe stack controller calls `setEnabled()` to
- * show/hide it when the user toggles the Radar button in the display panel.
+ * show/hide it when the user toggles the Radar button.
  *
  * Lifecycle:
- *   constructor(viewer)          → builds provider, creates layer, hides it
- *   setEnabled(enabled: boolean) → show / hide; persists preference
- *   refresh()                     → fetch latest frame and update provider URL
- *   destroy()                     → remove layer, cancel pending fetches
+ *   constructor(viewer)          → starts an async build (fetch + layer)
+ *   setEnabled(enabled: boolean) → show / hide; persists preference; queues
+ *                                  intent if the layer isn't built yet
+ *   toggle()                     → flips enabled, returns the new state
+ *   refresh()                    → fetch latest frame and update provider URL
+ *   destroy()                    → remove layer, cancel pending fetches
  */
 export class RainViewerOverlayController {
   /**
    * @param {Cesium.Viewer} viewer
+   * @param {object} [options]
+   * @param {(controller: RainViewerOverlayController) => void} [options.onStateChange]
+   *   Called whenever the overlay's enabled/ready state changes (init completes,
+   *   a toggle lands, a retry exhausts). Lets the UI reconcile its button
+   *   instead of leaving it stuck in "pending".
+   * @param {object} [options.deps] — test seam for the Cesium-bound factories.
+   *   Defaults to the real implementations; unit tests inject fakes so the
+   *   controller logic can run without a WebGL/Cesium runtime.
+   * @param {(frame: RadarFrame) => object} [options.deps.buildProvider]
+   * @param {(provider: object, options: object) => object} [options.deps.createLayer]
+   * @param {() => Promise<RadarFrame|null>} [options.deps.fetchLatestFrame]
+   * @param {(ms: number) => Promise<void>} [options.deps.sleep]
    */
-  constructor(viewer) {
+  constructor(viewer, { onStateChange = null, deps = {} } = {}) {
     this._viewer = viewer;
     this._layer = null;
     this._provider = null;
     this._currentFrame = null;
     this._enabled = this._readStoredEnabled();
     this._destroyed = false;
+    this._buildGen = 0;
+    this._lastError = null;
+    this._onStateChange = onStateChange;
+    this._deps = {
+      buildProvider,
+      createLayer: (provider, options) => new Cesium.ImageryLayer(provider, options),
+      fetchLatestFrame,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      ...deps,
+    };
 
-    // Build the initial provider (latest frame) and imagery layer.
-    this._init().catch((err) => {
-      console.warn('[RadarOverlay] init failed:', err);
-    });
+    // Build the initial provider (latest frame) and imagery layer. Fire-and-forget:
+    // _loadAndBuild reconciles with _enabled on BOTH success and failure, so a
+    // toggle that lands before this resolves is never dropped.
+    this._requestBuild();
   }
 
   // ── Persistence ──────────────────────────────────────────────────────────
@@ -206,28 +234,98 @@ export class RainViewerOverlayController {
     } catch { /* best effort */ }
   }
 
-  // ── Init ─────────────────────────────────────────────────────────────────
+  // ── Build / retry ────────────────────────────────────────────────────────
 
   /**
-   * Fetch the latest frame and create the imagery layer.
+   * Start a fresh build attempt. Each call bumps `_buildGen`; an older in-flight
+   * attempt aborts when it notices it has been superseded, so a `setEnabled(true)`
+   * that lands mid-backoff is honored instead of being clobbered by the older
+   * attempt's failure reset.
+   */
+  _requestBuild() {
+    const gen = ++this._buildGen;
+    this._loadAndBuild(gen).catch((err) => {
+      console.warn('[RadarOverlay] init failed:', err);
+    });
+  }
+
+  /**
+   * Fetch the latest frame (retrying with backoff while enabled) and build the
+   * imagery layer. Reconciles the layer's visibility with `_enabled` on both
+   * success and failure. Never throws.
+   * @param {number} gen — build generation this attempt belongs to
    * @returns {Promise<void>}
    */
-  async _init() {
-    const frame = await fetchLatestFrame();
-    if (this._destroyed) return;
+  async _loadAndBuild(gen) {
+    const frame = await this._fetchFrameWithRetry(gen);
+    if (this._destroyed || gen !== this._buildGen) return; // superseded
+    if (!frame) {
+      // Retries exhausted while enabled → we cannot show radar. Reset to off so
+      // the button reads "off" (not stuck pending) and surface the reason.
+      if (this._enabled) {
+        this._enabled = false;
+        this._persistEnabled(false);
+        this._lastError = 'Radar unavailable — RainViewer could not be reached';
+        console.warn(`[RadarOverlay] ${this._lastError}`);
+      }
+      this._emitStateChange();
+      return;
+    }
+    this._buildLayer(frame);
+    // Reconcile: apply the CURRENT enabled state (a toggle may have landed
+    // while the fetch was in flight).
+    if (this._layer) this._layer.show = this._enabled;
+    this._emitStateChange();
+  }
+
+  /**
+   * Fetch the latest radar frame, retrying with backoff (2s/4s/8s) while the
+   * overlay is still enabled. Stops early if the controller is destroyed or the
+   * build attempt is superseded. Returns the frame, or null once retries are
+   * exhausted.
+   * @param {number} gen
+   * @returns {Promise<RadarFrame|null>}
+   */
+  async _fetchFrameWithRetry(gen) {
+    const backoff = [2000, 4000, 8000];
+    for (let attempt = 0; ; attempt++) {
+      const frame = await this._deps.fetchLatestFrame();
+      if (frame) return frame;
+      if (this._destroyed || gen !== this._buildGen) return null;
+      if (!this._enabled) return null; // user turned it off mid-backoff
+      if (attempt >= backoff.length) return null; // retries exhausted
+      await this._sleep(backoff[attempt]);
+    }
+  }
+
+  _sleep(ms) {
+    return this._deps.sleep(ms);
+  }
+
+  /**
+   * Build (or rebuild) the imagery layer for the given frame, keeping it above
+   * the active basemap. Idempotent: a stale layer is removed first.
+   * @param {RadarFrame} frame
+   */
+  _buildLayer(frame) {
     this._currentFrame = frame;
-    this._provider = buildProvider(frame ?? { path: '/', host: 'https://tilecache.rainviewer.com' });
-    this._layer = new Cesium.ImageryLayer(this._provider, {
+    this._provider = this._deps.buildProvider(frame);
+    if (this._layer) {
+      this._viewer.imageryLayers.remove(this._layer, false);
+    }
+    this._layer = this._deps.createLayer(this._provider, {
       show: false,
       // Moderate opacity so the basemap bleeds through — users can still
       // orient geographically while seeing precipitation intensity.
       alpha: 0.65,
     });
+    // `add` appends at the top of the imagery stack, above the basemap that
+    // _activateGlobeStack inserts at index 0 — the overlay must render on top.
     this._viewer.imageryLayers.add(this._layer);
-    // Apply initial enabled state.
-    if (this._enabled) {
-      this._layer.show = true;
-    }
+  }
+
+  _emitStateChange() {
+    this._onStateChange?.(this);
   }
 
   // ── Public API ──────────────────────────────────────────────────────────
@@ -244,6 +342,11 @@ export class RainViewerOverlayController {
 
   /**
    * Show or hide the radar overlay and persist the preference.
+   *
+   * `_enabled` is the source of truth and is set synchronously, so a click
+   * always takes effect immediately. If the layer isn't built yet (init still
+   * in flight, or a prior fetch failure left it null), the intent is queued via
+   * `_enabled` and a build is (re)started — the click is never dropped.
    * @param {boolean} enabled
    */
   setEnabled(enabled) {
@@ -251,11 +354,16 @@ export class RainViewerOverlayController {
     this._persistEnabled(enabled);
     if (this._layer) {
       this._layer.show = enabled;
+    } else if (enabled) {
+      // Layer not built yet — kick off a (re)build so the intent isn't dropped.
+      this._requestBuild();
     }
+    this._emitStateChange();
   }
 
   /**
-   * Toggle the overlay. Returns the new enabled state.
+   * Toggle the overlay. Returns the new enabled state synchronously so the
+   * button can reflect the click immediately.
    * @returns {boolean}
    */
   toggle() {
@@ -264,14 +372,24 @@ export class RainViewerOverlayController {
   }
 
   /**
-   * Whether the layer is ready yet. Until `_init()` builds the imagery layer
-   * (it fetches the latest radar frame first), `_layer` is null and a toggle
-   * looks like a silent no-op. Used by the map-stack controller to surface a
-   * synthetic "pending" state rather than a false "off".
+   * Whether the layer is ready yet. Until a build completes (it fetches the
+   * latest radar frame first), `_layer` is null and a toggle looks like a
+   * silent no-op. Used by the UI to surface a synthetic "pending" state rather
+   * than a false "off".
    * @returns {boolean}
    */
   get isReady() {
     return this._layer != null;
+  }
+
+  /**
+   * Human-readable reason the overlay is unavailable, or null if it is ready.
+   * Set when a fetch/retry exhausts; surfaced in the button title so the user
+   * isn't left with a silent "off".
+   * @returns {string|null}
+   */
+  get lastError() {
+    return this._lastError;
   }
 
   /**
@@ -280,7 +398,7 @@ export class RainViewerOverlayController {
    */
   async refresh() {
     if (this._destroyed) return;
-    const frame = await fetchLatestFrame();
+    const frame = await this._deps.fetchLatestFrame();
     if (this._destroyed || !frame) return;
     // Skip if the frame path hasn't actually changed.
     if (frame.path === this._currentFrame?.path) return;

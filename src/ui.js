@@ -2223,7 +2223,7 @@ export class StyleManager {
     this._bloomSlider = document.getElementById('bloom-intensity-slider');
     this._bloomSliderValue = document.getElementById('bloom-intensity-value');
     this._sharpenBtn = document.getElementById('sharpen-toggle');
-    this._radarBtn = document.getElementById('radar-toggle');
+    this._radarBtn = document.querySelector('.radar-btn[data-radar]');
     this._sharpenSliderRow = document.getElementById('sharpen-slider-row');
     this._sharpenSlider = document.getElementById('sharpen-intensity-slider');
     this._sharpenSliderValue = document.getElementById('sharpen-intensity-value');
@@ -2620,7 +2620,7 @@ export class StyleManager {
 
     this._initStages();
     this._initBloomSharpen();
-    this._initRadarToggle();
+    this._initRadarButton();
     this._initUI();
     this._initMapStackControl();
     this._initPanelChrome();
@@ -3213,25 +3213,55 @@ export class StyleManager {
   }
 
   /**
-   * Wire the RainViewer radar overlay toggle to the MapStackController.
-   * The controller owns the overlay and persists its enabled state.
+   * Wire the RainViewer radar overlay button (Visual Presets grid) to the
+   * MapStackController. The controller owns the overlay and persists its
+   * enabled state. The button is a `style-btn`-chrome toggle (data-radar, NOT
+   * data-style) so the generic style listener ignores it.
    */
-  _initRadarToggle() {
+  _initRadarButton() {
     this._radarBtn?.addEventListener('click', () => {
       if (!this.mapStackController) return;
       this.mapStackController.toggleRadarOverlay();
       this._updateRadarButtonState();
     });
+    // Reconcile when the overlay's async init completes / a retry exhausts —
+    // otherwise the button can sit stuck in "pending" after the layer is ready.
+    window.addEventListener('gev:radar-state-changed', () => this._updateRadarButtonState());
     this._updateRadarButtonState();
   }
 
   /**
-   * Sync the radar toggle button's active state from the MapStackController's
-   * overlay state. Called at init and after every toggle.
+   * Sync the radar button's state from the MapStackController's overlay state.
+   * Called at init, after every toggle, on map-stack changes, and when the
+   * overlay's async init completes.
+   *
+   * States:
+   *   active      — enabled AND the layer is actually shown
+   *   pending     — enabled but the layer isn't built yet (init in flight)
+   *   unavailable — the active stack can't render the overlay (photoreal)
+   *   off         — disabled (or a fetch failure reset it, with an
+   *                 explanatory title instead of a silent no-op)
    */
   _updateRadarButtonState() {
     const controller = this.mapStackController?._radarOverlay;
     if (!controller || !this._radarBtn) return;
+    // Radar is a globe-surface imagery layer; it cannot render over the Google
+    // 3D tiles (globe.show = false). Surface that honestly instead of showing
+    // a button that does nothing. Check the ACTUAL globe render state (not
+    // `_activeId`) so a stack switch that has already shown the globe doesn't
+    // briefly flash the button as unavailable.
+    const globe = this.mapStackController?.viewer?.scene?.globe;
+    const onPhotoreal = globe
+      ? globe.show === false
+      : this.mapStackController?.getActiveId?.() === 'photoreal';
+    if (onPhotoreal) {
+      this._radarBtn.classList.remove('active', 'pending');
+      this._radarBtn.classList.add('unavailable');
+      this._radarBtn.setAttribute('aria-pressed', 'false');
+      this._radarBtn.title = 'Radar is available on globe map sources (Satellite, Dark, Bing), not Google 3D';
+      return;
+    }
+    this._radarBtn.classList.remove('unavailable');
     // Reflect the INTENDED enabled state (matches what a click sets), not just
     // the rendered layer — so the toggle gives instant visual feedback even on
     // the frame or two before the imagery layer finishes building.
@@ -3240,9 +3270,14 @@ export class StyleManager {
     this._radarBtn.classList.toggle('active', active);
     this._radarBtn.setAttribute('aria-pressed', String(active));
     this._radarBtn.classList.toggle('pending', pending);
-    this._radarBtn.title = controller._enabled
-      ? 'Disable RainViewer Radar Overlay'
-      : 'Enable RainViewer Radar Overlay';
+    if (controller.lastError) {
+      // A fetch/retry exhausted: show the reason instead of a silent "off".
+      this._radarBtn.title = controller.lastError;
+    } else {
+      this._radarBtn.title = controller._enabled
+        ? 'Disable RainViewer Radar Overlay'
+        : 'Enable RainViewer Radar Overlay';
+    }
   }
 
   /**
@@ -3364,8 +3399,10 @@ export class StyleManager {
    * @returns {void}
    */
   _initUI() {
-    // Style buttons
+    // Style buttons. The radar button shares .style-btn chrome but carries
+    // data-radar (not data-style) — skip it so it isn't treated as a filter.
     document.querySelectorAll('.style-btn').forEach(btn => {
+      if (!btn.dataset.style) return;
       btn.addEventListener('click', () => this.setStyle(btn.dataset.style));
     });
 
@@ -3589,7 +3626,8 @@ export class StyleManager {
       this._mapStackStatus.textContent = label;
       this._mapStackStatus.classList.toggle('warn', !!state.lastError);
     }
-    // Radar overlay state may have changed: photoreal always hides it.
+    // Radar overlay state may have changed with the stack (photoreal can't
+    // render it; globe stacks restore the persisted preference).
     this._updateRadarButtonState();
   }
 
@@ -6813,8 +6851,8 @@ export class StyleManager {
       }
     }
     // DISPLAY starts EXPANDED for a first-time visitor so the overlay
-    // toggles (incl. the RainViewer Radar overlay) are immediately visible,
-    // then respects the user's persisted choice like every other panel.
+    // toggles are immediately visible, then respects the user's persisted
+    // choice like every other panel.
     // A stored choice wins in both directions, so anyone who collapses it
     // keeps it collapsed.
     if (panelId === 'pp-toggles' && stored === null) collapsed = false;
@@ -9139,8 +9177,10 @@ export class StyleManager {
       this._applyStylePresetDefaults(styleName);
     }
 
-    // Update button UI
+    // Update button UI. Skip the radar button (data-radar, not data-style) so
+    // a style switch never stomps its toggle state.
     document.querySelectorAll('.style-btn').forEach(btn => {
+      if (!btn.dataset.style) return;
       const isActive = btn.dataset.style === styleName;
       btn.classList.toggle('active', isActive);
       btn.setAttribute('aria-pressed', String(isActive));

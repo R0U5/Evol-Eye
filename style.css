@@ -785,6 +785,54 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   color: var(--text-primary);
 }
 
+/* ── Radar button (Visual Presets grid) ───────────
+   Shares .style-btn chrome but is a toggle, not a filter. A left divider
+   separates it from the style rows; state classes mirror the style-btn
+   active look so the pressed state reads in-family. */
+.radar-btn {
+  margin-left: 10px;
+  padding-left: 18px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.radar-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  box-shadow:
+    0 0 20px rgba(0, 212, 255, 0.15),
+    0 0 0 1px rgba(0, 212, 255, 0.1) inset;
+}
+
+.radar-btn.active .btn-icon {
+  color: var(--accent);
+  text-shadow: 0 0 12px var(--accent-glow);
+}
+
+.radar-btn.active .btn-label {
+  color: var(--text-primary);
+}
+
+.radar-btn.pending {
+  border-color: rgba(255, 200, 60, 0.5);
+  background: rgba(255, 200, 60, 0.06);
+  box-shadow: 0 0 12px rgba(255, 200, 60, 0.12);
+}
+
+.radar-btn.pending .btn-icon {
+  color: #ffc83c;
+  animation: radar-pending-pulse 1.2s ease-in-out infinite;
+}
+
+.radar-btn.unavailable {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@keyframes radar-pending-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 .btn-icon {
   font-size: 20px;
   line-height: 1;
@@ -1046,11 +1094,6 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   border-color: var(--accent);
   background: var(--accent-dim);
   box-shadow: 0 0 12px rgba(0, 212, 255, 0.15);
-}
-
-/* RainViewer radar overlay toggle — accent color on active */
-#radar-toggle.active .pp-icon {
-  color: var(--accent);
 }
 
 .pp-icon {
