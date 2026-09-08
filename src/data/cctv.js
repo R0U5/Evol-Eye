@@ -448,6 +448,13 @@ export function _pushAmbientCardEntriesForTest() {
   pushAmbientCardEntries();
 }
 
+/** Test seam: seeds the ambient card selection + hover pin so the projection
+ * gate in `pushAmbientCardEntries` can be exercised without a full viewer. */
+export function _setAmbientCardStateForTest({ cardIds = [], hoverCardId = null } = {}) {
+  _cardIds = new Set(cardIds);
+  _hoverCardId = hoverCardId || null;
+}
+
 /** Test seam for exercising real layer lifecycle paths without a DOM host. */
 export function _setCctvOverlayHostForTest(host = null) {
   _cctvOverlayHost = host ? { ...DEFAULT_CCTV_OVERLAY_HOST, ...host } : DEFAULT_CCTV_OVERLAY_HOST;
@@ -3123,12 +3130,16 @@ function refreshAmbientCards() {
  * that keeps the pin while the gesture lasts.
  */
 function pushAmbientCardEntries() {
-  // Occlusion guard (owner issue 2): while a camera is ACTIVELY shown on the
-  // projection plane, the ambient thumbnail tiles would draw on top of the
-  // selected image. Drop the ambient card set (the camera ICONS/billboards
-  // stay — only the image tiles that occlude the plane are suppressed), keep
-  // an explicit hover pin and the active camera's own plane card if enabled.
-  const suppressAmbient = _showProjection && _activeCameraId && getActiveRecord() != null;
+  // Projection gate (owner issue): projection OFF = NO thumbnail cards for any
+  // camera. Ambient tiles render ONLY while projection is ON and the active
+  // camera's plane is not occluding them (the occlusion guard from owner
+  // issue 2). The camera ICONS/billboards stay — only the image tiles are
+  // suppressed. The hover-summoned pin is a user-initiated explicit gesture
+  // (pointer-over), not ambient chrome, so it stays visible even when
+  // projection is OFF; under projection ON it remains subject to the occlusion
+  // guard. The active camera's own plane card (if enabled) is unaffected.
+  const occluding = _activeCameraId && getActiveRecord() != null;
+  const suppressAmbient = !_showProjection || occluding;
   const entries = [];
   let rank = 0;
   const push = (id, { pinned = false, active = false } = {}) => {
@@ -3147,7 +3158,11 @@ function pushAmbientCardEntries() {
   };
   if (!suppressAmbient) {
     for (const id of _cardIds) push(id, { pinned: id === _hoverCardId });
-    if (_hoverCardId && !_cardIds.has(_hoverCardId) && _hoverCardId !== _activeCameraId) {
+  }
+  // Hover pin: explicit user gesture — kept when projection is OFF; under
+  // projection ON it stays subject to the occlusion guard (current behavior).
+  if (_hoverCardId && !_cardIds.has(_hoverCardId) && _hoverCardId !== _activeCameraId) {
+    if (!_showProjection || !occluding) {
       push(_hoverCardId, { pinned: true });
     }
   }
