@@ -37,6 +37,22 @@ def check_alive(url, timeout=6):
     except Exception:
         return False
 
+def feed_type_for_url(url):
+    """Return the canonical feedType for a camera URL.
+
+    Axis cameras serve live MJPEG streams at /mjpg/video.mjpg (or /mjpeg/).
+    Browsers decode multipart/x-mixed-replace natively in an <img>, so those
+    URLs are LIVE feeds — labeling them 'image' forced the client down the
+    snapshot path (probe stills / buffer-one-frame / refetch every 10-60 s)
+    instead of the realtime live-jpeg mode. Everything else stays 'image'.
+    """
+    lower = (url or '').lower()
+    if '/mjpg/' in lower or '/mjpeg/' in lower:
+        return 'mjpeg'
+    if re.search(r'(\.mjpg|\.mjpeg|video\.mjpg)(\?|$)', lower):
+        return 'mjpeg'
+    return 'image'
+
 def main():
     live_check = '--live-check' in sys.argv
 
@@ -51,7 +67,7 @@ def main():
             'cityId': '',
             'provider': 'Discovered Axis Camera',
             'sourceKind': 'discovered',
-            'feedType': 'image',
+            'feedType': feed_type_for_url(c.get('url', '')),
             'url': c.get('url', ''),
             'lat': c.get('lat'), 'lon': c.get('lon'),
             'headingDeg': 0, 'headingConfidence': 'low',
@@ -66,7 +82,7 @@ def main():
                 'id': c['id'], 'name': c.get('name', 'Axis Camera'),
                 'city': c.get('city', ''), 'cityId': '',
                 'provider': 'Discovered Axis Camera', 'sourceKind': 'discovered',
-                'feedType': 'image', 'url': c['url'],
+                'feedType': feed_type_for_url(c['url']), 'url': c['url'],
                 'lat': c['lat'], 'lon': c['lon'],
                 'headingDeg': 0, 'headingConfidence': 'low',
                 'pitchDeg': -17, 'fovDeg': 72, 'rangeM': 500,
@@ -88,7 +104,7 @@ def main():
             'id': f'axis-ul-{len(unloc)+1:04d}',
             'name': f'Axis Camera {ip}', 'city': 'UNLOCATED',
             'cityId': '', 'provider': 'Discovered Axis Camera',
-            'sourceKind': 'discovered-unlocated', 'feedType': 'image',
+            'sourceKind': 'discovered-unlocated', 'feedType': feed_type_for_url(url),
             'url': url, 'lat': None, 'lon': None,
             'headingDeg': 0, 'headingConfidence': 'low',
             'pitchDeg': 0, 'fovDeg': 72, 'rangeM': 0,
@@ -106,7 +122,7 @@ def main():
             'id': f'axis-ul-{len(unloc)+1:04d}',
             'name': f'Axis Camera {ip}', 'city': 'UNLOCATED',
             'cityId': '', 'provider': 'Discovered Axis Camera',
-            'sourceKind': 'discovered-unlocated', 'feedType': 'image',
+            'sourceKind': 'discovered-unlocated', 'feedType': feed_type_for_url(url),
             'url': url, 'lat': None, 'lon': None,
             'headingDeg': 0, 'headingConfidence': 'low',
             'pitchDeg': 0, 'fovDeg': 72, 'rangeM': 0,

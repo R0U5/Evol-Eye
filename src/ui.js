@@ -2351,6 +2351,28 @@ export class StyleManager {
     this._cctvFrameRequestToken = 0;
     this._cctvFramePreloader = null;
     this._cctvFrameWatchdog = null;
+    this._cctvLiveRetryTimer = null;
+    // Live MJPEG feeds assign src directly (no preloader), so the element's
+    // own error event is the only signal a stream dropped. Mark the badge
+    // NO SIGNAL and auto-reconnect after a short backoff (mirrors the
+    // projection runtime's LIVE_RETRY_BACKOFF_MS behavior).
+    this._cctvFrame?.addEventListener('error', () => {
+      if (!this._cctvFrame?.dataset.currentSrc) return;
+      this._cctvFrame.dataset.error = 'true';
+      this._syncCctvSourceBadge(
+        this._cctvState?.activeCamera,
+        !!this._cctvState?.enabled && !!this._dataManager?.isEnabled('cctv')
+      );
+      clearTimeout(this._cctvLiveRetryTimer);
+      this._cctvLiveRetryTimer = setTimeout(() => {
+        const src = this._cctvFrame?.dataset.currentSrc;
+        if (src && this._cctvState?.activeCamera?.feedMode === 'live') {
+          this._cctvFrame.dataset.error = '';
+          this._cctvFrame.removeAttribute('src');
+          this._cctvFrame.src = src;
+        }
+      }, 3000);
+    });
     this._cctvSourceBadge = document.getElementById('cctv-source-badge');
     this._cctvMeta = document.getElementById('cctv-meta');
     this._cctvSummary = document.getElementById('cctv-summary');
@@ -6337,6 +6359,8 @@ export class StyleManager {
     this._cctvFramePreloader = null;
     clearTimeout(this._cctvFrameWatchdog);
     this._cctvFrameWatchdog = null;
+    clearTimeout(this._cctvLiveRetryTimer);
+    this._cctvLiveRetryTimer = null;
     if (this._cctvFrame) {
       this._cctvFrame.classList.remove('active');
       this._cctvFrame.removeAttribute('src');
@@ -6485,6 +6509,26 @@ export class StyleManager {
     if (this._cctvFrame?.dataset.error === 'true' && !hasDisplayedFrame) {
       this._cctvSourceBadge.textContent = 'FRAME · UNAVAILABLE';
       this._cctvSourceBadge.dataset.frameState = 'error';
+      return;
+    }
+    // A live stream that dropped reads NO SIGNAL even though the last frame is
+    // still on screen — the feed is down, not merely between refreshes.
+    if (activeCamera.feedMode === 'live' && this._cctvFrame?.dataset.error === 'true') {
+      this._cctvSourceBadge.textContent = 'LIVE · NO SIGNAL';
+      this._cctvSourceBadge.dataset.frameState = 'error';
+      return;
+    }
+    // Live vs snapshot feed mode (Axis MJPG streams play in realtime; image
+    // cameras are snapshot stills refreshed on a cadence). The badge names the
+    // mode so the user can tell a live stream from a periodic still.
+    if (activeCamera.feedMode === 'live') {
+      this._cctvSourceBadge.textContent = `LIVE · ${String(activeCamera.sourceStatus || 'unknown').toUpperCase()}`;
+      this._cctvSourceBadge.dataset.frameState = 'live';
+      return;
+    }
+    if (activeCamera.feedMode === 'snapshot') {
+      this._cctvSourceBadge.textContent = `SNAPSHOT · ${String(activeCamera.sourceStatus || 'unknown').toUpperCase()}`;
+      this._cctvSourceBadge.dataset.frameState = 'snapshot';
       return;
     }
     const kind = String(activeCamera.sourceKind || activeCamera.feedType || 'unknown').toUpperCase();
@@ -6756,16 +6800,31 @@ export class StyleManager {
     }
 
     if (this._cctvFrame) {
-      const nextSrc = enabled ? activeCamera?.frameUrl : null;
+      const nextSrc = enabled ? (activeCamera?.feedUrl || activeCamera?.frameUrl) : null;
       const nextCameraId = enabled ? (activeCamera?.id || '') : '';
       const cameraChanged = this._cctvFrame.dataset.cameraId !== nextCameraId;
       const frameLoading = this._cctvFrame.dataset.loading === 'true';
+      const isLiveFeed = activeCamera?.feedMode === 'live';
       // A same-camera refresh waits for the current image to settle. Replacing
       // src every 10 seconds can cancel a slow but healthy decode forever and
       // leave SNAPSHOT · OK beside a blank/loading preview. Camera changes are
       // immediate so navigation never waits on the prior camera's request.
       if (nextSrc && (cameraChanged || (!frameLoading && this._cctvFrame.dataset.currentSrc !== nextSrc))) {
-        this._queueCctvFrame(nextSrc, nextCameraId, cameraChanged);
+        if (isLiveFeed) {
+          // Live MJPEG: assign directly — the browser decodes the multipart
+          // stream natively. No preload (a preloader would hold a second
+          // connection to the same stream) and no re-queue (the URL is stable,
+          // so the currentSrc check above already prevents repeats).
+          this._cctvFrame.dataset.cameraId = nextCameraId;
+          this._cctvFrame.dataset.currentSrc = nextSrc;
+          this._cctvFrame.dataset.loading = '';
+          this._cctvFrame.dataset.error = '';
+          this._cctvFrame.src = nextSrc;
+          this._cctvFrame.classList.add('active');
+          this._cctvFrameWrap?.classList.add('has-frame');
+        } else {
+          this._queueCctvFrame(nextSrc, nextCameraId, cameraChanged);
+        }
       }
       if (!nextSrc) {
         this._clearCctvFrame();
