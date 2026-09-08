@@ -6,11 +6,11 @@
  * the Cesium/SVG renderers keep consuming runtime annotation objects. This module is
  * deliberately Cesium-free and dependency-free so it can run in tests and any context.
  *
- * Mapping (one Feature per mark; project fields namespaced `gev:`):
+ * Mapping (one Feature per mark; project fields namespaced `evol:`):
  *   pin | highlight | label  ->  Point      (anchor)
  *   arrow                     ->  LineString (anchor -> to)
  *   route                     ->  LineString (the routed path)
- *   area (with a ring)        ->  Polygon    (the footprint ring; centroid in `gev:anchor`)
+ *   area (with a ring)        ->  Polygon    (the footprint ring; centroid in `evol:anchor`)
  *   area (no ring)            ->  Point      (degenerate area; renders as a marker)
  *
  * Coordinates are GeoJSON positions `[lon, lat]`, or `[lon, lat, height]` when a height
@@ -52,11 +52,11 @@ export function annotationToFeature(anno) {
   if (!anno || typeof anno !== 'object' || !VALID_TYPES.has(anno.type)) return null;
   const type = anno.type;
   const properties = {
-    'gev:type': type,
-    'gev:id': anno.id ?? null,
-    'gev:label': anno.label ?? null,
-    'gev:color': anno.color ?? null,
-    'gev:ttlMs': anno.ttlMs ?? null,
+    'evol:type': type,
+    'evol:id': anno.id ?? null,
+    'evol:label': anno.label ?? null,
+    'evol:color': anno.color ?? null,
+    'evol:ttlMs': anno.ttlMs ?? null,
   };
   let geometry = null;
 
@@ -64,10 +64,10 @@ export function annotationToFeature(anno) {
     const coords = (Array.isArray(anno.path) ? anno.path : []).map(toPosition).filter(Boolean);
     if (coords.length < 2) return null;
     geometry = { type: 'LineString', coordinates: coords };
-    properties['gev:mode'] = anno.mode ?? null;
-    properties['gev:distanceM'] = anno.distanceM ?? null;
-    properties['gev:durationS'] = anno.durationS ?? null;
-    properties['gev:fallback'] = Boolean(anno.fallback);
+    properties['evol:mode'] = anno.mode ?? null;
+    properties['evol:distanceM'] = anno.distanceM ?? null;
+    properties['evol:durationS'] = anno.durationS ?? null;
+    properties['evol:fallback'] = Boolean(anno.fallback);
   } else if (type === 'arrow') {
     const from = toPosition(anno.anchor);
     const to = toPosition(anno.to);
@@ -84,19 +84,19 @@ export function annotationToFeature(anno) {
     const last = ring[ring.length - 1];
     if (first[0] !== last[0] || first[1] !== last[1]) ring.push([first[0], first[1]]);
     geometry = { type: 'Polygon', coordinates: [ring] };
-    properties['gev:footprintKind'] = anno.footprintKind ?? null;
-    properties['gev:buildingHeight'] = anno.buildingHeight ?? null;
-    properties['gev:synthesized'] = Boolean(anno.synthesized);
+    properties['evol:footprintKind'] = anno.footprintKind ?? null;
+    properties['evol:buildingHeight'] = anno.buildingHeight ?? null;
+    properties['evol:synthesized'] = Boolean(anno.synthesized);
     const anchor = toPosition(anno.anchor);
-    if (anchor) properties['gev:anchor'] = anchor; // preserve the exact centroid, don't recompute
+    if (anchor) properties['evol:anchor'] = anchor; // preserve the exact centroid, don't recompute
   } else {
     // pin / highlight / label, or a degenerate `area` with no ring -> a Point at the anchor.
     const anchor = toPosition(anno.anchor);
     if (!anchor) return null;
     geometry = { type: 'Point', coordinates: anchor };
     if (type === 'area') {
-      properties['gev:footprintKind'] = anno.footprintKind ?? null;
-      properties['gev:synthesized'] = Boolean(anno.synthesized);
+      properties['evol:footprintKind'] = anno.footprintKind ?? null;
+      properties['evol:synthesized'] = Boolean(anno.synthesized);
     }
   }
 
@@ -106,7 +106,7 @@ export function annotationToFeature(anno) {
 /**
  * Convert a GeoJSON Feature back to a runtime annotation object (semantic fields only —
  * the importer adds render state). Fails CLOSED: returns null for any malformed feature,
- * unknown `gev:type`, or geometry that doesn't match the declared type.
+ * unknown `evol:type`, or geometry that doesn't match the declared type.
  * @param {object} feature - A GeoJSON Feature produced by {@link annotationToFeature}.
  * @returns {object|null}
  */
@@ -114,15 +114,15 @@ export function featureToAnnotation(feature) {
   if (!feature || feature.type !== 'Feature' || !feature.geometry || !feature.properties) return null;
   const g = feature.geometry;
   const p = feature.properties;
-  const type = p['gev:type'];
+  const type = p['evol:type'];
   if (!VALID_TYPES.has(type)) return null;
 
   const base = {
     type,
-    id: p['gev:id'] ?? null,
-    label: p['gev:label'] ?? null,
-    color: p['gev:color'] ?? 'primary',
-    ttlMs: p['gev:ttlMs'] ?? null,
+    id: p['evol:id'] ?? null,
+    label: p['evol:label'] ?? null,
+    color: p['evol:color'] ?? 'primary',
+    ttlMs: p['evol:ttlMs'] ?? null,
   };
 
   if (type === 'route') {
@@ -135,10 +135,10 @@ export function featureToAnnotation(feature) {
       to: null,
       ring: null,
       path,
-      mode: p['gev:mode'] ?? null,
-      distanceM: p['gev:distanceM'] ?? null,
-      durationS: p['gev:durationS'] ?? null,
-      fallback: Boolean(p['gev:fallback']),
+      mode: p['evol:mode'] ?? null,
+      distanceM: p['evol:distanceM'] ?? null,
+      durationS: p['evol:durationS'] ?? null,
+      fallback: Boolean(p['evol:fallback']),
     };
   }
 
@@ -163,15 +163,15 @@ export function featureToAnnotation(feature) {
     const f = ring[0];
     const l = ring[ring.length - 1];
     if (ring.length > 3 && f[0] === l[0] && f[1] === l[1]) ring.pop();
-    const anchor = fromPosition(p['gev:anchor']) || ringCentroid(ring);
+    const anchor = fromPosition(p['evol:anchor']) || ringCentroid(ring);
     return {
       ...base,
       anchor,
       to: null,
       ring,
-      footprintKind: p['gev:footprintKind'] ?? null,
-      buildingHeight: p['gev:buildingHeight'] ?? null,
-      synthesized: Boolean(p['gev:synthesized']),
+      footprintKind: p['evol:footprintKind'] ?? null,
+      buildingHeight: p['evol:buildingHeight'] ?? null,
+      synthesized: Boolean(p['evol:synthesized']),
     };
   }
 
@@ -181,9 +181,9 @@ export function featureToAnnotation(feature) {
   if (!anchor) return null;
   const out = { ...base, anchor, to: null, ring: null };
   if (type === 'area') {
-    out.footprintKind = p['gev:footprintKind'] ?? null;
+    out.footprintKind = p['evol:footprintKind'] ?? null;
     out.buildingHeight = null;
-    out.synthesized = Boolean(p['gev:synthesized']);
+    out.synthesized = Boolean(p['evol:synthesized']);
   }
   return out;
 }

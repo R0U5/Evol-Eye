@@ -243,7 +243,7 @@ export function admitKeySetupRequest({
   const shareVar = String(env.PINOKIO_SHARE_VAR ?? '').trim();
   const sharingEnabled = ['PINOKIO_SHARE_CLOUDFLARE', 'PINOKIO_SHARE_LOCAL']
     .some((name) => /^(1|true)$/i.test(String(env[name] || '').trim()))
-    || (shareVar !== '' && shareVar !== '__gev_sharing_disabled__');
+    || (shareVar !== '' && shareVar !== '__evol_sharing_disabled__');
   if (sharingEnabled) {
     return { ok: false, status: 403, error: 'Provider Settings is disabled while sharing is enabled' };
   }

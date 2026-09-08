@@ -1,6 +1,6 @@
-# Contributing to Devil's Eye
+# Contributing to EVOL Eye
 
-Thanks for being here. Devil's Eye is an open foundation for live spatial intelligence in the browser, and it gets better when more people run it, break it, and extend it.
+Thanks for being here. EVOL Eye is an open foundation for live spatial intelligence in the browser, and it gets better when more people run it, break it, and extend it.
 
 ## Getting set up
 
@@ -8,7 +8,7 @@ Use Node.js 24.14.x or 26.x (also enforced by `package.json`).
 
 ```bash
 git clone https://github.com/bilawalsidhu/devils-eye.git
-cd devils-eye
+cd evol-eye
 nvm install 24.14.0
 nvm use 24.14.0
 npm install
@@ -33,7 +33,7 @@ The highest-leverage places to jump in:
 
 - **🌆 Add a CCTV source pack.** Austin is the reference camera source. Adding another city means a clean public camera catalog with coordinates, attribution, and server-registered frame URLs (the proxy only fetches registered URLs — never client-supplied ones, see [SECURITY.md](SECURITY.md)). City packs are the best first lane.
 - **🛰️ Add or improve a data layer.** Each layer is one self-contained module in `src/data/<layer>.js` implementing the layer interface (`init/enable/disable/update/destroy/getStats`, optional `getDetectableObjects`/`getStats`). Use an existing layer as a template.
-- **🎙️ Extend voice control.** Voice tools are declared server-side (`GEV_REALTIME_TOOLS` in `vite.config.js`) and executed client-side (`src/voice/gevActions.js`). Keep the tool surface tight and the responses honest (confirm only what actually happened).
+- **🎙️ Extend voice control.** Voice tools are declared server-side (`EVOL_REALTIME_TOOLS` in `vite.config.js`) and executed client-side (`src/voice/evolActions.js`). Keep the tool surface tight and the responses honest (confirm only what actually happened).
 - **🎨 Add a visual style.** Styles are GLSL post-process shaders in `src/styles/`.
 - **🐛 Fix bugs / improve the first-run experience.** See [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
 
@@ -61,7 +61,7 @@ The highest-leverage places to jump in:
 
 ## Maintainers
 
-Devil's Eye is maintained by [Bilawal Sidhu](https://github.com/bilawalsidhu)
+EVOL Eye is maintained by [Bilawal Sidhu](https://github.com/bilawalsidhu)
 and [Sameh Khamis](https://github.com/samehkhamis) at
 [Halfpixel](https://halfpixel.ai). Either maintainer can review and merge
 contributions.

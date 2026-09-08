@@ -35,7 +35,7 @@ function defaultOverrides(installDir, sourceArchiveUrl, extra = {}) {
 }
 
 test('deduceRepoRoot finds the single top folder or the flat root', () => {
-  assert.equal(deduceRepoRoot(['Devils-Eye-main/package.json', 'Devils-Eye-main/src/a.txt']), 'Devils-Eye-main');
+  assert.equal(deduceRepoRoot(['Evol-Eye-main/package.json', 'Evol-Eye-main/src/a.txt']), 'Evol-Eye-main');
   assert.equal(deduceRepoRoot(['package.json', 'src/a.txt']), '');
   assert.equal(deduceRepoRoot(['a/x.txt', 'b/y.txt']), null);
   assert.equal(deduceRepoRoot([]), null);
@@ -60,7 +60,7 @@ test('full install in development mode installs the fixture and writes launchers
   assert.equal(log.error(), undefined);
 
   assert.equal(await fsp.readFile(path.join(installDir, 'app', 'package.json'), 'utf8'), JSON.stringify({
-    name: 'devils-eye-fixture',
+    name: 'evol-eye-fixture',
     version: '0.0.1',
     private: true,
     scripts: { build: 'node build.mjs' },
@@ -68,9 +68,9 @@ test('full install in development mode installs the fixture and writes launchers
   }, null, 2));
   assert.ok(await fsp.readFile(path.join(installDir, 'app', 'index.html'), 'utf8'), '<h1>fixture</h1>');
   assert.ok(await fsp.stat(path.join(installDir, 'launcher-app.mjs')));
-  const wrapper = process.platform === 'win32' ? 'Devils Eye.cmd' : 'Devils-Eye.sh';
+  const wrapper = process.platform === 'win32' ? 'EVOL Eye.cmd' : 'Evol-Eye.sh';
   assert.ok(await fsp.stat(path.join(installDir, wrapper)));
-  const meta = JSON.parse(await fsp.readFile(path.join(installDir, '.gev-install.json'), 'utf8'));
+  const meta = JSON.parse(await fsp.readFile(path.join(installDir, '.evol-install.json'), 'utf8'));
   assert.equal(meta.appPort, 4173);
   assert.equal(meta.mode, 'development');
   assert.equal(meta.node, 'system');

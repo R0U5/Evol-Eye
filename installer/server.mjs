@@ -177,7 +177,7 @@ async function resolveManifestPath(flags) {
 }
 
 export function bootstrapRuntimeRoot() {
-  const marker = process.env.GEV_BOOTSTRAP_NODE;
+  const marker = process.env.EVOL_BOOTSTRAP_NODE;
   if (!marker) return null;
   if (path.resolve(marker) !== process.execPath) return null;
   const walk = process.platform === 'win32' ? null : 'bin' + path.sep + 'node';
@@ -195,7 +195,7 @@ export async function createInstallerServer(options = {}) {
     console.warn(
       '[installer] WARNING: serving on a non-loopback host without a server token. '
       + 'Mutating endpoints (/api/install, /api/launch) are DISABLED. '
-      + 'Set --token or GEV_INSTALLER_TOKEN to enable them.',
+      + 'Set --token or EVOL_INSTALLER_TOKEN to enable them.',
     );
   }
   const context = {
@@ -415,7 +415,7 @@ export async function main(argv = process.argv.slice(2)) {
       if (value !== true) i += 1;
     }
   }
-  const host = process.env.GEV_INSTALLER_HOST || (flags.get('host') ? String(flags.get('host')) : '127.0.0.1');
+  const host = process.env.EVOL_INSTALLER_HOST || (flags.get('host') ? String(flags.get('host')) : '127.0.0.1');
   const manifest = await readManifestFile(await resolveManifestPath(flags));
   const requestedPort = flags.get('port') ? Number(flags.get('port')) : manifest.installerPort;
   const port = Number.isInteger(requestedPort) && requestedPort >= 1 && requestedPort <= 65535
@@ -425,17 +425,17 @@ export async function main(argv = process.argv.slice(2)) {
     manifest,
     port,
     host,
-    token: process.env.GEV_INSTALLER_TOKEN || (flags.get('token') ? String(flags.get('token')) : null),
-    sourceArchiveUrl: process.env.GEV_INSTALLER_SOURCE_URL || (flags.get('source') ? String(flags.get('source')) : null),
-    runtimeDistBase: process.env.GEV_INSTALLER_RUNTIME_DIST || (flags.get('runtime-dist') ? String(flags.get('runtime-dist')) : null),
+    token: process.env.EVOL_INSTALLER_TOKEN || (flags.get('token') ? String(flags.get('token')) : null),
+    sourceArchiveUrl: process.env.EVOL_INSTALLER_SOURCE_URL || (flags.get('source') ? String(flags.get('source')) : null),
+    runtimeDistBase: process.env.EVOL_INSTALLER_RUNTIME_DIST || (flags.get('runtime-dist') ? String(flags.get('runtime-dist')) : null),
     installDir: flags.get('install-dir') ? String(flags.get('install-dir')) : null,
   };
   const started = await createInstallerServer(options);
-  console.log(`[installer] Devil's Eye installer v${INSTALLER_VERSION}`);
+  console.log(`[installer] EVOL Eye installer v${INSTALLER_VERSION}`);
   console.log(`[installer] Serving installer UI at ${started.baseUrl}`);
   console.log(`[installer] Repo: ${manifest.owner}/${manifest.repo} (${manifest.repoIsPrivate ? 'private' : 'public'}), branch ${manifest.defaultBranch}`);
   if (manifest.repoIsPrivate) {
-    console.log('[installer] Tip: provide a GitHub fine-grained token via --token or the GEV_INSTALLER_TOKEN env var for the source download.');
+    console.log('[installer] Tip: provide a GitHub fine-grained token via --token or the EVOL_INSTALLER_TOKEN env var for the source download.');
   }
   return started;
 }

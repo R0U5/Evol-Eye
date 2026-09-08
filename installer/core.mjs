@@ -7,7 +7,7 @@ export const RECOMMENDED_NODE_VERSION = '24.14.0';
 export const MIN_NODE_VERSION = '20.0.0';
 
 export const INSTALL_STEPS = [
-  { id: 'source', label: 'Download the app', description: 'Pulling the Devil\u2019s Eye source from GitHub' },
+  { id: 'source', label: 'Download the app', description: 'Pulling the EVOL Eye source from GitHub' },
   { id: 'extract', label: 'Extract', description: 'Unpacking and verifying the archive' },
   { id: 'runtime', label: 'Runtime', description: 'Preparing Node.js to run the app' },
   { id: 'deps', label: 'Install packages', description: 'Resolving npm dependencies (node_modules)' },
@@ -16,7 +16,7 @@ export const INSTALL_STEPS = [
 ];
 
 export const DEFAULT_MANIFEST = Object.freeze({
-  name: "Devil's Eye",
+  name: "EVOL Eye",
   owner: 'R0U5',
   repo: 'Devils-Eye',
   defaultBranch: 'main',
@@ -118,12 +118,12 @@ export function nodeDistSpec(version, platform, arch) {
 export function defaultInstallDir(platform, env = {}) {
   if (platform === 'win32') {
     const base = process.env.LOCALAPPDATA || env.localAppData;
-    if (base) return path.join(base, 'DevilsEye');
-    return path.join(env.homedir ?? '', 'DevilsEye');
+    if (base) return path.join(base, 'EvolEye');
+    return path.join(env.homedir ?? '', 'EvolEye');
   }
   const home = env.homedir ?? process.env.HOME ?? '';
-  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'DevilsEye');
-  return path.join(home, '.local', 'share', 'devils-eye');
+  if (platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'EvolEye');
+  return path.join(home, '.local', 'share', 'evol-eye');
 }
 
 export function buildDependencyItems({ platform, arch, nodeVersion, minNodeVersion = MIN_NODE_VERSION, recommendedNodeVersion = RECOMMENDED_NODE_VERSION, pythonVersion }) {

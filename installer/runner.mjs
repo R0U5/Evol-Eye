@@ -242,8 +242,8 @@ async function runNpm(nodeExe, npmCliPath, appDir, args, deps, emit, signal) {
 async function createDesktopShortcut(installDir, deps, emit) {
   if (deps.platform !== 'win32' || !deps.env.USERPROFILE) return;
   const desktop = path.join(deps.env.USERPROFILE, 'Desktop');
-  const linkPath = path.join(desktop, "Devil's Eye.lnk");
-  const cmdPath = path.join(installDir, 'Devils Eye.cmd');
+  const linkPath = path.join(desktop, "EVOL Eye.lnk");
+  const cmdPath = path.join(installDir, 'EVOL Eye.cmd');
   const script = [
     'New-Item -ItemType Directory -Force -Path ' + JSON.stringify(desktop) + ' | Out-Null;',
     '$s=(New-Object -ComObject WScript.Shell).CreateShortcut(' + JSON.stringify(linkPath) + ');',
@@ -261,7 +261,7 @@ async function createDesktopShortcut(installDir, deps, emit) {
 
 function launcherAssets(platform) {
   const common = ['launcher-app.mjs'];
-  common.push(platform === 'win32' ? 'Devils Eye.cmd' : 'Devils-Eye.sh');
+  common.push(platform === 'win32' ? 'EVOL Eye.cmd' : 'Evol-Eye.sh');
   return common;
 }
 
@@ -290,7 +290,7 @@ export async function runInstall(options) {
 
   const appDir = path.join(installDir, 'app');
   const runtimeRoot = path.join(installDir, 'runtime', 'node');
-  const stageBase = path.join(installDir, `.gev-stage-${process.pid}-${Date.now()}`);
+  const stageBase = path.join(installDir, `.evol-stage-${process.pid}-${Date.now()}`);
 
   let runtimeInfo = { type: 'system', nodeExe: deps.execPath, npmCli: null };
 
@@ -378,7 +378,7 @@ export async function runInstall(options) {
       node: runtimeInfo.type,
       sourceUrl,
     };
-    await deps.writeFile(path.join(installDir, '.gev-install.json'), JSON.stringify(meta, null, 2) + '\n');
+    await deps.writeFile(path.join(installDir, '.evol-install.json'), JSON.stringify(meta, null, 2) + '\n');
     if (overrides.shortcut !== false) {
       await createDesktopShortcut(installDir, deps, emit);
     }

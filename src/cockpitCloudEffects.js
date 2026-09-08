@@ -6,7 +6,7 @@ const CLOUD_FRAME_MS = 1000 / 12;
 const MAX_RENDER_WIDTH = 520;
 const MAX_RENDER_HEIGHT = 320;
 const WEATHER_MOVE_REFRESH_M = 25_000;
-const WEATHER_ENABLED_STORAGE_KEY = 'devilsEyeView.cockpitWeatherEffects.enabled';
+const WEATHER_ENABLED_STORAGE_KEY = 'evolEyeView.cockpitWeatherEffects.enabled';
 
 const VERTEX_SHADER = `
   attribute vec2 position;
@@ -204,8 +204,8 @@ export class CockpitCloudEffectsController {
       this.setEnabled(typeof requested === 'boolean' ? requested : !this.enabled);
     };
     window.addEventListener('resize', this.onResize);
-    window.addEventListener('gev:cockpit-mode-changed', this.onCockpitMode);
-    window.addEventListener('gev:cockpit-weather-toggle', this.onEnabledChange);
+    window.addEventListener('evol:cockpit-mode-changed', this.onCockpitMode);
+    window.addEventListener('evol:cockpit-weather-toggle', this.onEnabledChange);
     this.emitEnabledState();
   }
 
@@ -220,7 +220,7 @@ export class CockpitCloudEffectsController {
   }
 
   emitEnabledState() {
-    window.dispatchEvent(new CustomEvent('gev:cockpit-weather-state', {
+    window.dispatchEvent(new CustomEvent('evol:cockpit-weather-state', {
       detail: { enabled: this.enabled },
     }));
   }
@@ -518,8 +518,8 @@ export class CockpitCloudEffectsController {
     this.destroyed = true;
     this.stop();
     window.removeEventListener('resize', this.onResize);
-    window.removeEventListener('gev:cockpit-mode-changed', this.onCockpitMode);
-    window.removeEventListener('gev:cockpit-weather-toggle', this.onEnabledChange);
+    window.removeEventListener('evol:cockpit-mode-changed', this.onCockpitMode);
+    window.removeEventListener('evol:cockpit-weather-toggle', this.onEnabledChange);
     if (this.program && this.gl) this.gl.deleteProgram(this.program);
     this.canvas.remove();
   }

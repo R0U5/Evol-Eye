@@ -26,17 +26,17 @@ try {
   const page = await browser.newPage();
   await page.setViewport({ width: 1440, height: 860 });
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => !!window.__devilsEyeView?.viewer, { timeout: 90_000 });
+  await page.waitForFunction(() => !!window.__evolEyeView?.viewer, { timeout: 90_000 });
   await new Promise((r) => setTimeout(r, 12_000));
   await page.evaluate(async (layerId) => {
-    const gev = window.__devilsEyeView;
-    gev.viewer.camera.cancelFlight();
-    for (const [id, entry] of gev.dataManager.layers) {
+    const evol = window.__evolEyeView;
+    evol.viewer.camera.cancelFlight();
+    for (const [id, entry] of evol.dataManager.layers) {
       if (entry.enabled && id !== layerId) {
-        try { await gev.dataManager.setEnabled(id, false, { origin: 'user' }); } catch { /* shot only */ }
+        try { await evol.dataManager.setEnabled(id, false, { origin: 'user' }); } catch { /* shot only */ }
       }
     }
-    await gev.dataManager.setEnabled(layerId, true, { origin: 'user' });
+    await evol.dataManager.setEnabled(layerId, true, { origin: 'user' });
   }, LAYER_ID);
 
   const views = [
@@ -45,7 +45,7 @@ try {
   ];
   for (const view of views) {
     await page.evaluate((v) => {
-      const viewer = window.__devilsEyeView.viewer;
+      const viewer = window.__evolEyeView.viewer;
       const ell = viewer.scene.globe.ellipsoid;
       viewer.camera.setView({
         destination: ell.cartographicToCartesian({
@@ -56,7 +56,7 @@ try {
     }, view);
     // Let the sweep + labels settle with frames flowing.
     await page.evaluate(() => new Promise((resolve) => {
-      const v = window.__devilsEyeView.viewer;
+      const v = window.__evolEyeView.viewer;
       let ticks = 0;
       const tick = () => {
         v.scene.requestRender?.();

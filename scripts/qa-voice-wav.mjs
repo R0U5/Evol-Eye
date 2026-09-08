@@ -58,20 +58,20 @@ try {
 
   await page.goto(appUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.waitForFunction(() => (
-    window.__devilsEyeView?.voiceCommands
-    && document.getElementById('gev-voice-button')
+    window.__evolEyeView?.voiceCommands
+    && document.getElementById('evol-voice-button')
   ), { timeout: 30_000 });
 
   const readState = () => page.evaluate(() => {
-    const voice = window.__devilsEyeView?.voiceCommands;
-    const radio = window.__devilsEyeView?.dataManager?.layers?.get('radio')?.module;
+    const voice = window.__evolEyeView?.voiceCommands;
+    const radio = window.__evolEyeView?.dataManager?.layers?.get('radio')?.module;
     const radioState = radio?.getUIState?.() || null;
-    const camera = window.__devilsEyeView?.viewer?.camera;
+    const camera = window.__evolEyeView?.viewer?.camera;
     const cartographic = camera?.positionCartographic;
     return {
       at: Date.now(),
       voiceStatus: voice?.status || null,
-      voiceDetail: document.getElementById('gev-voice-detail')?.textContent?.trim() || null,
+      voiceDetail: document.getElementById('evol-voice-detail')?.textContent?.trim() || null,
       cameraHeightM: cartographic?.height ?? null,
       radioEnabled: radioState?.enabled ?? null,
       radioAudioState: radioState?.audioState ?? null,
@@ -81,7 +81,7 @@ try {
   });
 
   const initial = await readState();
-  await page.evaluate(() => document.getElementById('gev-voice-button').click());
+  await page.evaluate(() => document.getElementById('evol-voice-button').click());
 
   const timeline = [initial];
   let lastSignature = JSON.stringify(initial);

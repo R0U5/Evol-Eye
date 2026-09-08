@@ -75,7 +75,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function waitForTilesLoaded(page, timeoutMs) {
   return page.waitForFunction(
     () => {
-      const prims = window.__devilsEyeView.viewer.scene.primitives;
+      const prims = window.__evolEyeView.viewer.scene.primitives;
       for (let i = 0; i < prims.length; i++) {
         const p = prims.get(i);
         if (p && p.constructor && p.constructor.name === 'Cesium3DTileset') {
@@ -91,11 +91,11 @@ function waitForTilesLoaded(page, timeoutMs) {
 /** Teleport to a view (cancelling any camera flight first). */
 function setView(page, v) {
   return page.evaluate((view) => {
-    const gev = window.__devilsEyeView;
-    try { gev.viewer.camera.cancelFlight(); } catch { /* no flight */ }
-    const ell = gev.viewer.scene.globe.ellipsoid;
+    const evol = window.__evolEyeView;
+    try { evol.viewer.camera.cancelFlight(); } catch { /* no flight */ }
+    const ell = evol.viewer.scene.globe.ellipsoid;
     const d2r = Math.PI / 180;
-    gev.viewer.camera.setView({
+    evol.viewer.camera.setView({
       destination: ell.cartographicToCartesian({
         longitude: view.lon * d2r, latitude: view.lat * d2r, height: view.height,
       }),
@@ -117,7 +117,7 @@ function setView(page, v) {
  */
 function waitForFreshRender(page, sinceLastUpdate, timeoutS = 40) {
   return page.evaluate(async (since, tS) => {
-    const mod = window.__devilsEyeView.dataManager.layers.get('traffic').module;
+    const mod = window.__evolEyeView.dataManager.layers.get('traffic').module;
     let s = null;
     let renderSettled = false;
     for (let i = 0; i < tS; i++) {
@@ -170,10 +170,10 @@ async function main() {
     console.log('Loading app...');
     await page.goto(APP_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForFunction(
-      () => window.__devilsEyeView?.viewer && window.__devilsEyeView?.dataManager,
+      () => window.__evolEyeView?.viewer && window.__evolEyeView?.dataManager,
       { timeout: 60000 },
     );
-    await page.evaluate(() => window.__devilsEyeView.dataManager.setEnabled('traffic', true));
+    await page.evaluate(() => window.__evolEyeView.dataManager.setEnabled('traffic', true));
     await sleep(1500);
 
     let firstView = true;
@@ -187,15 +187,15 @@ async function main() {
         // shot captures the away render), then return — the comeback load
         // re-spawns with the new mode active.
         await page.evaluate((m) => {
-          window.__devilsEyeView.dataManager.layers.get('traffic').module.setParams({ jamViz: m });
+          window.__evolEyeView.dataManager.layers.get('traffic').module.setParams({ jamViz: m });
         }, mode);
         const preHop = await page.evaluate(
-          () => window.__devilsEyeView.dataManager.layers.get('traffic').module.getStats().lastUpdate,
+          () => window.__evolEyeView.dataManager.layers.get('traffic').module.getStats().lastUpdate,
         );
         await setView(page, { ...view, lon: view.lon + 0.09 });
         const hop = await waitForFreshRender(page, preHop, 30);
         const since = await page.evaluate(
-          () => window.__devilsEyeView.dataManager.layers.get('traffic').module.getStats().lastUpdate,
+          () => window.__evolEyeView.dataManager.layers.get('traffic').module.getStats().lastUpdate,
         );
         await setView(page, view);
         const stats = await waitForFreshRender(page, since);
@@ -203,7 +203,7 @@ async function main() {
         await sleep(1400); // flow-recolor race + heat-line pulse mid-bright
 
         const final = await page.evaluate(() => {
-          const mod = window.__devilsEyeView.dataManager.layers.get('traffic').module;
+          const mod = window.__evolEyeView.dataManager.layers.get('traffic').module;
           return { stats: mod.getStats(), params: mod.getParams() };
         });
         const shot = `${view.id}--${mode}.png`;

@@ -113,7 +113,7 @@ try {
   // launcher on every navigation so its Escape/Space handlers cannot turn a
   // tray assertion into a mission or voice action in a pristine browser.
   await page.goto(`${appUrl}/?welcome=0`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  await page.waitForFunction(() => window.__devilsEyeView?.styleManager, { timeout: 60_000 });
+  await page.waitForFunction(() => window.__evolEyeView?.styleManager, { timeout: 60_000 });
   await page.waitForFunction(
     () => document.getElementById('loading-screen')?.classList.contains('hidden'),
     { timeout: 60_000 },
@@ -139,7 +139,7 @@ try {
   );
 
   const esriTileFailureFallback = await page.evaluate(async () => {
-    const styleManager = window.__devilsEyeView.styleManager;
+    const styleManager = window.__evolEyeView.styleManager;
     const controller = styleManager.mapStackController;
     await styleManager._setMapStack('esri-imagery', { syncShare: false });
     const provider = controller._activeImageryProvider;
@@ -246,7 +246,7 @@ try {
 
   if (forceKeyless) {
     await page.evaluate(async () => {
-      const styleManager = window.__devilsEyeView.styleManager;
+      const styleManager = window.__evolEyeView.styleManager;
       const controller = styleManager.mapStackController;
       if (controller.googleTileset) controller.googleTileset.show = false;
       controller.googleTileset = null;
@@ -255,7 +255,7 @@ try {
       styleManager._initMapStackControl();
     });
     const keylessState = await page.evaluate(() => {
-      const controller = window.__devilsEyeView.styleManager.mapStackController;
+      const controller = window.__evolEyeView.styleManager.mapStackController;
       return {
         activeId: controller.getActiveId(),
         hasGoogleTileset: Boolean(controller.googleTileset),
@@ -271,7 +271,7 @@ try {
     );
   }
   const activeBeforeIonAttempt = await page.evaluate(() => (
-    window.__devilsEyeView.styleManager.mapStackController.getActiveId()
+    window.__evolEyeView.styleManager.mapStackController.getActiveId()
   ));
   await page.focus('[data-stack-id="bing-aerial"]');
   const ionAvailable = await page.$eval(
@@ -283,8 +283,8 @@ try {
     // Cesium creates the imagery provider asynchronously. Wait for controller
     // truth instead of assuming a keyed switch can settle in one animation.
     await page.waitForFunction(
-      () => window.__devilsEyeView.styleManager.mapStackController.getActiveId() === 'bing-aerial'
-        || Boolean(window.__devilsEyeView.styleManager.mapStackController.getState()?.lastError),
+      () => window.__evolEyeView.styleManager.mapStackController.getActiveId() === 'bing-aerial'
+        || Boolean(window.__evolEyeView.styleManager.mapStackController.getState()?.lastError),
       { timeout: 20_000 },
     ).catch(() => {});
   } else {
@@ -298,7 +298,7 @@ try {
       focused: document.activeElement === chip,
       ariaDisabled: chip.getAttribute('aria-disabled'),
       ariaLabel: chip.getAttribute('aria-label'),
-      activeId: window.__devilsEyeView.styleManager.mapStackController.getActiveId(),
+      activeId: window.__evolEyeView.styleManager.mapStackController.getActiveId(),
       active: [...document.querySelectorAll('.map-stack-chip')]
         .filter((candidate) => candidate.getAttribute('aria-pressed') === 'true')
         .map((candidate) => candidate.dataset.stackId),
@@ -326,7 +326,7 @@ try {
     );
   }
   const switching = await page.evaluate(async () => {
-    const styleManager = window.__devilsEyeView.styleManager;
+    const styleManager = window.__evolEyeView.styleManager;
     const controller = styleManager.mapStackController;
     const originalSetStack = controller.setStack.bind(controller);
     const before = controller.getActiveId();
@@ -364,7 +364,7 @@ try {
   );
 
   const acquiringLifecycle = await page.evaluate(async () => {
-    const styleManager = window.__devilsEyeView.styleManager;
+    const styleManager = window.__evolEyeView.styleManager;
     const status = document.getElementById('global-loading-status');
     const snapshot = () => ({
       hidden: status.hidden,
@@ -425,7 +425,7 @@ try {
   );
 
   const acquiringFailureArbitration = await page.evaluate(async () => {
-    const styleManager = window.__devilsEyeView.styleManager;
+    const styleManager = window.__evolEyeView.styleManager;
     const dataManager = styleManager._dataManager;
     const status = document.getElementById('global-loading-status');
     const originalGetAll = dataManager.getAll;
@@ -552,7 +552,7 @@ try {
     };
   });
   const clickTileThenLeave = async (stackId) => {
-    await page.evaluate(() => window.__devilsEyeView.styleManager
+    await page.evaluate(() => window.__evolEyeView.styleManager
       .setPanelCollapsed('control-panel', false, { explicit: true }));
     await new Promise((resolve) => setTimeout(resolve, 240));
     await page.click(`[data-stack-id="${stackId}"]`);
@@ -570,7 +570,7 @@ try {
   // mouse-away that dismisses after a click, opposite outcome — so a fix that
   // simply deleted the focus guard would fail here.
   await setControlPanelPinned(false);
-  await page.evaluate(() => window.__devilsEyeView.styleManager
+  await page.evaluate(() => window.__evolEyeView.styleManager
     .setPanelCollapsed('control-panel', true, { explicit: true }));
   await new Promise((resolve) => setTimeout(resolve, 200));
   await page.focus('#control-panel-toggle');
@@ -609,11 +609,11 @@ try {
   const pinnedForHold = await setControlPanelPinned(true);
   const pinnedHold = await clickTileThenLeave('photoreal');
   await setControlPanelPinned(false);
-  await page.evaluate(() => window.__devilsEyeView.styleManager
+  await page.evaluate(() => window.__evolEyeView.styleManager
     ._setMapStack('photoreal', { syncShare: false }));
   // Hand the tray back OPEN and unpinned — the responsive block below starts by
   // clicking the pin control, which is only hittable while the tray is showing.
-  await page.evaluate(() => window.__devilsEyeView.styleManager
+  await page.evaluate(() => window.__evolEyeView.styleManager
     .setPanelCollapsed('control-panel', false, { explicit: true }));
   await new Promise((resolve) => setTimeout(resolve, 240));
   check(
@@ -705,7 +705,7 @@ try {
       // so drive the same parse/apply startup contract on the current keyless
       // controller instead.
       await page.evaluate(async (id) => {
-        const styleManager = window.__devilsEyeView.styleManager;
+        const styleManager = window.__evolEyeView.styleManager;
         history.replaceState(null, '', `?welcome=0#v=2&lat=30.27&lon=-97.74&map=${id}`);
         const state = styleManager.shareLinkManager.parseInitialHash();
         await styleManager.shareLinkManager.applyState(state, { applyCamera: false });
@@ -716,19 +716,19 @@ try {
         waitUntil: 'domcontentloaded',
         timeout: 60_000,
       });
-      await page.waitForFunction(() => window.__devilsEyeView?.styleManager, { timeout: 60_000 });
+      await page.waitForFunction(() => window.__evolEyeView?.styleManager, { timeout: 60_000 });
       await page.waitForFunction(
         () => document.getElementById('loading-screen')?.classList.contains('hidden'),
         { timeout: 60_000 },
       );
     }
     await page.waitForFunction(
-      () => window.__devilsEyeView.styleManager.mapStackController.getState()?.status !== 'switching',
+      () => window.__evolEyeView.styleManager.mapStackController.getState()?.status !== 'switching',
       { timeout: 20_000 },
     ).catch(() => {});
     const restored = await page.evaluate(() => ({
-      activeId: window.__devilsEyeView.styleManager.mapStackController.getActiveId(),
-      lastError: window.__devilsEyeView.styleManager.mapStackController.getState()?.lastError || null,
+      activeId: window.__evolEyeView.styleManager.mapStackController.getActiveId(),
+      lastError: window.__evolEyeView.styleManager.mapStackController.getState()?.lastError || null,
       status: document.getElementById('map-stack-status').textContent.trim(),
       pressed: [...document.querySelectorAll('.map-stack-chip')]
         .filter((chip) => chip.getAttribute('aria-pressed') === 'true')

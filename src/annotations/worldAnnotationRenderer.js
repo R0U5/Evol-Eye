@@ -34,7 +34,7 @@ const CLASSIFY = Cesium.ClassificationType.CESIUM_3D_TILE;
 const CLAMP = Cesium.HeightReference.CLAMP_TO_GROUND;
 
 export function createWorldAnnotationRenderer(viewer) {
-  const dataSource = new Cesium.CustomDataSource('gev-annotations');
+  const dataSource = new Cesium.CustomDataSource('evol-annotations');
   viewer.dataSources.add(dataSource);
 
   // Register the GevRouteFlow fabric once so Cesium's Material.fromType() can build the
