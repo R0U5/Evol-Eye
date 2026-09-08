@@ -13,3 +13,7 @@ output/
 3d-models/
 pinokio/ENVIRONMENT
 pinokio/.installed
+
+# Legacy pre-rebrand runtime dirs (kept for backward compat; new runs use .evol-*)
+.gev-cache/
+.gev-logs/
