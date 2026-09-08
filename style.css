@@ -9661,7 +9661,16 @@ body.scene-playback-mode #first-run-launcher {
 
 .key-setup-fields input::placeholder { color: rgba(148, 178, 188, 0.42); }
 
-.key-setup-footer { margin-top: 0.85rem; }
+.key-setup-footer {
+  margin-top: 0.85rem;
+  /* Buttons form a left-aligned cluster; the hint is pushed to the far right. */
+  justify-content: flex-start;
+  gap: 0.5rem;
+}
+
+.key-setup-hint {
+  margin-left: auto;
+}
 
 .key-setup-apply {
   padding: 0.5rem 0.95rem;
