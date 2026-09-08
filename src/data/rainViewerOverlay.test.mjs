@@ -69,7 +69,7 @@ function makeLocalStorage(initial = {}) {
 
 function resetLocalStorage(enabled) {
   globalThis.localStorage = makeLocalStorage(
-    enabled ? { 'devilsEyeView.radarOverlay.enabled': '1' } : {},
+    enabled ? { 'evolEyeView.radarOverlay.enabled': '1' } : {},
   );
 }
 
