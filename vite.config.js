@@ -3804,6 +3804,25 @@ function isLiveStreamFeedType(feedType) {
   return feedType === 'mjpeg' || isVideoFeedType(feedType);
 }
 
+/**
+ * Canonical feed type for a source, with the URL as the source of truth.
+ *
+ * A catalog entry that labels an MJPG stream URL 'image' is wrong by
+ * construction: /mjpg/video.mjpg never terminates with a single image, so the
+ * client would route it down the snapshot path (probe stills, buffer-one-frame,
+ * refetch every 10-60 s) instead of the realtime live-jpeg mode. The URL guard
+ * wins over the declared feedType so a mislabeled catalog self-heals on the
+ * server before the client ever sees it.
+ *
+ * @param {string} rawFeedType - Declared feed type ('image', 'mjpeg', ...).
+ * @param {string} url - Camera stream URL.
+ * @returns {string} Normalized feed type.
+ */
+export function normalizeSourceFeedType(rawFeedType, url) {
+  if (isMjpgStreamUrl(url)) return 'mjpeg';
+  return normalizeFeedType(rawFeedType);
+}
+
 // ---------------------------------------------------------------------------
 // CCTV proxy constants and source cache state
 // ---------------------------------------------------------------------------
@@ -3851,6 +3870,26 @@ const CCTV_SOURCE_FETCH_TIMEOUT_MS = 15 * 1000;
  * client refresh cadence. A bounded miss can fall through to Street View or
  * the synthetic frame instead of leaving the browser preview pending. */
 export const CCTV_FRAME_FETCH_TIMEOUT_MS = 8 * 1000;
+/** Maximum concurrent live media streams the proxy will pipe at once. Each
+ * open MJPEG/HLS connection holds an upstream socket for the whole session
+ * (minutes, not seconds), so an unbounded count would exhaust the dev server's
+ * socket pool on a busy map. The client caps itself at 2 (active projection +
+ * sidebar); the server cap is deliberately higher so a second tab or a
+ * non-cooperating client can't starve the primary feed. Excess requests get a
+ * 429 and the client falls back to snapshot frames. */
+export const LIVE_MEDIA_STREAM_CAP = 4;
+/** @type {number} Currently-open live media streams (incremented on accept,
+ * decremented on client disconnect via proxyMediaResponse's res.on('close')). */
+let _activeLiveMediaStreams = 0;
+
+/**
+ * Whether a new live media stream may be opened under LIVE_MEDIA_STREAM_CAP.
+ * Exported for tests; the /media handler uses it to 429 excess live requests.
+ * @returns {boolean}
+ */
+export function liveStreamSlotAvailable() {
+  return _activeLiveMediaStreams < LIVE_MEDIA_STREAM_CAP;
+}
 /** @type {Array<object>} Cached merged + normalized CCTV source list. */
 let _cctvSourceCache = [];
 /** @type {number} Epoch-ms when the source cache was last refreshed. */
@@ -4554,7 +4593,7 @@ function normalizeSourceItem(item) {
     rangeM: toFiniteNumber(item.rangeM),
     mountHeightM: toFiniteNumber(item.mountHeightM),
     groundElevationM: toFiniteNumber(item.groundElevationM),
-    feedType: normalizeFeedType(item.feedType || item.type || ''),
+    feedType: normalizeSourceFeedType(item.feedType || item.type || '', url),
     url,
     snapshotUrl,
     license: String(item.license || item.licenseNote || ''),
@@ -4827,7 +4866,10 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
   // otherwise live MJPEG/HLS connections stay open until the upstream closes
   // them (or the 30 s media timeout fires), leaking sockets on every refresh.
   res.on('close', () => {
-    try { upstream.body?.cancel(); } catch { /* no-op */ }
+    // cancel() on a locked web stream returns a REJECTED promise (not a
+    // synchronous throw), so a bare try/catch leaks an unhandled rejection
+    // that crashes the process on every client disconnect mid-stream.
+    try { upstream.body?.cancel()?.catch(() => {}); } catch { /* no-op */ }
   });
   stream.pipe(res);
 }
@@ -5255,6 +5297,7 @@ function cctvProxy() {
             const source = sourceById.get(cameraId);
             const mediaUrl = source?.url || '';
             const feedType = normalizeFeedType(source?.feedType || 'image');
+            const isLive = isLiveStreamFeedType(feedType);
 
             if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
               cctvLog(`media ${cameraId}: no stream URL configured`);
@@ -5269,12 +5312,50 @@ function cctvProxy() {
               return;
             }
 
+            // Live streams hold an upstream socket for the whole session, so
+            // they are capped. At the cap, excess live requests get a 429 and
+            // the client falls back to snapshot frames (see liveMediaModeDecision).
+            if (isLive && !liveStreamSlotAvailable()) {
+              cctvLog(`media ${cameraId}: live stream cap reached (${_activeLiveMediaStreams}/${LIVE_MEDIA_STREAM_CAP})`);
+              setHealth(cameraId, {
+                status: 'degraded',
+                sourceKind: 'live',
+                label: source?.provider || 'Configured source',
+                message: 'Live stream cap reached',
+              });
+              res.writeHead(429, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+              res.end(JSON.stringify({ error: 'live-stream-cap-reached' }));
+              return;
+            }
+
+            // Client-requested stream resolution (e.g. ?resolution=960x540).
+            // NOT appended to the upstream MJPG URL: most public Axis cameras
+            // reject an unknown query param on /mjpg/video.mjpg with HTTP 400
+            // (verified against a live sample — 7 of 8 cams failed), which
+            // would break the live feed for the majority of the catalog. The
+            // camera serves its native resolution and the client downscales
+            // via CSS/canvas. The /frame endpoint owns snapshot sizing via its
+            // own res=hd/sd param.
+            let upstreamUrl = mediaUrl;
+
+            // Hold a live slot for the duration of the connection. Released on
+            // client disconnect (res 'close') and on every error path below.
+            if (isLive) _activeLiveMediaStreams += 1;
+            let capHeld = isLive;
+            const releaseLiveSlot = () => {
+              if (capHeld) {
+                capHeld = false;
+                _activeLiveMediaStreams = Math.max(0, _activeLiveMediaStreams - 1);
+              }
+            };
+            res.on('close', releaseLiveSlot);
+
             try {
               const upstreamHeaders = { 'User-Agent': 'evol-eye-cctv-proxy/1.0' };
               const requestRange = req.headers?.range;
               if (requestRange) upstreamHeaders.Range = requestRange;
-              cctvLog(`media ${cameraId}: fetching ${mediaUrl}`);
-              const upstream = await fetch(mediaUrl, {
+              cctvLog(`media ${cameraId}: fetching ${upstreamUrl}`);
+              const upstream = await fetch(upstreamUrl, {
                 headers: upstreamHeaders,
                 // Do not follow redirects — a catalog URL that 302s to an
                 // internal host would otherwise be silently followed (SSRF).
@@ -5286,11 +5367,12 @@ function cctvProxy() {
                 // client disconnects (which tears the upstream down via
                 // proxyMediaResponse's res.on('close')), and a stalled camera
                 // is released by the client's own retry/placeholder path.
-                signal: isLiveStreamFeedType(feedType) ? null : AbortSignal.timeout(10000),
+                signal: isLive ? null : AbortSignal.timeout(10000),
               });
               const contentType = upstream.headers.get('content-type') || '';
               if (!upstream.ok) {
                 try { await upstream.body?.cancel(); } catch { /* no-op */ }
+                releaseLiveSlot();
                 cctvLog(`media ${cameraId}: upstream HTTP ${upstream.status}`);
                 setHealth(cameraId, {
                   status: 'degraded',
@@ -5303,7 +5385,7 @@ function cctvProxy() {
                 return;
               }
 
-              if (isLiveStreamFeedType(feedType) && !(contentType.startsWith('video/') || contentType.includes('mpegurl') || contentType.includes('multipart/x-mixed-replace'))) {
+              if (isLive && !(contentType.startsWith('video/') || contentType.includes('mpegurl') || contentType.includes('multipart/x-mixed-replace'))) {
                 setHealth(cameraId, {
                   status: 'degraded',
                   sourceKind: 'upstream',
@@ -5313,17 +5395,18 @@ function cctvProxy() {
               } else {
                 setHealth(cameraId, {
                   status: 'ok',
-                  sourceKind: isLiveStreamFeedType(feedType) ? 'live' : 'snapshot',
+                  sourceKind: isLive ? 'live' : 'snapshot',
                   label: source?.provider || 'Configured source',
-                  message: isLiveStreamFeedType(feedType) ? 'Live stream connected' : 'Snapshot feed connected',
+                  message: isLive ? 'Live stream connected' : 'Snapshot feed connected',
                 });
               }
 
               await proxyMediaResponse(res, upstream, {
-                sourceHeader: isLiveStreamFeedType(feedType) ? 'live-media' : 'upstream-image',
+                sourceHeader: isLive ? 'live-media' : 'upstream-image',
               });
               return;
             } catch (error) {
+              releaseLiveSlot();
               cctvLog(`media ${cameraId}: fetch error ${error?.message || error}`);
               setHealth(cameraId, {
                 status: 'degraded',

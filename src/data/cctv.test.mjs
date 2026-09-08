@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import * as Cesium from 'cesium';
 import cctvLayer, {
   CCTV_PROJECTION_OVERLAY_SOURCE_OPTIONS,
+  LIVE_MEDIA_CONNECTION_CAP,
   _createCctvProjectionPlaneForTest,
   _extractPickedCameraIdForTest,
   _updateCctvProjectionPlaneForTest,
@@ -61,6 +62,11 @@ import cctvLayer, {
   refreshCoverageStyles,
   setCctvCardPresentationOptions,
   setActiveCamera,
+  isMjpgStreamUrl,
+  normalizeSourceFeedType,
+  liveMediaSlotAvailable,
+  liveMediaModeDecision,
+  mediaUrlFor,
 } from './cctv.js';
 import {
   CCTV_ACTIVATION_RESULT,
@@ -1520,4 +1526,111 @@ test('discovered-unlocated sources are admitted to the catalog as frame-only', (
     /record\.camera\.unlocated === true/,
     'setActiveCamera must branch on the unlocated flag',
   );
+});
+
+// ── Axis realtime feed: feedType normalization + live connection cap ─────────
+
+test('isMjpgStreamUrl recognizes Axis MJPG stream URLs', () => {
+  assert.equal(isMjpgStreamUrl('http://85.4.30.236:80/mjpg/video.mjpg'), true);
+  assert.equal(isMjpgStreamUrl('http://85.4.30.236:80/mjpg/video.mjpg?resolution=640x480'), true);
+  assert.equal(isMjpgStreamUrl('http://85.4.30.236:80/mjpeg/1/video.mjpeg'), true);
+  assert.equal(isMjpgStreamUrl('http://85.4.30.236:80/axis-cgi/jpg/image.cgi'), false);
+  assert.equal(isMjpgStreamUrl('https://cctv.austinmobility.io/image/123.jpg'), false);
+  assert.equal(isMjpgStreamUrl(''), false);
+  assert.equal(isMjpgStreamUrl(null), false);
+});
+
+test('normalizeSourceFeedType: the URL guard wins over a mislabeled feedType', () => {
+  // The Axis catalog bug: MJPG stream URLs labeled 'image'. The URL is the
+  // source of truth — an MJPG stream never terminates with a single image.
+  assert.equal(
+    normalizeSourceFeedType('image', 'http://85.4.30.236:80/mjpg/video.mjpg'),
+    'mjpeg',
+  );
+  assert.equal(
+    normalizeSourceFeedType('image', 'http://85.4.30.236:80/mjpg/video.mjpg?resolution=640x480'),
+    'mjpeg',
+  );
+  // Non-MJPG URLs keep their declared type.
+  assert.equal(
+    normalizeSourceFeedType('image', 'https://cctv.austinmobility.io/image/123.jpg'),
+    'image',
+  );
+  assert.equal(
+    normalizeSourceFeedType('mjpeg', 'https://cctv.austinmobility.io/image/123.jpg'),
+    'mjpeg',
+  );
+  // Missing URL falls back to the declared type.
+  assert.equal(normalizeSourceFeedType('image', ''), 'image');
+  assert.equal(normalizeSourceFeedType('mjpg', ''), 'mjpeg');
+});
+
+test('Axis catalog invariant: every MJPG URL is labeled mjpeg (404 cams)', () => {
+  const catalogPath = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    '..',
+    'config',
+    'cctv_sources_axis.json',
+  );
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  assert.equal(catalog.length, 404, 'Axis catalog must keep all 404 discovered cams');
+  for (const cam of catalog) {
+    assert.equal(
+      cam.feedType,
+      'mjpeg',
+      `catalog entry ${cam.id} (${cam.url}) must be mjpeg, got ${cam.feedType}`,
+    );
+    assert.equal(
+      isMjpgStreamUrl(cam.url),
+      true,
+      `catalog entry ${cam.id} must carry an MJPG stream URL`,
+    );
+  }
+});
+
+test('liveMediaModeDecision: primary always wins the first slot, secondary falls back at the cap', () => {
+  // Primary live-capable, slot free → secondary goes live.
+  assert.equal(
+    liveMediaModeDecision({ primary: true, liveConnections: 0, cap: 2 }),
+    'live',
+  );
+  assert.equal(
+    liveMediaModeDecision({ primary: true, liveConnections: 1, cap: 2 }),
+    'live',
+  );
+  // At the cap → snapshot fallback.
+  assert.equal(
+    liveMediaModeDecision({ primary: true, liveConnections: 2, cap: 2 }),
+    'snapshot',
+  );
+  // Non-live primary → snapshot regardless of free slots.
+  assert.equal(
+    liveMediaModeDecision({ primary: false, liveConnections: 0, cap: 2 }),
+    'snapshot',
+  );
+  // Default cap is the exported client cap.
+  assert.equal(LIVE_MEDIA_CONNECTION_CAP, 2);
+  assert.equal(
+    liveMediaModeDecision({ primary: true, liveConnections: LIVE_MEDIA_CONNECTION_CAP }),
+    'snapshot',
+  );
+});
+
+test('liveMediaSlotAvailable: bounded by the exported client cap', () => {
+  // Fresh module state has no open connections.
+  assert.equal(liveMediaSlotAvailable(), true);
+});
+
+test('mediaUrlFor: stable URL with optional resolution passthrough, no cache-buster', () => {
+  const camera = { id: 'axis-insecam-1' };
+  const base = mediaUrlFor(camera);
+  assert.equal(base, '/api/cctv/media/axis-insecam-1');
+  // No ts cache-buster: the sidebar only re-queues when currentSrc changes,
+  // so a changing URL would reconnect the live stream every refresh.
+  assert.ok(!base.includes('ts='), 'media URL must not carry a cache-buster tick');
+  const withRes = mediaUrlFor(camera, '960x540');
+  assert.equal(withRes, '/api/cctv/media/axis-insecam-1?resolution=960x540');
+  // The URL is stable across calls (same camera, same resolution).
+  assert.equal(mediaUrlFor(camera, '960x540'), withRes);
 });

@@ -142,6 +142,18 @@ const GEO_PROGRESS_NOTIFY_BATCH_LIMIT = 10;
 const PLACEHOLDER_REPAINT_MS = 750;
 /** Backoff before a live MJPEG <img> reconnects after its /media stream drops. */
 const LIVE_RETRY_BACKOFF_MS = 3000;
+/** Client-side cap on concurrent live MJPEG <img> connections. The active
+ * camera holds at most two: one for the projection plane (1280x720) and one
+ * for the sidebar feed (960x540). Beyond that, feeds fall back to snapshot
+ * frames. Mirrors the server's LIVE_MEDIA_STREAM_CAP (4), which is higher so
+ * a second tab or a non-cooperating client can't starve the primary feed. */
+export const LIVE_MEDIA_CONNECTION_CAP = 2;
+/** Resolution requested for the sidebar live feed (half of the 1080p
+ * projection canvas — plenty for the small panel, half the bandwidth). */
+const SIDEBAR_FEED_RESOLUTION = '960x540';
+/** Resolution requested for the projection-plane live feed (720p — the plane
+ * is 1080p, so 720p upscales acceptably without full-HD bandwidth). */
+const PROJECTION_FEED_RESOLUTION = '1280x720';
 // v1 key is retired dead data (owner decision #3, §9.3 — WIPE CLEAN, no
 // legacy import): kept here only as a documented constant so nothing ever
 // re-reads it by accident. Exported for the unit suite's "v1 is ignored"
@@ -327,6 +339,14 @@ let _healthById = new Map();
 let _calibrationById = new Map();
 let _listeners = new Set();
 let _projectionRaf = 0;
+/** @type {number} Open client-side live MJPEG connections (projection plane +
+ * sidebar feed). Bounded by LIVE_MEDIA_CONNECTION_CAP. */
+let _liveMediaConnectionCount = 0;
+/** @type {string|null} Camera id holding the sidebar live slot, if any. The
+ * slot is reserved for the ACTIVE camera so its sidebar feed URL stays stable
+ * across uiState() notifications (a changing URL would make the sidebar <img>
+ * reconnect every notify). */
+let _sidebarLiveReservedForId = null;
 let _removeFocusAppearListener = null;
 let _lastFocusStyleAt = 0;
 /** Icons whose animated emphasis remains outside the 1.0 deadband. */
@@ -608,6 +628,67 @@ function normalizeFeedType(value) {
  */
 function isVideoFeedType(feedType) {
   return feedType === 'mp4' || feedType === 'hls' || feedType === 'webm';
+}
+
+/**
+ * Returns true when a URL looks like an MJPG multipart/x-mixed-replace stream
+ * (the format most public Axis cameras serve at /mjpg/video.mjpg). Mirrors the
+ * server-side check in vite.config.js so the client can self-heal a catalog
+ * that mislabels an MJPG URL as 'image'.
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isMjpgStreamUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const lower = url.toLowerCase();
+  if (lower.includes('/mjpg/') || lower.includes('/mjpeg/')) return true;
+  return /(\.mjpg|\.mjpeg|video\.mjpg)(\?|$)/i.test(lower);
+}
+
+/**
+ * Canonical feed type for a source, with the URL as the source of truth.
+ *
+ * A catalog entry that labels an MJPG stream URL 'image' is wrong by
+ * construction: /mjpg/video.mjpg never terminates with a single image, so the
+ * client would route it down the snapshot path (probe stills, buffer-one-frame,
+ * refetch every 10-60 s) instead of the realtime live-jpeg mode. The URL guard
+ * wins over the declared feedType so a mislabeled catalog self-heals on the
+ * client even before the server-side guard in vite.config.js runs.
+ *
+ * @param {string} rawFeedType - Declared feed type ('image', 'mjpeg', ...).
+ * @param {string} url - Camera stream URL.
+ * @returns {string} Normalized feed type.
+ */
+export function normalizeSourceFeedType(rawFeedType, url) {
+  if (isMjpgStreamUrl(url)) return 'mjpeg';
+  return normalizeFeedType(rawFeedType);
+}
+
+/**
+ * Whether a new client-side live media connection may be opened under
+ * LIVE_MEDIA_CONNECTION_CAP. Exported for tests.
+ * @returns {boolean}
+ */
+export function liveMediaSlotAvailable() {
+  return _liveMediaConnectionCount < LIVE_MEDIA_CONNECTION_CAP;
+}
+
+/**
+ * Pure decision helper: given whether the primary (projection) feed is
+ * live-capable and the current open connection count, decide whether a
+ * secondary (sidebar) feed may go live or must fall back to snapshot frames.
+ * The primary feed always wins the first slot; the secondary takes the second
+ * only when the cap allows. Exported for tests.
+ *
+ * @param {Object} opts
+ * @param {boolean} opts.primary - Whether the primary feed is live-capable.
+ * @param {number} opts.liveConnections - Current open live connections.
+ * @param {number} [opts.cap=LIVE_MEDIA_CONNECTION_CAP] - Connection cap.
+ * @returns {'live'|'snapshot'}
+ */
+export function liveMediaModeDecision({ primary, liveConnections, cap = LIVE_MEDIA_CONNECTION_CAP }) {
+  if (!primary) return 'snapshot';
+  return liveConnections < cap ? 'live' : 'snapshot';
 }
 
 /**
@@ -1184,7 +1265,7 @@ function buildCatalogFromSources(rawSources) {
     const mountHeightM = clamp(safeNumber(source.mountHeightM, seed?.mountHeightM ?? 24), 6, 120);
     const pitchDeg = clamp(safeNumber(source.pitchDeg, seed?.pitchDeg ?? -17), -55, -2);
     const groundElevationM = safeNumber(source.groundElevationM, city?.groundElevation ?? seed?.groundElevationM ?? 0);
-    const feedType = normalizeFeedType(source.feedType || source.type || 'image');
+    const feedType = normalizeSourceFeedType(source.feedType || source.type || 'image', source.url);
     const headingConfidence = String(source.headingConfidence || (seed ? 'high' : 'low')).toLowerCase();
     // CAL badge input (design §3b passthrough): hand-authored file/env source
     // entries may carry poseSource:'curated'. Austin Open Data rows never set
@@ -1531,7 +1612,12 @@ function refreshProjectionTextures(record) {
   // double-buffer swap; only video (native element binding) is excluded.
   if (!runtime || runtime.mode === 'video') return;
   const now = Date.now();
-  if (now - safeNumber(runtime.lastTextureSwapAt, 0) < PROJECTION_TEXTURE_SWAP_MS) return;
+  // Live-jpeg skips the 1 Hz swap throttle: a 5-15 fps MJPEG stream would
+  // otherwise freeze to 1 fps on the monitor plane. The canvasStamp guard
+  // below already skips unchanged canvases, so the only cost of running
+  // unthrottled is a stamp compare per frame — no redundant texture uploads.
+  if (runtime.mode !== 'live-jpeg'
+    && now - safeNumber(runtime.lastTextureSwapAt, 0) < PROJECTION_TEXTURE_SWAP_MS) return;
 
   const planeShowing = !!(runtime.planeEntity?.show && runtime.planeMaterial);
   if (!planeShowing) return;
@@ -1579,11 +1665,24 @@ function frameUrlFor(camera, refreshMs = ACTIVE_FRAME_REFRESH_MS) {
 
 /**
  * Builds the URL for fetching a camera's video/media stream.
+ *
+ * No cache-buster tick: the proxy sets Cache-Control: no-store, and a changing
+ * URL would make the sidebar <img> reconnect every refresh (the sidebar only
+ * re-queues when currentSrc !== nextSrc). Live MJPEG streams are long-lived
+ * connections — the URL must stay stable for the life of the feed.
+ *
  * @param {Object} camera - Camera object.
+ * @param {string} [resolution] - Optional WxH resolution passthrough for MJPG
+ *   streams (e.g. '960x540'). The server appends ?resolution=WxH to the
+ *   upstream URL only for MJPG streams; snapshot/image URLs are served verbatim.
  * @returns {string} Media URL.
  */
-function mediaUrlFor(camera) {
-  return `${MEDIA_ENDPOINT}/${encodeURIComponent(camera.id)}?ts=${Math.floor(Date.now() / 15000)}`;
+export function mediaUrlFor(camera, resolution) {
+  const base = `${MEDIA_ENDPOINT}/${encodeURIComponent(camera.id)}`;
+  if (resolution) {
+    return `${base}?resolution=${encodeURIComponent(resolution)}`;
+  }
+  return base;
 }
 
 /**
@@ -1606,8 +1705,10 @@ function mediaUrlFor(camera) {
  * @param {Object} camera - Camera object for label info.
  * @param {Object|null} [health=null] - Health state for status message.
  * @param {string} [state='no-feed'] - Placeholder state, see above.
+ * @param {string} [feedMode=''] - Runtime feed mode ('live-jpeg'|'video'|'image')
+ *   used for the status fallback line (LIVE vs SNAPSHOT).
  */
-function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed') {
+function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed', feedMode = '') {
   if (!ctx) return;
   const w = PROJECTION_CANVAS_WIDTH;
   const h = PROJECTION_CANVAS_HEIGHT;
@@ -1626,7 +1727,7 @@ function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed
       ? 'SIGNAL ACQUIRING'
       : state === 'error'
         ? (health?.message || 'NO SIGNAL')
-        : (health?.message || health?.status || camera?.feedType || 'NO FEED')
+        : (health?.message || health?.status || (feedMode === 'live-jpeg' ? 'LIVE' : feedMode === 'image' ? 'SNAPSHOT' : camera?.feedType) || 'NO FEED')
   ).toUpperCase();
 
   const accent = state === 'error' ? '255, 60, 60' : '0, 220, 255';
@@ -1852,6 +1953,10 @@ function createProjectionRuntime(record) {
     // fresh pixels from a stalled frame.
     liveFrameCount: 0,
     lastDrawnLiveFrame: 0,
+    // live-jpeg only: whether the streaming <img> currently holds an open
+    // /media connection (counted against LIVE_MEDIA_CONNECTION_CAP). Closed on
+    // camera switch/deactivation, reopened on re-activation.
+    liveConnected: false,
     // True once ANY live frame has been drawn for this camera (used to pick
     // LOADING vs NO-SIGNAL placeholder text: a camera that once worked and
     // now fails reads NO SIGNAL; a camera that never returned a frame reads
@@ -1871,7 +1976,7 @@ function createProjectionRuntime(record) {
     lastSwappedCanvasStamp: 0,
   };
 
-  paintProjectionPlaceholder(ctx, record.camera);
+  paintProjectionPlaceholder(ctx, record.camera, null, 'no-feed', mode);
 
   if (mode === 'live-jpeg') {
     // A live MJPEG stream: a single <img> bound to the long-lived /media
@@ -1899,15 +2004,16 @@ function createProjectionRuntime(record) {
       clearTimeout(retryTimer);
       retryTimer = setTimeout(() => {
         if (!runtime.planeEntity) return; // teardown already ran
+        if (!runtime.liveConnected) return; // connection closed while backing off
         runtime.liveFrameCount = runtime.lastDrawnLiveFrame = 0;
-        const next = mediaUrlFor(record.camera);
+        const next = mediaUrlFor(record.camera, PROJECTION_FEED_RESOLUTION);
         liveImg.removeAttribute('src');
         liveImg.src = next;
       }, LIVE_RETRY_BACKOFF_MS);
     };
     runtime._liveRetryTimer = () => retryTimer;
-    liveImg.src = mediaUrlFor(record.camera);
     runtime.image = liveImg;
+    openLiveJpegConnection(runtime, record.camera);
   } else if (mode === 'video') {
     const video = document.createElement('video');
     video.muted = true;
@@ -1964,13 +2070,54 @@ function createProjectionRuntime(record) {
 }
 
 /**
+ * Opens a live MJPEG connection for a projection runtime: binds the <img> to
+ * the long-lived /media URL and counts the connection against the client cap.
+ * Idempotent — a runtime that is already connected is left alone.
+ * @param {Object} runtime - Projection runtime (mode 'live-jpeg').
+ * @param {Object} camera - Camera record.
+ */
+function openLiveJpegConnection(runtime, camera) {
+  if (!runtime || runtime.mode !== 'live-jpeg' || runtime.liveConnected) return;
+  runtime.liveConnected = true;
+  _liveMediaConnectionCount += 1;
+  const liveImg = runtime.image;
+  if (!liveImg) return;
+  liveImg.src = mediaUrlFor(camera, PROJECTION_FEED_RESOLUTION);
+}
+
+/**
+ * Closes a live MJPEG connection: drops the <img> src (aborting the /media
+ * connection and triggering the server's client-disconnect teardown) and
+ * releases the client slot. Idempotent.
+ * @param {Object} runtime - Projection runtime (mode 'live-jpeg').
+ */
+function closeLiveJpegConnection(runtime) {
+  if (!runtime || runtime.mode !== 'live-jpeg' || !runtime.liveConnected) return;
+  runtime.liveConnected = false;
+  _liveMediaConnectionCount = Math.max(0, _liveMediaConnectionCount - 1);
+  if (runtime.image) {
+    runtime.image.removeAttribute('src');
+  }
+  if (typeof runtime._liveRetryTimer === 'function') {
+    clearTimeout(runtime._liveRetryTimer());
+  }
+}
+
+/**
  * Lazily initializes the projection runtime for a record if it doesn't exist yet.
  * @param {Object} record - Camera record.
  * @returns {Object|null} The record's projection runtime.
  */
 function ensureProjectionRuntime(record) {
   if (!record) return null;
-  if (record.projection) return record.projection;
+  if (record.projection) {
+    // Re-activation after a camera switch: the runtime survives (geometry
+    // reuse) but its live connection was closed on deactivation — reopen it.
+    if (record.projection.mode === 'live-jpeg' && !record.projection.liveConnected) {
+      openLiveJpegConnection(record.projection, record.camera);
+    }
+    return record.projection;
+  }
   const runtime = createProjectionRuntime(record);
   record.projection = runtime;
   if (runtime) {
@@ -1993,12 +2140,7 @@ function destroyProjectionRuntime(runtime) {
   }
   // Close the live MJPEG stream: dropping the src aborts the open /media
   // connection (and the server's client-disconnect teardown releases upstream).
-  if (runtime.mode === 'live-jpeg' && runtime.image) {
-    runtime.image.removeAttribute('src');
-    if (typeof runtime._liveRetryTimer === 'function') {
-      clearTimeout(runtime._liveRetryTimer());
-    }
-  }
+  closeLiveJpegConnection(runtime);
   if (runtime.planeEntity && _viewer) {
     _viewer.entities.remove(runtime.planeEntity);
     runtime.planeEntity = null;
@@ -2075,7 +2217,7 @@ function paintPlaceholderThrottled(record, runtime, health) {
     // Nothing loaded and nothing is currently in flight — first connect.
     state = 'loading';
   }
-  paintProjectionPlaceholder(runtime.ctx, record.camera, health, state);
+  paintProjectionPlaceholder(runtime.ctx, record.camera, health, state, runtime.mode);
 }
 
 /**
@@ -3667,6 +3809,27 @@ function getPublicCameraState(record, activeId = null) {
   const health = _healthById.get(camera.id) || null;
   const isActive = camera.id === resolvedActiveId;
   const refreshMs = isActive ? ACTIVE_FRAME_REFRESH_MS : IDLE_FRAME_REFRESH_MS;
+  const feedType = normalizeFeedType(camera.feedType);
+  const isLiveJpeg = feedType === 'mjpeg';
+
+  // Sidebar feed: the ACTIVE camera may hold a live MJPEG connection (one of
+  // the two client slots; the other belongs to the projection plane). All
+  // other cameras — and the active camera when no slot is free — get the
+  // snapshot frame URL. The slot is reserved for the active camera so the URL
+  // is stable across uiState() notifications (a changing URL would make the
+  // sidebar <img> reconnect every notify).
+  let feedUrl;
+  let feedMode;
+  if (isActive && isLiveJpeg && liveMediaSlotAvailable()) {
+    _sidebarLiveReservedForId = camera.id;
+    feedUrl = mediaUrlFor(camera, SIDEBAR_FEED_RESOLUTION);
+    feedMode = 'live';
+  } else {
+    if (_sidebarLiveReservedForId === camera.id) _sidebarLiveReservedForId = null;
+    feedUrl = frameUrlFor(camera, refreshMs);
+    feedMode = isLiveJpeg ? 'snapshot' : (isVideoFeedType(feedType) ? 'video' : 'image');
+  }
+
   return {
     id: camera.id,
     name: camera.name,
@@ -3681,7 +3844,9 @@ function getPublicCameraState(record, activeId = null) {
     elevationM: camera.absoluteHeightM,
     mountHeightM: camera.mountHeightM,
     active: isActive,
-    feedType: camera.feedType,
+    feedType,
+    feedUrl,
+    feedMode,
     sourceKind: health?.sourceKind || camera.sourceKind || (camera.feedConfigured ? 'configured' : 'seed'),
     sourceStatus: health?.status || 'unknown',
     sourceMessage: health?.message || '',
@@ -3970,6 +4135,13 @@ export function setActiveCamera(cameraId) {
     if (!cctvRecordNeedsActivation(cameraId, _activeCameraId, record)) {
       return CCTV_ACTIVATION_RESULT.UNCHANGED;
     }
+    // Frame-only cameras have no projection runtime, but the PREVIOUS active
+    // camera may have held a live projection connection — release it so its
+    // client slot frees for the newly active camera's sidebar feed.
+    if (previousActiveRecord && previousActiveRecord !== record) {
+      closeLiveJpegConnection(previousActiveRecord.projection);
+    }
+    _sidebarLiveReservedForId = null;
     _activeCameraId = cameraId;
     _autoHopSuspended = false;
     refreshProjectionImage(record, true); // no-op with null position guard below
@@ -3991,10 +4163,18 @@ export function setActiveCamera(cameraId) {
   // A real activation creates projection work — wake the self-stopping loop.
   startProjectionLoop();
   if (previousActiveRecord && previousActiveRecord !== record) {
+    // Close the previous active camera's live projection connection so its
+    // client slot frees for the newly active camera. The runtime itself is
+    // kept for geometry reuse; only the streaming <img> is released (it
+    // reopens on re-activation via ensureProjectionRuntime).
+    closeLiveJpegConnection(previousActiveRecord.projection);
     clearProbeClampOnDeactivation(previousActiveRecord, (previous) => {
       applyFrustumGeometry(previous, groundAltFor(previous));
     });
   }
+  // The sidebar live slot follows the active camera; the new camera's
+  // reservation is made in getPublicCameraState on the next notify.
+  _sidebarLiveReservedForId = null;
   // The clicked camera leaves the ambient quota immediately (never graced).
   // Shipped behavior publishes no card for it because the monitor plane is
   // now the active representation; the opt-in protected-card path republishes
@@ -4062,6 +4242,10 @@ export function deactivateActiveCamera() {
   _activeCameraId = null;
   _autoHopSuspended = true;
   record.activationDone = false;
+  // Release the active camera's live projection connection and sidebar slot —
+  // with no active camera there is nothing to stream.
+  closeLiveJpegConnection(record.projection);
+  _sidebarLiveReservedForId = null;
   clearProbeClampOnDeactivation(record, (previous) => {
     applyFrustumGeometry(previous, groundAltFor(previous));
   });
@@ -4275,6 +4459,10 @@ function clearRuntimeState() {
   // Idempotent — also covers a re-init without a prior destroy().
   teardownAmbientCards();
   clearProjectionOverlay();
+  // destroyCoverageEntities() already closed every live projection connection
+  // (decrementing the counter); reset defensively so a re-init starts clean.
+  _liveMediaConnectionCount = 0;
+  _sidebarLiveReservedForId = null;
   _records = [];
   _recordById = new Map();
   _healthById = new Map();
@@ -4799,6 +4987,9 @@ const cctvLayer = {
     _removeFocusAppearListener = null;
     stopProjectionLoop();
     stopGeometryLoadQueue();
+    // The sidebar live slot is layer-scoped — release it so a re-enable
+    // re-reserves cleanly (the sidebar <img> is cleared by the UI on disable).
+    _sidebarLiveReservedForId = null;
     // Ambient cards tear down COMPLETELY on disable (owner design point 6):
     // source entries, pacer timer, in-flight handlers, and caches.
     teardownAmbientCards();
