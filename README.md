@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🦞 Devil's Eye
+# 🦞 EVOL Eye
 
 ### A spatial-intelligence console for planet Earth — forked, rebranded, and extended.
 
@@ -14,7 +14,7 @@ Runs locally in your browser from source you can inspect.
 
 ## 🕵️ What This Is
 
-**Devil's Eye is an independent fork of [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view)**
+**EVOL Eye is an independent fork of [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view)**
 by [Bilawal Sidhu](https://github.com/bilawalsidhu). The original project is an
 open-source 3D geospatial intelligence client and a canvas for fusing public
 signals. This fork keeps that foundation, rebrands it, and extends it with its
@@ -25,7 +25,7 @@ that baseline was excellent to build on.
 
 ### What's different in this fork
 
-- **Rebranded UI** — "God's Eye View" → **Devil's Eye**, with a red
+- **Rebranded UI** — "God's Eye View" → **EVOL Eye**, with a red
   intelligence-console theme (the upstream's cyan accent swept to a spy-tool
   red). Branding, logo, loader, and chrome are ours.
 - **Redacted upstream marketing** — this README and the repo metadata describe
@@ -105,7 +105,7 @@ file edit.
 
 ```bash
 git clone https://github.com/R0U5/Devils-Eye.git
-cd devils-eye
+cd evol-eye
 npm install
 npm run doctor
 npm run dev        # or: ./scripts/dev-fresh.sh (clears Vite cache, pulls keys)
@@ -120,10 +120,10 @@ end-of-life Node versions.
 
 Ready-to-run Disk replaces the whole terminal dance. It checks Node.js (and
 bundles it if missing), downloads the latest app source automatically, runs
-`npm install` and the production build, drops in a double-click **Devil's Eye**
+`npm install` and the production build, drops in a double-click **EVOL Eye**
 launcher and desktop shortcut, and starts the app.
 
-- **Windows:** grab the `Devils-Eye-Setup-*.zip` from
+- **Windows:** grab the `Evol-Eye-Setup-*.zip` from
   [Releases](https://github.com/R0U5/Devils-Eye/releases), extract it, and
   double-click `bootstrap.cmd`. No prerequisites — it provisions Node itself.
 - **macOS / Linux:** run `./bootstrap.sh` inside the same zip.
@@ -234,7 +234,7 @@ Billing figures change — always check provider pricing pages before relying on
 
 ```
 src/
-├── main.js                 # Bootstrap: tiles, layer registration, window.__devilsEyeView
+├── main.js                 # Bootstrap: tiles, layer registration, window.__evolEyeView
 ├── ui.js                   # Runtime UI — panels, HUD, styles, control facade
 ├── mapStackController.js   # Basemap switching — Esri / Dark / Google 3D / ion stacks
 ├── data/                   # One module per layer + orchestration + context store
@@ -251,14 +251,14 @@ See [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) for the authoritative runti
 
 ## ⚠️ Responsible Use
 
-Devil's Eye runs on **public data, clear sources, and local-first execution.**
+EVOL Eye runs on **public data, clear sources, and local-first execution.**
 Anything involving a private key is brokered server-side. It models **events,
 assets, infrastructure, and systems** — aircraft, vessels, satellites, fires,
 cameras, cities. It does not build features for named-person search, face
 recognition, or tracking individuals.
 
 > [!IMPORTANT]
-> Devil's Eye is an exploratory visualization of public and third-party data.
+> EVOL Eye is an exploratory visualization of public and third-party data.
 > Data may be delayed, incomplete, modeled, inferred, or wrong. Do not use it
 > for flight or maritime navigation, emergency response, medical or health
 > decisions, investment decisions, or other safety-critical or operational
@@ -292,6 +292,6 @@ you see here, check out the original too — this fork stands on it.
 
 <div align="center">
 
-**🦞 Devil's Eye — watch the world live, from your own terminal.**
+**🦞 EVOL Eye — watch the world live, from your own terminal.**
 
 </div>
