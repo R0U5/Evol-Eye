@@ -24,7 +24,7 @@ Updated: September 7, 2026
 > **2026-09-07 — "Installer for dummies" (`installer/`).** A no-terminal
 > onboarding path that checks/downloads missing dependencies (Node required;
 > Python optional, report-only, used solely to regenerate the Axis camera
-> catalog), pulls the app source from `R0U5/Devils-Eye` (currently **private**,
+> catalog), pulls the app source from `R0U5/Evol-Eye` (currently **private**,
 > so a GitHub fine-grained token is accepted; it lives only in installer memory
 > and is never persisted — `manifest.json`'s `repoIsPrivate` is the single flip
 > when it goes public), runs `npm install` + `npm run build`, writes a

@@ -18,14 +18,14 @@ export const INSTALL_STEPS = [
 export const DEFAULT_MANIFEST = Object.freeze({
   name: "EVOL Eye",
   owner: 'R0U5',
-  repo: 'Devils-Eye',
+  repo: 'Evol-Eye',
   defaultBranch: 'main',
   repoIsPrivate: true,
   installerPort: DEFAULT_INSTALLER_PORT,
   appPort: DEFAULT_APP_PORT,
   recommendedNodeVersion: RECOMMENDED_NODE_VERSION,
   minNodeVersion: MIN_NODE_VERSION,
-  homepage: 'https://github.com/R0U5/Devils-Eye',
+  homepage: 'https://github.com/R0U5/Evol-Eye',
 });
 
 export function normalizeManifest(raw = {}) {
