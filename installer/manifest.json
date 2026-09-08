@@ -1,5 +1,5 @@
 {
-  "name": "Devil's Eye",
+  "name": "EVOL Eye",
   "owner": "R0U5",
   "repo": "Devils-Eye",
   "defaultBranch": "main",
@@ -10,8 +10,8 @@
   "minNodeVersion": "20.0.0",
   "homepage": "https://github.com/R0U5/Devils-Eye",
   "installDir": {
-    "win32": "%LOCALAPPDATA%\\DevilsEye",
-    "darwin": "~/Library/Application Support/DevilsEye",
-    "linux": "~/.local/share/devils-eye"
+    "win32": "%LOCALAPPDATA%\\EvolEye",
+    "darwin": "~/Library/Application Support/EvolEye",
+    "linux": "~/.local/share/evol-eye"
   }
 }

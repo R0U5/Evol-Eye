@@ -8,7 +8,7 @@ import { buildZip } from './zipcode.mjs';
 import { RECOMMENDED_NODE_VERSION, nodeDistSpec } from './core.mjs';
 
 export const FIXTURE_PACKAGE = JSON.stringify({
-  name: 'devils-eye-fixture',
+  name: 'evol-eye-fixture',
   version: '0.0.1',
   private: true,
   scripts: { build: 'node build.mjs' },
@@ -21,7 +21,7 @@ await writeFile('dist/index.html', 'fixture-built');
 console.log('BUILD OK');
 `;
 
-export function makeRepoArchive(rootName = 'Devils-Eye-main', { withoutPackage = false } = {}) {
+export function makeRepoArchive(rootName = 'Evol-Eye-main', { withoutPackage = false } = {}) {
   const entries = [
     { path: `${rootName}/index.html`, data: '<h1>fixture</h1>' },
     { path: `${rootName}/src/hello.txt`, data: 'hello' },
@@ -40,7 +40,7 @@ process.exit(0);
 `;
   let buffer;
   if (spec.format === 'tar.gz') {
-    const staging = await fsp.mkdtemp(path.join(process.env.TEMP || '/tmp', 'gev-fake-node-'));
+    const staging = await fsp.mkdtemp(path.join(process.env.TEMP || '/tmp', 'evol-fake-node-'));
     try {
       const binDst = path.join(staging, spec.topDir, spec.binRel);
       const npmDst = path.join(staging, spec.topDir, spec.npmRel);
@@ -111,7 +111,7 @@ export function startFixtureServer({ repoZip = null, nodeDist = null, failAll = 
   });
 }
 
-export async function tempDir(prefix = 'gev-installer-test-') {
+export async function tempDir(prefix = 'evol-installer-test-') {
   return fsp.mkdtemp(path.join(process.env.TEMP || '/tmp', prefix));
 }
 

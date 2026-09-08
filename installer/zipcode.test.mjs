@@ -39,7 +39,7 @@ test('store method round trip', () => {
 });
 
 test('unzipToDisk writes a faithful tree and honors onEntry', async () => {
-  const dir = await tempDir('gev-zip-');
+  const dir = await tempDir('evol-zip-');
   const zip = buildZip([
     { path: 'root/package.json', data: '{}' },
     { path: 'root/src/a.js', data: 'a' },
@@ -54,7 +54,7 @@ test('unzipToDisk writes a faithful tree and honors onEntry', async () => {
 
 test('unsafe traversal entries are refused', async () => {
   const zip = buildZip([{ path: 'sub/../../evil.txt', data: 'x' }]);
-  const dir = await tempDir('gev-zip-');
+  const dir = await tempDir('evol-zip-');
   await assert.rejects(unzipToDisk(zip, dir), (err) => err instanceof ZipError && err.code === 'ZIP_TRAVERSAL');
   await assert.rejects(fsp.stat(path.join(dir, 'evil.txt')));
 });

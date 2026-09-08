@@ -46,7 +46,7 @@ function Get-NodeBin {
   if ($Actual -ne $Expected) { throw "Node.js download failed checksum verification (expected $Expected, got $Actual)" }
   Write-Host "[runtime] Node.js download verified." -ForegroundColor Green
 
-  $RuntimeDir = Join-Path $Root '.gev-runtime'
+  $RuntimeDir = Join-Path $Root '.evol-runtime'
   New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
   $Expanded = Join-Path $RuntimeDir $DistName
   if (Test-Path -LiteralPath $Expanded) { Remove-Item -Recurse -Force -LiteralPath $Expanded }
@@ -57,7 +57,7 @@ function Get-NodeBin {
   return Join-Path $Target 'node.exe'
 }
 
-$Node = Join-Path $Root '.gev-runtime\node\node.exe'
+$Node = Join-Path $Root '.evol-runtime\node\node.exe'
 $NodeVersion = Get-NodeVersion $Node
 if ($NodeVersion) {
   Write-Host "[runtime] Using bundled runtime v$NodeVersion" -ForegroundColor Green
@@ -76,11 +76,11 @@ if ($NodeVersion) {
 
 if (-not $Node -or -not (Test-Path -LiteralPath $Node)) { throw 'Could not locate a usable Node.js runtime' }
 
-$env:GEV_BOOTSTRAP_NODE = $Node
+$env:EVOL_BOOTSTRAP_NODE = $Node
 $Port = $Manifest.installerPort
 $ServerScript = Join-Path $Root 'server.mjs'
 
-Write-Host "[installer] Starting Devil's Eye installer on http://127.0.0.1:$Port ..." -ForegroundColor Cyan
+Write-Host "[installer] Starting EVOL Eye installer on http://127.0.0.1:$Port ..." -ForegroundColor Cyan
 $Proc = Start-Process -FilePath $Node -ArgumentList @($ServerScript) -WorkingDirectory $Root -PassThru -NoNewWindow
 
 $Ready = $false

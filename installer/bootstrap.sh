@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Devil's Eye installer bootstrap - zero-prerequisite launcher for macOS and Linux.
+# EVOL Eye installer bootstrap - zero-prerequisite launcher for macOS and Linux.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +18,7 @@ version_ok() {
 }
 
 resolve_node() {
-  local bundled="$ROOT/.gev-runtime/node/bin/node"
+  local bundled="$ROOT/.evol-runtime/node/bin/node"
   if [ -x "$bundled" ]; then
     NODE="$bundled"
     log "Using bundled runtime v$("$NODE" --version | tr -d 'v')"
@@ -75,7 +75,7 @@ resolve_node() {
   if [ "$actual" != "$expected" ]; then die "Node.js download failed checksum verification"; fi
   log "Node.js download verified."
 
-  local runtime_dir="$ROOT/.gev-runtime"
+  local runtime_dir="$ROOT/.evol-runtime"
   mkdir -p "$runtime_dir"
   tar -xzf "$tmp/$base.tar.gz" -C "$runtime_dir"
   if [ -e "$runtime_dir/node" ]; then rm -rf "$runtime_dir/node"; fi
@@ -87,8 +87,8 @@ resolve_node() {
 
 resolve_node
 
-export GEV_BOOTSTRAP_NODE="$NODE"
-log "Starting Devil's Eye installer on http://127.0.0.1:$PORT ..."
+export EVOL_BOOTSTRAP_NODE="$NODE"
+log "Starting EVOL Eye installer on http://127.0.0.1:$PORT ..."
 "$NODE" "$ROOT/server.mjs" &
 SERVER_PID=$!
 
