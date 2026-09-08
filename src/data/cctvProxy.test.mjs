@@ -2,11 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CCTV_FRAME_FETCH_TIMEOUT_MS,
+  LIVE_MEDIA_STREAM_CAP,
   deriveAxisSnapshotUrls,
   extractFirstJpegFromMjpg,
   fetchCctvImageFromUpstream,
   isMjpgStreamUrl,
   isPublicCctvUrl,
+  liveStreamSlotAvailable,
+  normalizeSourceFeedType,
 } from '../../vite.config.js';
 
 test('CCTV upstream frame fetch supplies a bounded abort signal', async () => {
@@ -191,4 +194,38 @@ test('isPublicCctvUrl rejects private, loopback, link-local, and credential URLs
   assert.equal(isPublicCctvUrl('http://user:pass@example.com/frame.jpg'), false);
   assert.equal(isPublicCctvUrl('ftp://example.com/frame.jpg'), false);
   assert.equal(isPublicCctvUrl('not a url'), false);
+});
+
+test('normalizeSourceFeedType: the URL guard wins over a mislabeled feedType', () => {
+  // The Axis catalog bug: MJPG stream URLs labeled 'image'. The server must
+  // self-heal the catalog at normalize time so the client never sees 'image'.
+  assert.equal(
+    normalizeSourceFeedType('image', 'http://85.4.30.236:80/mjpg/video.mjpg'),
+    'mjpeg',
+  );
+  assert.equal(
+    normalizeSourceFeedType('image', 'http://85.4.30.236:80/mjpg/video.mjpg?resolution=640x480'),
+    'mjpeg',
+  );
+  // Non-MJPG URLs keep their declared type.
+  assert.equal(
+    normalizeSourceFeedType('image', 'https://cctv.austinmobility.io/image/123.jpg'),
+    'image',
+  );
+  assert.equal(
+    normalizeSourceFeedType('mjpeg', 'https://cctv.austinmobility.io/image/123.jpg'),
+    'mjpeg',
+  );
+  // Missing URL falls back to the declared type.
+  assert.equal(normalizeSourceFeedType('image', ''), 'image');
+  assert.equal(normalizeSourceFeedType('mjpg', ''), 'mjpeg');
+});
+
+test('live stream cap: server allows up to LIVE_MEDIA_STREAM_CAP concurrent streams', () => {
+  // Fresh module state has no open streams, so a slot is available.
+  assert.equal(liveStreamSlotAvailable(), true);
+  // The server cap is deliberately higher than the client cap (2) so a second
+  // tab or a non-cooperating client can't starve the primary feed.
+  assert.equal(LIVE_MEDIA_STREAM_CAP, 4);
+  assert.ok(LIVE_MEDIA_STREAM_CAP >= 2, 'server cap must cover at least one client at its cap');
 });

@@ -6531,6 +6531,32 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   background: rgba(255, 72, 72, 0.11);
 }
 
+/* Live MJPEG feed: cyan pulse so the user can tell a realtime stream from a
+   periodic snapshot still at a glance. */
+#cctv-source-badge[data-frame-state='live'] {
+  color: #9defff;
+  border-color: rgba(0, 212, 255, 0.55);
+  background: rgba(0, 212, 255, 0.12);
+  animation: cctv-live-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes cctv-live-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(0, 212, 255, 0);
+  }
+  50% {
+    box-shadow: 0 0 10px 1px rgba(0, 212, 255, 0.35);
+  }
+}
+
+/* Snapshot still (image camera or live-capable camera at the connection cap):
+   amber tint, no pulse. */
+#cctv-source-badge[data-frame-state='snapshot'] {
+  color: #ffe59b;
+  border-color: rgba(255, 205, 92, 0.4);
+  background: rgba(255, 205, 92, 0.08);
+}
+
 .cctv-summary-label {
   font-family: var(--font-mono);
   font-size: 8px;
