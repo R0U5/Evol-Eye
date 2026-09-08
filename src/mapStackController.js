@@ -100,6 +100,7 @@ export class MapStackController {
     initialStack = 'photoreal',
     onChange = null,
     onError = null,
+    radarOverlayDeps = {},
   } = {}) {
     this.viewer = viewer;
     this.googleTileset = googleTileset;
@@ -138,8 +139,17 @@ export class MapStackController {
     // RainViewer radar overlay — lives for the session, starts hidden, toggled
     // via setRadarOverlayEnabled(). Restored to its last persisted state when a
     // globe stack is activated so the overlay is visible whenever the user wants
-    // it on a non-photoreal globe.
-    this._radarOverlay = new RainViewerOverlayController(viewer);
+    // it on a non-photoreal globe. onStateChange rebroadcasts as a window event
+    // so the UI can reconcile its button when init completes / a retry exhausts
+    // (otherwise the button can sit stuck in "pending").
+    this._radarOverlay = new RainViewerOverlayController(viewer, {
+      onStateChange: () => {
+        window.dispatchEvent(new CustomEvent('gev:radar-state-changed'));
+      },
+      // Test seam: unit tests inject fake Cesium factories so the overlay can
+      // build a layer without a WebGL/Cesium runtime.
+      deps: radarOverlayDeps,
+    });
 
     if (!this.getStack(this._activeId) || !this.isStackAvailable(this._activeId)) {
       this._activeId = googleTileset ? 'photoreal' : 'esri-imagery';
@@ -182,24 +192,27 @@ export class MapStackController {
   /**
    * Show or hide the RainViewer radar overlay.
    *
-   * On photoreal stacks the overlay is always hidden regardless of `enabled`,
-   * because Google 3D Tiles render a complete, opaque scene — a radar overlay
-   * would be visually incoherent against the 3D buildings/terrain. On globe
+   * The radar overlay renders on the Cesium globe surface (it is an imagery
+   * layer). On photoreal stacks the globe is hidden (`globe.show = false`), so
+   * the overlay CANNOT render over the Google 3D tiles — the UI surfaces this
+   * honestly by showing the Radar button as unavailable on photoreal. On globe
    * stacks (OSM, Esri, Bing) the overlay is shown/hidden per the user's
    * preference.
    *
    * The radar controller persists its own enabled state in localStorage, so a
-   * page reload restores the last setting.
+   * page reload restores the last setting, and the preference is preserved
+   * across stack switches (switching to photoreal does not clobber it).
    *
    * @param {boolean} enabled
    */
   setRadarOverlayEnabled(enabled) {
-    // The radar overlay applies on EVERY map stack, including photoreal. The
-    // old code suppressed it over the Google 3D tiles (a design opinion about
-    // visual coherence), which made the Radar button a silent no-op on the
-    // DEFAULT photoreal stack — the reported bug. The flat precipitation layer
-    // now draws over any basemap; it already uses translucent alpha (0.65) so
-    // the underlying imagery stays legible.
+    // The radar overlay is a globe-surface imagery layer. It renders on globe
+    // stacks (OSM, Esri, Bing) and is preserved-but-not-renderable on photoreal,
+    // where the globe is hidden behind the Google 3D tiles. The UI shows the
+    // Radar button as unavailable on photoreal rather than silently doing
+    // nothing. (An earlier comment claimed the flat layer "draws over any
+    // basemap" — that was false: Cesium imagery renders on the globe, and the
+    // globe is hidden on photoreal.)
     this._radarOverlay.setEnabled(enabled);
   }
 
@@ -322,9 +335,13 @@ export class MapStackController {
     if (this.googleTileset) this.googleTileset.show = true;
     this.viewer.scene.globe.show = false;
     // Radar overlay is intentionally NOT touched here: it keeps its own
-    // persisted preference across every map stack (previously forced off over
-    // photoreal — see setRadarOverlayEnabled). It overlays the 3D tiles with
-    // translucent alpha rather than being hidden.
+    // persisted preference across every map stack. It CANNOT render over the
+    // photoreal tiles — it is a globe-surface imagery layer and the globe is
+    // hidden here (`globe.show = false`) — so the UI shows the Radar button as
+    // unavailable on photoreal. The preference is preserved so switching back
+    // to a globe stack restores it. (An earlier comment claimed the overlay
+    // "overlays the 3D tiles with translucent alpha" — that was false; Cesium
+    // imagery renders on the globe, which is hidden on photoreal.)
     // Terrain is left UNTOUCHED here. The photoreal globe is hidden
     // (`globe.show = false`), so the terrain provider is inert — it renders and
     // streams nothing. Routing this through `_setWorldTerrainEnabled(false)`
@@ -357,9 +374,10 @@ export class MapStackController {
     await this._setWorldTerrainEnabled(!!this.cesiumToken, gen);
 
     // Restore the radar overlay to its last persisted state when entering a
-    // globe stack. On the photoreal stack the overlay is always hidden (see
-    // setRadarOverlayEnabled). Radar state is NOT tied to map stack switches —
-    // the user may have had radar on before switching away and back.
+    // globe stack. On the photoreal stack the overlay cannot render (the globe
+    // is hidden), so it is preserved-but-not-shown there; entering a globe
+    // stack re-applies the preference. Radar state is NOT tied to map stack
+    // switches — the user may have had radar on before switching away and back.
     this._radarOverlay.setEnabled(this._radarOverlay._enabled);
 
     return resolution;
