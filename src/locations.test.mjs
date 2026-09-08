@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import * as Cesium from 'cesium';
 import {
   CANCELLED_SEARCH,
+  nominatimGoogleTypes,
   placeFramingViewport,
   PLACE_VIEWPORT_MAX_SPAN_KM,
   PLACE_ANCHOR_OFFSET_RATIO,
@@ -109,6 +110,52 @@ test('existing modes unchanged: admin, city, neighborhood, precise POI', () => {
   assert.equal(geocodeNavigationMode(['tourist_attraction', 'point_of_interest', 'establishment']), 'precise-place');
   assert.equal(geocodeNavigationMode(['premise']), 'precise-place');
   assert.equal(geocodeNavigationMode([]), 'precise-place');
+});
+
+// ── Nominatim → Google type mapping: house/street-address → premise ─────────
+// 2026-09-08 bug fix: Nominatim results carry address.country_code / address.state
+// for ALL addressdetails=1 responses, so the old `|| address.country_code` guard
+// misclassified house results as ['country'] → region-overview. The fix removes
+// the address-field fallbacks from the admin branch and adds an explicit
+// house/building check.
+
+test('nominatimGoogleTypes: house address maps to premise', () => {
+  // The reported bug: "5524 53rd Ave Sacramento California"
+  const house = {
+    class: 'place', type: 'house', addresstype: 'place',
+    address: {
+      house_number: '5524', road: '53rd Avenue',
+      neighbourhood: 'College-Glen', suburb: 'College-Glen',
+      city: 'Sacramento', state: 'California', county: 'Sacramento County',
+      country: 'United States', country_code: 'us',
+    },
+  };
+  assert.deepEqual(nominatimGoogleTypes(house), ['premise']);
+});
+
+test('nominatimGoogleTypes: address.house_number fallback also maps to premise', () => {
+  const result = {
+    class: 'place', type: 'residential',
+    address: { house_number: '42', road: 'Main St', country_code: 'us' },
+  };
+  assert.deepEqual(nominatimGoogleTypes(result), ['premise']);
+});
+
+test('nominatimGoogleTypes: city is locality, not country (address.country_code is omnipresent)', () => {
+  const city = {
+    class: 'place', type: 'city',
+    address: { city: 'Sacramento', state: 'California', country_code: 'us' },
+  };
+  assert.deepEqual(nominatimGoogleTypes(city), ['locality']);
+});
+
+test('nominatimGoogleTypes: country / state / county type-only classification', () => {
+  const country = { class: 'place', type: 'country', address: { country_code: 'us' } };
+  assert.deepEqual(nominatimGoogleTypes(country), ['country']);
+  const state = { class: 'place', type: 'state', address: { country_code: 'us', state: 'California' } };
+  assert.deepEqual(nominatimGoogleTypes(state), ['administrative_area_level_1']);
+  const county = { class: 'place', type: 'county', address: { country_code: 'us', county: 'Sacramento' } };
+  assert.deepEqual(nominatimGoogleTypes(county), ['administrative_area_level_2']);
 });
 
 test('admin types win over area types when both present', () => {
