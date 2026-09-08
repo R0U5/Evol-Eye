@@ -2340,7 +2340,6 @@ export class StyleManager {
     this._cctvFocusBtn = document.getElementById('cctv-focus-btn');
     this._cctvCoverageBtn = document.getElementById('cctv-coverage-btn');
     this._cctvAutoHopBtn = document.getElementById('cctv-auto-hop-btn');
-    this._cctvProjectionBtn = document.getElementById('cctv-projection-btn');
     this._cctvQualityChip = document.getElementById('cctv-quality-chip');
     this._cctvAdjustBtn = document.getElementById('cctv-adjust-btn');
     this._cctvCalReadout = document.getElementById('cctv-cal-readout');
@@ -6245,11 +6244,6 @@ export class StyleManager {
       this._dataManager?.setLayerParams('cctv', { autoHop: !current }, { origin: 'user' });
     });
 
-    this._cctvProjectionBtn?.addEventListener('click', () => {
-      const current = this._cctvState?.showProjection !== false;
-      this._dataManager?.setLayerParams('cctv', { showProjection: !current }, { origin: 'user' });
-    });
-
     this._cctvAdjustBtn?.addEventListener('click', () => {
       const current = !!this._cctvState?.calibrationMode;
       this._dataManager?.setLayerParams('cctv', { calibrationMode: !current }, { origin: 'user' });
@@ -6684,13 +6678,6 @@ export class StyleManager {
       this._cctvAutoHopBtn.disabled = !enabled;
     }
 
-    if (this._cctvProjectionBtn) {
-      const showProjection = state?.showProjection !== false;
-      this._cctvProjectionBtn.classList.toggle('active', showProjection);
-      this._cctvProjectionBtn.textContent = showProjection ? 'PROJECTION ON' : 'PROJECTION OFF';
-      this._cctvProjectionBtn.disabled = !enabled;
-    }
-
     if (this._cctvQualityChip) {
       // CAL badge (cctv-v2 design §3b, amended by LOCKED §9.2 — panel-only,
       // no in-world tint): three states driven by cctv.js's deriveCalBadge,
@@ -6714,7 +6701,9 @@ export class StyleManager {
         const provider = activeCamera.sourceLabel || activeCamera.provider || 'Configured Source';
         const statusMsg = activeCamera.sourceMessage ? ` · ${activeCamera.sourceMessage}` : '';
         const calBadge = activeCamera.calBadge ? this._calBadgeLabel(activeCamera.calBadge) : '';
-        const projLabel = state?.showProjection !== false ? 'MONITOR' : 'OFF';
+        // Projection is always on (toggle removed 2026-09-07) — the meta
+        // always reports MONITOR, never a stale OFF state.
+        const projLabel = 'MONITOR';
         this._cctvMeta.textContent = `${activeCamera.city} · HDG ${Math.round(activeCamera.headingDeg)}° · FOV ${Math.round(activeCamera.fovDeg)}° · RANGE ${Math.round(activeCamera.rangeM)}m · ${projLabel}${calBadge ? ` · ${calBadge}` : ''} · ${provider}${statusMsg}`;
       } else if (cameras.length > 0) {
         this._cctvMeta.textContent = enabled
