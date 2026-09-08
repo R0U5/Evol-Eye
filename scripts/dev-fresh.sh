@@ -269,8 +269,8 @@ case "${HOST}" in
     echo "!! This dev server brokers your configured API keys (OpenAI,"
     echo "!! OpenSky, AISStream, TomTom, FIRMS, LL2, Google) to ANYONE who can"
     echo "!! reach it on the network. Use only on networks you trust."
-    echo "!! Consider the opt-in per-IP throttles GEV_RATELIMIT_OPENAI_PER_MIN"
-    echo "!! and GEV_RATELIMIT_GOOGLE_PER_MIN (see .env.example) — and note"
+    echo "!! Consider the opt-in per-IP throttles EVOL_RATELIMIT_OPENAI_PER_MIN"
+    echo "!! and EVOL_RATELIMIT_GOOGLE_PER_MIN (see .env.example) — and note"
     echo "!! they are NOT billing caps; set provider-side budget alerts too."
     if [[ -n "${LAN_IP}" ]]; then
       echo "!! LAN URL: http://${LAN_IP}:${PORT}/"
@@ -322,7 +322,7 @@ case "${OPENSKY_AUTH_MODE}" in
     echo "OpenSky auth: disabled (anonymous mode)"
     ;;
 esac
-[[ -n "${OPENAI_API_KEY}" ]] && echo "OpenAI key (voice + HUD summary): configured" || echo "OpenAI key (voice + HUD summary): not set — GEV MIC disabled"
+[[ -n "${OPENAI_API_KEY}" ]] && echo "OpenAI key (voice + HUD summary): configured" || echo "OpenAI key (voice + HUD summary): not set — EVOL MIC disabled"
 [[ -n "${AISSTREAM_API_KEY}" ]] && echo "AISStream key (live vessels): configured" || echo "AISStream key (live vessels): not set — ships layer empty"
 if [[ -n "${GOOGLE_MAPS_API_KEY}" ]]; then
   echo "Startup map: Google Photorealistic 3D Tiles (direct)"
@@ -377,7 +377,7 @@ put_env_if_set CESIUM_ION_TOKEN "${CESIUM_ION_TOKEN}"
 put_env_if_set TOMTOM_API_KEY "${TOMTOM_API_KEY}"
 put_env_if_set FIRMS_MAP_KEY "${FIRMS_MAP_KEY}"
 put_env_if_set LL2_API_TOKEN "${LL2_API_TOKEN}"
-put_env GEV_LAUNCHER "dev-fresh"
-put_env GEV_KEY_SETUP_EXTERNAL_KEYS "${KEY_SETUP_EXTERNAL_KEYS_CSV}"
+put_env EVOL_LAUNCHER "dev-fresh"
+put_env EVOL_KEY_SETUP_EXTERNAL_KEYS "${KEY_SETUP_EXTERNAL_KEYS_CSV}"
 
 env ${DEV_UNSET[@]+"${DEV_UNSET[@]}"} "${DEV_ENV[@]}" "${DEV_COMMAND[@]}" --host "${HOST}" --port "${PORT}" --force

@@ -91,9 +91,9 @@ test('nodeDistSpec maps platforms and builds official URLs', () => {
 
 test('defaultInstallDir is per-user and platform-aware', () => {
   const win = defaultInstallDir('win32', { localAppData: 'C:\\Users\\tester\\AppData\\Local' });
-  assert.ok(win.endsWith('DevilsEye'), win);
+  assert.ok(win.endsWith('EvolEye'), win);
   const linux = defaultInstallDir('linux', { homedir: '/home/tester' });
-  assert.ok(linux.endsWith(path.join('.local', 'share', 'devils-eye')), linux);
+  assert.ok(linux.endsWith(path.join('.local', 'share', 'evol-eye')), linux);
   const darwinDefault = defaultInstallDir('darwin', { homedir: '/Users/tester' });
   assert.ok(darwinDefault.includes('Application Support'), darwinDefault);
 });
@@ -132,8 +132,8 @@ test('shasum line matching is strict about the file name', () => {
 test('sanitizeInstallDir resolves and rejects junk', () => {
   assert.equal(sanitizeInstallDir(''), null);
   assert.equal(sanitizeInstallDir(null), null);
-  const resolved = sanitizeInstallDir('C:\\Users\\x\\DevilsEye');
-  assert.ok(resolved.endsWith('DevilsEye'));
+  const resolved = sanitizeInstallDir('C:\\Users\\x\\EvolEye');
+  assert.ok(resolved.endsWith('EvolEye'));
   assert.ok(resolved.length >= 3);
 });
 

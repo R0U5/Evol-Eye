@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DataLayerManager } from '../data/manager.js';
-import { controlRadio, createGevActionRunner } from './gevActions.js';
+import { controlRadio, createGevActionRunner } from './evolActions.js';
 import {
   computeDownscale,
   renderFreshCesiumFrame,
@@ -26,7 +26,7 @@ import {
   readStoredVoiceLimits,
   writeStoredVoiceTier,
   writeStoredVoiceLimits,
-} from './gevRealtime.js';
+} from './evolRealtime.js';
 import { createVoiceCostTracker } from './voiceCost.js';
 
 test('push-to-talk recognizes Space by code or key', () => {
@@ -2594,11 +2594,11 @@ test('voice tier round-trips through storage', () => {
 test('an unset or hand-edited tier reads back as standard', () => {
   assert.equal(readStoredVoiceTier(fakeVoiceStorage()), 'standard');
   assert.equal(
-    readStoredVoiceTier(fakeVoiceStorage({ 'devilsEyeView.voiceCost.tier': 'gpt-4o' })),
+    readStoredVoiceTier(fakeVoiceStorage({ 'evolEyeView.voiceCost.tier': 'gpt-4o' })),
     'standard'
   );
   assert.equal(
-    readStoredVoiceTier(fakeVoiceStorage({ 'devilsEyeView.voiceCost.tier': '__proto__' })),
+    readStoredVoiceTier(fakeVoiceStorage({ 'evolEyeView.voiceCost.tier': '__proto__' })),
     'standard'
   );
 });
@@ -2606,7 +2606,7 @@ test('an unset or hand-edited tier reads back as standard', () => {
 test('writing a bogus tier persists the safe fallback, not the bogus value', () => {
   const storage = fakeVoiceStorage();
   assert.equal(writeStoredVoiceTier('turbo', storage), 'standard');
-  assert.equal(storage.dump()['devilsEyeView.voiceCost.tier'], 'standard');
+  assert.equal(storage.dump()['evolEyeView.voiceCost.tier'], 'standard');
 });
 
 test('a storage that throws never breaks the mic', () => {
@@ -2633,14 +2633,14 @@ test('corrupt stored limits fall back to defaults rather than disarming the cap'
   // A disarmed cap is the dangerous failure — assert we land on the default,
   // not on Infinity.
   const limits = readStoredVoiceLimits(
-    fakeVoiceStorage({ 'devilsEyeView.voiceCost.limits': '{oops' })
+    fakeVoiceStorage({ 'evolEyeView.voiceCost.limits': '{oops' })
   );
   assert.deepEqual(limits, { warnUsd: 2, capUsd: 5 });
 });
 
 test('partially stored limits keep the default for the missing threshold', () => {
   const limits = readStoredVoiceLimits(
-    fakeVoiceStorage({ 'devilsEyeView.voiceCost.limits': '{"warnUsd":0.5}' })
+    fakeVoiceStorage({ 'evolEyeView.voiceCost.limits': '{"warnUsd":0.5}' })
   );
   assert.deepEqual(limits, { warnUsd: 0.5, capUsd: 5 });
 });
@@ -2651,7 +2651,7 @@ test('a disabled threshold survives the storage round-trip', () => {
   // sentinel is what makes disabling persist.
   const storage = fakeVoiceStorage();
   writeStoredVoiceLimits({ warnUsd: 0, capUsd: 0 }, storage);
-  const raw = storage.dump()['devilsEyeView.voiceCost.limits'];
+  const raw = storage.dump()['evolEyeView.voiceCost.limits'];
   assert.ok(!raw.includes('null'), `must not persist null: ${raw}`);
   const restored = readStoredVoiceLimits(storage);
   assert.equal(restored.warnUsd, Infinity);
@@ -3127,7 +3127,7 @@ test('a typed command drops the old response’s queued follow-up confirmation',
   controller.setVoiceSpeaker = () => {};
   controller.recordUsage = () => {};
   controller.updateResponseState({ type: 'response.created', response: { id: 'resp_old' } });
-  controller.queueResponseCreate('Briefly confirm the completed GEV action once.');
+  controller.queueResponseCreate('Briefly confirm the completed EVOL action once.');
   assert.ok(controller.pendingResponseInstructions, 'a follow-up is queued behind the active response');
 
   controller.sendTextCommand('stop');

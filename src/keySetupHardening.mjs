@@ -9,9 +9,9 @@ import {
 /** PowerShell verification for the exact owner-only Windows credential DACL. */
 const WINDOWS_ACL_VERIFY_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
-  '$acl = Get-Acl -LiteralPath $env:GEV_ACL_FILE',
+  '$acl = Get-Acl -LiteralPath $env:EVOL_ACL_FILE',
   'if (-not $acl.AreAccessRulesProtected) { exit 2 }',
-  "$allowed = @($env:GEV_ACL_USER_SID, 'S-1-5-18', 'S-1-5-32-544')",
+  "$allowed = @($env:EVOL_ACL_USER_SID, 'S-1-5-18', 'S-1-5-32-544')",
   '$seen = @{}',
   '$rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))',
   'if ($rules.Count -ne 3) { exit 7 }',
@@ -150,8 +150,8 @@ export function hardenCredentialFile(filepath, {
     ], {
       env: {
         ...environment,
-        GEV_ACL_FILE: filepath,
-        GEV_ACL_USER_SID: sid,
+        EVOL_ACL_FILE: filepath,
+        EVOL_ACL_USER_SID: sid,
       },
       stdio: 'ignore',
       windowsHide: true,

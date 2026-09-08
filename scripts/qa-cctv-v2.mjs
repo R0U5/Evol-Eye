@@ -138,14 +138,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // few frames so the real press/drag still exercises Cesium's input + pick path.
 async function positionPointerForGizmoDrag(page, point, frameCount = 3) {
   await page.evaluate(() => {
-    window.__devilsEyeView.dataManager.layers.get('cctv').module
+    window.__evolEyeView.dataManager.layers.get('cctv').module
       .setParams({ calibrationMode: false });
   });
   await page.mouse.move(point.x, point.y);
   return page.evaluate(async (count) => {
-    const gev = window.__devilsEyeView;
-    gev.dataManager.layers.get('cctv').module.setParams({ calibrationMode: true });
-    const scene = gev.viewer.scene;
+    const evol = window.__evolEyeView;
+    evol.dataManager.layers.get('cctv').module.setParams({ calibrationMode: true });
+    const scene = evol.viewer.scene;
     let rendered = 0;
     return new Promise((resolve) => {
       let settled = false;
@@ -179,7 +179,7 @@ async function positionPointerForGizmoDrag(page, point, frameCount = 3) {
 // instance of one).
 const SERIALIZE_GEOM_SRC = `
   function serializeGeom(camId) {
-    const viewer = window.__devilsEyeView.viewer;
+    const viewer = window.__evolEyeView.viewer;
     const time = viewer.clock.currentTime;
     const roles = ['axis', 'cap'];
     const poly = {};
@@ -273,7 +273,7 @@ const BEARING_SHIFT_SRC = `
 function waitForTilesLoaded(page, timeoutMs = 15000) {
   return page.waitForFunction(
     () => {
-      const scene = window.__devilsEyeView.viewer.scene;
+      const scene = window.__evolEyeView.viewer.scene;
       const prims = scene.primitives;
       for (let i = 0; i < prims.length; i++) {
         const p = prims.get(i);
@@ -367,7 +367,7 @@ async function main() {
     console.log('Loading app...');
     await page.goto(APP_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForFunction(
-      () => window.__devilsEyeView && window.__devilsEyeView.viewer && window.__devilsEyeView.dataManager,
+      () => window.__evolEyeView && window.__evolEyeView.viewer && window.__evolEyeView.dataManager,
       { timeout: 60000 }
     );
     // Let the initial fly-to Austin and first tiles settle.
@@ -382,7 +382,7 @@ async function main() {
     // from unrelated subsystems cancels out by construction.
     // -----------------------------------------------------------------------
     const wrapInstalled = await page.evaluate(() => {
-      const scene = window.__devilsEyeView?.viewer?.scene;
+      const scene = window.__evolEyeView?.viewer?.scene;
       if (!scene || typeof scene.pickFromRay !== 'function' || typeof scene.sampleHeight !== 'function') {
         return false;
       }
@@ -409,7 +409,7 @@ async function main() {
     console.log('Enabling CCTV layer...');
     const c0 = await readCounters();
     await page.evaluate(async () => {
-      const dm = window.__devilsEyeView.dataManager;
+      const dm = window.__evolEyeView.dataManager;
       const entry = dm.layers.get('cctv');
       if (!entry.enabled) await dm.toggle('cctv');
     });
@@ -420,7 +420,7 @@ async function main() {
     // and the one-shot tiles-ready completion pass can re-enqueue the whole
     // catalog once — 30s was calibrated for the old 36-camera default and
     // times out spuriously at the 250-camera default (2026-07-04).
-    const camCount = await page.evaluate(() => window.__devilsEyeView.dataManager.layers.get('cctv').module.getUIState().count);
+    const camCount = await page.evaluate(() => window.__evolEyeView.dataManager.layers.get('cctv').module.getUIState().count);
     // ~800ms per real ground sample measured under SwiftShader (each
     // scene.sampleHeight forces tile loads at the probe point) — real GPU is
     // far faster, so this is a headless-CI ceiling, not an app expectation.
@@ -430,7 +430,7 @@ async function main() {
     console.log(`Waiting for geometry-load queue to drain (N=${camCount}, budget ${Math.round(drainBudgetMs / 1000)}s)...`);
     const drained = await page.waitForFunction(
       () => {
-        const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+        const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
         const ui = mod.getUIState();
         return ui.loading && ui.loading.active === false;
       },
@@ -455,15 +455,15 @@ async function main() {
 
     // Pick the active camera (or nearest) to activate.
     console.log('Activating a camera (focusNearest)...');
-    const activeIdBeforeActivation = await page.evaluate(() => window.__devilsEyeView.dataManager.layers.get('cctv').module.getUIState().activeCameraId);
+    const activeIdBeforeActivation = await page.evaluate(() => window.__evolEyeView.dataManager.layers.get('cctv').module.getUIState().activeCameraId);
     const cBeforeActivate = await readCounters();
     await page.evaluate(() => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.focusNearest({ durationSec: 0.1 });
     });
     await sleep(500); // let the activation's synchronous work (probe + geometry rewrite) land
     const cAfterActivate = await readCounters();
-    const activeId = await page.evaluate(() => window.__devilsEyeView.dataManager.layers.get('cctv').module.getUIState().activeCameraId);
+    const activeId = await page.evaluate(() => window.__evolEyeView.dataManager.layers.get('cctv').module.getUIState().activeCameraId);
 
     const pickDeltaActivation = cAfterActivate.pickFromRay - cBeforeActivate.pickFromRay;
     record('pickFromRay fires exactly once for the activation (§9.1 probe)', pickDeltaActivation === 1,
@@ -478,7 +478,7 @@ async function main() {
       return JSON.stringify(serializeGeom(${JSON.stringify(activeId)}));
     })()`);
     await page.evaluate((id) => {
-      window.__devilsEyeView.dataManager.layers.get('cctv').module.setParams({ selectedCameraId: id });
+      window.__evolEyeView.dataManager.layers.get('cctv').module.setParams({ selectedCameraId: id });
     }, activeId);
     await sleep(400);
     const cAfterReselect = await readCounters();
@@ -573,7 +573,7 @@ async function main() {
     console.log('Applying a calibration patch (heading +30°)...');
     const cBeforeCal = await readCounters();
     await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ calibration: { cameraId: camId, patch: { headingDeg: 30 } } });
     }, activeId);
     await sleep(500);
@@ -591,7 +591,7 @@ async function main() {
     // Undo that patch before the geometry-contract assertions below so they
     // observe the record's steady, unpatched frustum.
     await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ calibration: { cameraId: camId, reset: true } });
     }, activeId);
     await sleep(300);
@@ -603,11 +603,11 @@ async function main() {
     const geomInfo = await page.evaluate(`(function(camId){
       ${SERIALIZE_GEOM_SRC}
       const g = serializeGeom(camId);
-      const viewer = window.__devilsEyeView.viewer;
+      const viewer = window.__evolEyeView.viewer;
       // Overlay unification: the plane label is no longer a native entity —
       // it publishes as a protected host entry under the cctv-projection
       // source. Assert the migrated surface via the host diagnostics.
-      const diag = window.__gevWorldOverlay?.getDiagnostics?.();
+      const diag = window.__evolWorldOverlay?.getDiagnostics?.();
       g.hasLabel = (diag?.entriesBySource?.['cctv-projection'] || 0) >= 1;
       const planeEnt = viewer.entities.getById('cctv-' + camId + '-plane');
       g.planeShow = planeEnt ? planeEnt.show : null;
@@ -629,7 +629,7 @@ async function main() {
     // clear the clamp with margin, run the coincidence check against THAT
     // pose, then reset back to the base pose before the byte-stability check.
     const activeCameraForPatch = await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       return mod.getUIState().cameras.find((c) => c.id === camId);
     }, activeId);
     const basePose = activeCameraForPatch.basePose;
@@ -654,7 +654,7 @@ async function main() {
       for (let attempt = 0; attempt < 3 && !patchGeometryApplied; attempt++) {
         await waitForTilesLoaded(page, 15000);
         await page.evaluate(({ camId, patch }) => {
-          const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+          const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
           mod.setParams({ calibration: { cameraId: camId, patch } });
         }, { camId: activeId, patch: safePatch });
         await sleep(400);
@@ -732,7 +732,7 @@ async function main() {
     // synthetic clamp-clearing test pose.
     if (safePatch) {
       await page.evaluate((camId) => {
-        const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+        const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
         mod.setParams({ calibration: { cameraId: camId, reset: true } });
       }, activeId);
       await sleep(300);
@@ -762,12 +762,12 @@ async function main() {
     console.log('Checking calibration round-trip (patch -> save -> reset)...');
     const baseGeom = await serializeGeom(activeId);
     const baseBadge = await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       const ui = mod.getUIState();
       return ui.cameras.find((c) => c.id === camId)?.calBadge;
     }, activeId);
     const baseStoreEmpty = await page.evaluate((camId) => {
-      const raw = localStorage.getItem('devilsEyeView.cctv.calibration.v2');
+      const raw = localStorage.getItem('evolEyeView.cctv.calibration.v2');
       const map = raw ? JSON.parse(raw) : {};
       return !(camId in map);
     }, activeId);
@@ -777,7 +777,7 @@ async function main() {
       baseStoreEmpty ? 'no entry' : 'unexpected pre-existing entry');
 
     await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ calibration: { cameraId: camId, patch: { headingDeg: 30 } } });
     }, activeId);
     await sleep(300);
@@ -786,9 +786,9 @@ async function main() {
     // only — the store must stay untouched and the camera must read as
     // dirty/EDITED until the explicit save action below.
     const afterPatch = await page.evaluate((camId) => {
-      const raw = localStorage.getItem('devilsEyeView.cctv.calibration.v2');
+      const raw = localStorage.getItem('evolEyeView.cctv.calibration.v2');
       const map = raw ? JSON.parse(raw) : {};
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       const cam = mod.getUIState().cameras.find((c) => c.id === camId);
       return { stored: camId in map, calDirty: cam?.calDirty, calBadge: cam?.calBadge };
     }, activeId);
@@ -800,13 +800,13 @@ async function main() {
       `calBadge=${afterPatch.calBadge}`);
 
     await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ calibration: { cameraId: camId, save: true } });
     }, activeId);
     await sleep(200);
 
     const storeEntry = await page.evaluate((camId) => {
-      const raw = localStorage.getItem('devilsEyeView.cctv.calibration.v2');
+      const raw = localStorage.getItem('evolEyeView.cctv.calibration.v2');
       const map = raw ? JSON.parse(raw) : {};
       return map[camId] || null;
     }, activeId);
@@ -814,7 +814,7 @@ async function main() {
       storeEntry ? `source=${storeEntry.source} savedAt=${storeEntry.savedAt}` : 'no entry written');
 
     const afterSave = await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       const cam = mod.getUIState().cameras.find((c) => c.id === camId);
       return { calBadge: cam?.calBadge, calDirty: cam?.calDirty };
     }, activeId);
@@ -835,13 +835,13 @@ async function main() {
 
     // Reset: entry removed, base geometry restored, badge back to raw-prior.
     await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ calibration: { cameraId: camId, reset: true } });
     }, activeId);
     await sleep(300);
 
     const storeAfterReset = await page.evaluate((camId) => {
-      const raw = localStorage.getItem('devilsEyeView.cctv.calibration.v2');
+      const raw = localStorage.getItem('evolEyeView.cctv.calibration.v2');
       const map = raw ? JSON.parse(raw) : {};
       return camId in map;
     }, activeId);
@@ -849,7 +849,7 @@ async function main() {
       storeAfterReset ? 'entry still present' : 'removed');
 
     const badgeAfterReset = await page.evaluate((camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       return mod.getUIState().cameras.find((c) => c.id === camId)?.calBadge;
     }, activeId);
     record('calBadge returns to raw-prior (or curated) after reset', badgeAfterReset !== 'calibrated',
@@ -875,7 +875,7 @@ async function main() {
     // never null/undefined once the runtime exists, i.e. there's no gap where
     // the plane shows nothing.
     const materialInfo = await page.evaluate((camId) => {
-      const viewer = window.__devilsEyeView.viewer;
+      const viewer = window.__evolEyeView.viewer;
       const time = viewer.clock.currentTime;
       const planeEnt = viewer.entities.getById('cctv-' + camId + '-plane');
       const mat = planeEnt?.plane?.material;
@@ -896,7 +896,7 @@ async function main() {
     // (upstream / streetview / synthetic fallback all count as "the frame
     // loop is healthy" — a hard 5xx/network failure would not).
     const frameFetch = await page.evaluate(async (camId) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       const cam = mod.getUIState().cameras.find((c) => c.id === camId);
       const res = await fetch(cam.frameUrl);
       return { ok: res.ok, status: res.status, contentType: res.headers.get('content-type'), url: cam.frameUrl, mediaUrl: cam.mediaUrl };
@@ -916,8 +916,8 @@ async function main() {
     // =========================================================================
     console.log('Checking installed canvas click ownership and empty-space deselection...');
     const emptyClickPoint = await page.evaluate(async () => {
-      const gev = window.__devilsEyeView;
-      const viewer = gev.viewer;
+      const evol = window.__evolEyeView;
+      const viewer = evol.viewer;
       const scene = viewer.scene;
       const canvas = scene.canvas;
       const rect = canvas.getBoundingClientRect();
@@ -948,9 +948,9 @@ async function main() {
       emptyClickPoint ? `canvas=(${emptyClickPoint.canvasX},${emptyClickPoint.canvasY})` : 'no clean canvas point found');
 
     const clickEvidenceSetup = await page.evaluate(() => {
-      const gev = window.__devilsEyeView;
-      const viewer = gev.viewer;
-      const mod = gev.dataManager.layers.get('cctv').module;
+      const evol = window.__evolEyeView;
+      const viewer = evol.viewer;
+      const mod = evol.dataManager.layers.get('cctv').module;
       const snapshotPose = () => ({
         position: [viewer.camera.positionWC.x, viewer.camera.positionWC.y, viewer.camera.positionWC.z],
         direction: [viewer.camera.directionWC.x, viewer.camera.directionWC.y, viewer.camera.directionWC.z],
@@ -993,10 +993,10 @@ async function main() {
       });
       evidence.baselineTransitions = evidence.activeTransitions.length;
       evidence.onFocus = () => { evidence.focusEvents += 1; };
-      window.addEventListener('gev:cctv-request-focus', evidence.onFocus);
+      window.addEventListener('evol:cctv-request-focus', evidence.onFocus);
       evidence.dispose = () => {
         evidence.unsubscribe?.();
-        window.removeEventListener('gev:cctv-request-focus', evidence.onFocus);
+        window.removeEventListener('evol:cctv-request-focus', evidence.onFocus);
       };
       window.__qaCctvClickEvidence = evidence;
       return { activeId: evidence.activeId, baselineTransitions: evidence.baselineTransitions };
@@ -1004,14 +1004,14 @@ async function main() {
 
     if (emptyClickPoint) {
       await page.evaluate(() => {
-        window.__devilsEyeView.dataManager.layers.get('cctv').module
+        window.__evolEyeView.dataManager.layers.get('cctv').module
           .setParams({ calibrationMode: true });
       });
       await page.mouse.click(emptyClickPoint.x, emptyClickPoint.y);
       await sleep(250);
       const adjustClick = await page.evaluate(() => {
         const evidence = window.__qaCctvClickEvidence;
-        const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+        const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
         mod.setParams({ calibrationMode: false });
         evidence.siblingBaselineTransitions = evidence.activeTransitions.length;
         return {
@@ -1032,8 +1032,8 @@ async function main() {
 
     const siblingTarget = await page.evaluate(async (emptyPoint) => {
       if (!emptyPoint) return null;
-      const gev = window.__devilsEyeView;
-      const viewer = gev.viewer;
+      const evol = window.__evolEyeView;
+      const viewer = evol.viewer;
       const scene = viewer.scene;
       const Cesium = await import('/node_modules/cesium/Build/Cesium/index.js');
       const canvasPoint = new Cesium.Cartesian2(emptyPoint.canvasX, emptyPoint.canvasY);
@@ -1100,10 +1100,10 @@ async function main() {
     }
     const siblingClick = await page.evaluate(() => {
       const evidence = window.__qaCctvClickEvidence;
-      const gev = window.__devilsEyeView;
-      const mod = gev.dataManager.layers.get('cctv').module;
+      const evol = window.__evolEyeView;
+      const mod = evol.dataManager.layers.get('cctv').module;
       if (window.__qaCctvSiblingOwner) {
-        gev.viewer.entities.remove(window.__qaCctvSiblingOwner);
+        evol.viewer.entities.remove(window.__qaCctvSiblingOwner);
         delete window.__qaCctvSiblingOwner;
       }
       return {
@@ -1129,7 +1129,7 @@ async function main() {
     }
     const firstEmptyClick = await page.evaluate(() => {
       const evidence = window.__qaCctvClickEvidence;
-      const state = window.__devilsEyeView.dataManager.layers.get('cctv').module.getUIState();
+      const state = window.__evolEyeView.dataManager.layers.get('cctv').module.getUIState();
       return {
         activeId: state.activeCameraId,
         enabled: state.enabled,
@@ -1158,7 +1158,7 @@ async function main() {
     }
     const repeatEmptyClick = await page.evaluate(() => {
       const evidence = window.__qaCctvClickEvidence;
-      const state = window.__devilsEyeView.dataManager.layers.get('cctv').module.getUIState();
+      const state = window.__evolEyeView.dataManager.layers.get('cctv').module.getUIState();
       evidence.dispose();
       delete window.__qaCctvClickEvidence;
       return {
@@ -1178,7 +1178,7 @@ async function main() {
     // Explicit navigation from null must remain available for the remaining
     // coverage and gizmo groups. NEXT is the product route pinned by N4.
     const resumedId = await page.evaluate(() => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.cycleCamera(1);
       return mod.getUIState().activeCameraId;
     });
@@ -1191,17 +1191,17 @@ async function main() {
     // =========================================================================
     console.log('Checking viewshed mode (coverage tri-state + color-coded volumes)...');
     const countVolumes = () => page.evaluate(() => {
-      const prims = window.__devilsEyeView.viewer.scene.primitives;
+      const prims = window.__evolEyeView.viewer.scene.primitives;
       let n = 0;
       for (let i = 0; i < prims.length; i++) {
-        if (prims.get(i) && prims.get(i)._gevViewshed) n += 1;
+        if (prims.get(i) && prims.get(i)._evolViewshed) n += 1;
       }
       return n;
     });
 
     const cBeforeViewshed = await readCounters();
     const modeAfterSet = await page.evaluate(() => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ coverageMode: 'viewshed' });
       return mod.getUIState().coverageMode;
     });
@@ -1216,7 +1216,7 @@ async function main() {
     // Boolean back-compat shim: showCoverage=false → 'off' (0 volumes),
     // showCoverage=true → 'on' (wireframes, still 0 volumes).
     const compat = await page.evaluate(() => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ showCoverage: false });
       const off = mod.getUIState().coverageMode;
       mod.setParams({ showCoverage: true });
@@ -1234,23 +1234,23 @@ async function main() {
     // rebuild sites are pose edits and style refreshes only). Object identity
     // over 8s proves nothing recreated them.
     await page.evaluate(() => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ coverageMode: 'viewshed' });
     });
     await sleep(400);
     await page.evaluate(() => {
-      const prims = window.__devilsEyeView.viewer.scene.primitives;
+      const prims = window.__evolEyeView.viewer.scene.primitives;
       window.__qaViewshedRefs = [];
       for (let i = 0; i < prims.length; i++) {
-        if (prims.get(i) && prims.get(i)._gevViewshed) window.__qaViewshedRefs.push(prims.get(i));
+        if (prims.get(i) && prims.get(i)._evolViewshed) window.__qaViewshedRefs.push(prims.get(i));
       }
     });
     await sleep(8000);
     const viewshedIdle = await page.evaluate(() => {
-      const prims = window.__devilsEyeView.viewer.scene.primitives;
+      const prims = window.__evolEyeView.viewer.scene.primitives;
       const now = [];
       for (let i = 0; i < prims.length; i++) {
-        if (prims.get(i) && prims.get(i)._gevViewshed) now.push(prims.get(i));
+        if (prims.get(i) && prims.get(i)._evolViewshed) now.push(prims.get(i));
       }
       const before = window.__qaViewshedRefs || [];
       const sameCount = now.length === before.length;
@@ -1280,9 +1280,9 @@ async function main() {
     console.log('Checking calibration gizmo (ADJUST mode + synthetic drag)...');
     const GIZMO_PARTS = ['ring-heading', 'ring-pitch', 'move-east', 'move-north', 'move-up', 'handle-range', 'handle-fov-l', 'handle-fov-r'];
     const gizmoStates = await page.evaluate((parts) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ calibrationMode: true });
-      const viewer = window.__devilsEyeView.viewer;
+      const viewer = window.__evolEyeView.viewer;
       return parts.map((p) => {
         const e = viewer.entities.getById('cctv-gizmo-' + p);
         return e ? (e.show ? 'shown' : 'hidden') : 'missing';
@@ -1295,7 +1295,7 @@ async function main() {
     // regression. Sample effective elevation after every mouse move: it must
     // stay frozen until release, with no transient sampleHeight calls.
     const eastDrag = await page.evaluate(() => {
-      const viewer = window.__devilsEyeView.viewer;
+      const viewer = window.__evolEyeView.viewer;
       const e = viewer.entities.getById('cctv-gizmo-move-east');
       if (!e) return null;
       const pts = e.polyline.positions.getValue(viewer.clock.currentTime);
@@ -1321,7 +1321,7 @@ async function main() {
     });
 
     const calBeforeDrag = await page.evaluate(() => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       const cam = mod.getUIState().activeCamera;
       return cam ? {
         calibration: cam.calibration,
@@ -1342,7 +1342,7 @@ async function main() {
         const pickBufferReady = await positionPointerForGizmoDrag(page, grab);
         if (!pickBufferReady) continue;
         const ownsPick = await page.evaluate((point) => {
-          const scene = window.__devilsEyeView.viewer.scene;
+          const scene = window.__evolEyeView.viewer.scene;
           const partFrom = (picked) => {
             const id = picked?.id?.id ?? picked?.id;
             return typeof id === 'string' && id.startsWith('cctv-gizmo-')
@@ -1365,7 +1365,7 @@ async function main() {
           );
           await sleep(40);
           transientDragStates.push(await page.evaluate(() => {
-            const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+            const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
             const cam = mod.getUIState().activeCamera;
             return cam ? {
               elevationM: cam.elevationM,
@@ -1378,7 +1378,7 @@ async function main() {
         await page.mouse.up();
         await sleep(400);
         const candidateEast = await page.evaluate(() => {
-          const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+          const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
           return mod.getUIState().activeCamera?.calibration?.offsetEastM ?? null;
         });
         if (Number.isFinite(candidateEast) &&
@@ -1390,10 +1390,10 @@ async function main() {
     }
 
     const dragOutcome = await page.evaluate((pt) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
-      const viewer = window.__devilsEyeView.viewer;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
+      const viewer = window.__evolEyeView.viewer;
       const cam = mod.getUIState().activeCamera;
-      const raw = localStorage.getItem('devilsEyeView.cctv.calibration.v2');
+      const raw = localStorage.getItem('evolEyeView.cctv.calibration.v2');
       const map = raw ? JSON.parse(raw) : {};
       let pickable = null;
       let ownsPick = null;
@@ -1471,10 +1471,10 @@ async function main() {
 
     // ADJUST off: parts hidden; leave a clean calibration for the next group.
     const gizmoOff = await page.evaluate((parts) => {
-      const mod = window.__devilsEyeView.dataManager.layers.get('cctv').module;
+      const mod = window.__evolEyeView.dataManager.layers.get('cctv').module;
       mod.setParams({ calibrationMode: false });
       mod.setParams({ calibration: { reset: true } });
-      const viewer = window.__devilsEyeView.viewer;
+      const viewer = window.__evolEyeView.viewer;
       return parts.map((p) => {
         const e = viewer.entities.getById('cctv-gizmo-' + p);
         return e ? (e.show ? 'shown' : 'hidden') : 'missing';

@@ -8,7 +8,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 async function loadMeta() {
   try {
-    return JSON.parse(await readFile(path.join(here, '.gev-install.json'), 'utf8'));
+    return JSON.parse(await readFile(path.join(here, '.evol-install.json'), 'utf8'));
   } catch {
     return {};
   }
@@ -29,7 +29,7 @@ const server = spawn(process.execPath, [viteBin, ...args], {
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 server.on('error', (err) => {
-  process.stderr.write(`Devil's Eye could not start: ${err.message}\n`);
+  process.stderr.write(`EVOL Eye could not start: ${err.message}\n`);
   process.exit(1);
 });
 server.stdout.on('data', (chunk) => process.stdout.write(chunk));
@@ -67,7 +67,7 @@ function poll() {
     if (Date.now() - startedAt < 40000) {
       setTimeout(poll, 400);
     } else {
-      process.stderr.write('Devil\'s Eye did not become ready in time.\n');
+      process.stderr.write('EVOL Eye did not become ready in time.\n');
       process.exitCode = 1;
     }
   });

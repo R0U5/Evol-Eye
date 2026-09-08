@@ -83,8 +83,8 @@ function findChromeExecutable() {
  * near-port billboards.
  */
 function probeVessels({ portLat, portLon, nearDeg, sampleCap }) {
-  const gev = window.__devilsEyeView;
-  const viewer = gev?.viewer;
+  const evol = window.__evolEyeView;
+  const viewer = evol?.viewer;
   if (!viewer) return { error: 'no viewer' };
   const ellipsoid = viewer.scene.globe.ellipsoid;
   const prims = viewer.scene.primitives;
@@ -180,12 +180,12 @@ async function main() {
       page.on('pageerror', (err) => console.error(`    [page-error] ${err.message}`));
 
       await page.goto(APP_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForFunction(() => !!window.__devilsEyeView?.viewer, { timeout: 60000 });
+      await page.waitForFunction(() => !!window.__evolEyeView?.viewer, { timeout: 60000 });
 
       // Frame the port (kill the intro flight first) and enable the layer.
       await page.evaluate(async (p) => {
-        const gev = window.__devilsEyeView;
-        const v = gev.viewer;
+        const evol = window.__evolEyeView;
+        const v = evol.viewer;
         v.camera.cancelFlight?.();
         v.scene.tweens?.removeAll?.();
         const carto = {
@@ -197,7 +197,7 @@ async function main() {
           destination: v.scene.globe.ellipsoid.cartographicToCartesian(carto),
           orientation: { heading: p.heading, pitch: p.pitch, roll: 0 },
         });
-        await gev.dataManager.setEnabled('ais-live-vessels', true);
+        await evol.dataManager.setEnabled('ais-live-vessels', true);
       }, port);
 
       // Wait for rows + the geoid re-floor: poll until near-port anchors sit
@@ -246,7 +246,7 @@ async function main() {
       // Visual proof — re-assert the framing (the app's intro flight can land
       // mid-probe on slow runs), wait for the photoreal tileset, screenshot.
       await page.evaluate((p) => {
-        const v = window.__devilsEyeView.viewer;
+        const v = window.__evolEyeView.viewer;
         v.camera.cancelFlight?.();
         v.scene.tweens?.removeAll?.();
         const carto = {
@@ -260,7 +260,7 @@ async function main() {
         });
       }, port);
       await page
-        .waitForFunction(() => window.__devilsEyeView?.tileset?.tilesLoaded, { timeout: 60000, polling: 500 })
+        .waitForFunction(() => window.__evolEyeView?.tileset?.tilesLoaded, { timeout: 60000, polling: 500 })
         .catch(() => console.log('    (tileset settle timeout — screenshotting anyway)'));
       await new Promise((r) => setTimeout(r, 2500));
       const outPath = path.join(OUT_DIR, `vessel-datum-${key}.png`);

@@ -1,13 +1,13 @@
 /**
  * @file Server-side cumulative spend ledger for OpenAI Realtime voice.
  *
- * The client-side cost meter (`src/voice/gevRealtime.js`) is the fast path —
+ * The client-side cost meter (`src/voice/evolRealtime.js`) is the fast path —
  * it stops a session the moment the per-session cap trips. But it is browser
  * JS, so it is not a gate: a local process or a DNS-rebinding page can mint
  * `/api/realtime/token` secrets directly and never run the meter. This module
  * is the server-side backstop. It is pure (no fs, no process.env) so the
  * budget math is unit-testable with node:test; the vite plugin owns loading
- * and persisting the JSON file under `.gev-cache/`.
+ * and persisting the JSON file under `.evol-cache/`.
  *
  * Budget semantics:
  *  - A daily budget (USD) is enforced per UTC calendar day. The day key rolls

@@ -358,12 +358,12 @@ test('the Visual Presets tray owns Map Source and the retired left panel is abse
   );
   assert.match(
     ui,
-    /window\.addEventListener\('gev:map-stack-changed', this\._mapStackChangeHandler\)/,
+    /window\.addEventListener\('evol:map-stack-changed', this\._mapStackChangeHandler\)/,
     'provider-driven fallback must re-sync the UI without a user click',
   );
   assert.match(
     ui,
-    /window\.removeEventListener\('gev:map-stack-changed', this\._mapStackChangeHandler\)/,
+    /window\.removeEventListener\('evol:map-stack-changed', this\._mapStackChangeHandler\)/,
     'the provider-driven state listener must be released with StyleManager',
   );
 });

@@ -1,6 +1,6 @@
 # Security
 
-Devil's Eye is a local-first client for **public** data. It is built for exploration, demos, and learning — not as a hardened production service. This document explains the security model so you can run it safely and report issues responsibly.
+EVOL Eye is a local-first client for **public** data. It is built for exploration, demos, and learning — not as a hardened production service. This document explains the security model so you can run it safely and report issues responsibly.
 
 ## Reporting a vulnerability
 
@@ -25,7 +25,7 @@ The golden rule: **secret-bearing API keys stay on the server side.** The dev/pr
 
 These are designed to be used directly in the browser (like a Mapbox public token). They are injected into the client bundle via Vite's `define`, so they **will** be visible in browser devtools. Scope and restrict them rather than trying to hide them:
 
-1. **Google Maps API key** — loads Photorealistic 3D Tiles directly and powers GEV place search. **Restrict it** (HTTP referrer + API restriction to the required Google APIs) in the Google Cloud Console. An unrestricted key in a public deployment can be abused and billed to you.
+1. **Google Maps API key** — loads Photorealistic 3D Tiles directly and powers EVOL place search. **Restrict it** (HTTP referrer + API restriction to the required Google APIs) in the Google Cloud Console. An unrestricted key in a public deployment can be abused and billed to you.
 2. **Cesium ion token** (`CESIUM_ION_TOKEN`, optional — for ion-hosted Google Photorealistic 3D Tiles, Bing world imagery, and world terrain) — used as `Cesium.Ion.defaultAccessToken` client-side. Use a public **`assets:read`** token with **URL restrictions** for any hosted deployment. The Community plan has eligibility and usage limits; a public token is not a secret, but it can still consume the account's quota.
 
 > The Vite `define` block in `vite.config.js` controls exactly what reaches the client: only these two keys plus two non-secret CCTV feature flags. Everything else stays server-side.
@@ -47,11 +47,11 @@ option when launching through `./scripts/dev-fresh.sh`.
 The data proxies in `vite.config.js` are written so the browser cannot turn the server into an open relay:
 
 - **No arbitrary-URL fetching.** The CCTV frame proxy fetches only server-registered camera/frame URLs — clients cannot pass an upstream URL to fetch (SSRF mitigation). Other proxies target fixed upstream hosts.
-- **Radio is not an audio relay.** `/api/radio/stations` contacts only allowlisted Radio Browser HTTPS hosts and paths, rejects redirects, rejects any hostname with a loopback/private/link-local/metadata/non-public A or AAAA result, and pins each TLS connection to a validated address. It returns normalized public HTTPS stream URLs; `/api/radio/click/:uuid` applies the same destination policy and accepts only station IDs from the current bounded catalog. The browser then connects directly to the broadcaster after an explicit playback action, so the broadcaster sees the listener's IP address. GEV never proxies, caches, records, or redistributes audio.
+- **Radio is not an audio relay.** `/api/radio/stations` contacts only allowlisted Radio Browser HTTPS hosts and paths, rejects redirects, rejects any hostname with a loopback/private/link-local/metadata/non-public A or AAAA result, and pins each TLS connection to a validated address. It returns normalized public HTTPS stream URLs; `/api/radio/click/:uuid` applies the same destination policy and accepts only station IDs from the current bounded catalog. The browser then connects directly to the broadcaster after an explicit playback action, so the broadcaster sees the listener's IP address. EVOL never proxies, caches, records, or redistributes audio.
 - **Response-size caps and timeouts** on proxied responses.
 - **Sanitized errors** — internal error details are not echoed back to clients.
 - **Coalesced OAuth refresh** and cached successful responses only (OpenSky).
-- **Redacted debug logging.** The voice debug log (`.gev-logs/`, gitignored) strips API keys, bearer tokens, client secrets, and image data URLs before writing.
+- **Redacted debug logging.** The voice debug log (`.evol-logs/`, gitignored) strips API keys, bearer tokens, client secrets, and image data URLs before writing.
 
 ## Network exposure — the operator threat model
 
@@ -59,7 +59,7 @@ The dev server is a **key broker**: every server-side key above is spendable by 
 
 - **Local-only by default.** `./scripts/dev-fresh.sh` (and the Vite config itself) bind to `localhost`, so only your machine can reach the server — and only local names are accepted (`allowedHosts` stays restricted, which also blunts DNS-rebinding tricks).
 - **LAN exposure is an explicit opt-in**: `HOST=0.0.0.0 ./scripts/dev-fresh.sh`. The launcher prints a prominent warning plus your LAN URL. Understand what opting in means: **every device on that network can drive the proxies and spend your OpenAI / Google / OpenSky / AISStream / TomTom / FIRMS quota** for as long as the server runs. Do this only on networks you trust.
-- **App-level throttles (opt-in):** `GEV_RATELIMIT_OPENAI_PER_MIN` and `GEV_RATELIMIT_GOOGLE_PER_MIN` cap the cost-bearing endpoints per client IP per minute (over-limit requests receive a sanitized `429`). They are **per-IP, process-local, in-memory guards** — they reset on restart and are **not billing caps**.
+- **App-level throttles (opt-in):** `EVOL_RATELIMIT_OPENAI_PER_MIN` and `EVOL_RATELIMIT_GOOGLE_PER_MIN` cap the cost-bearing endpoints per client IP per minute (over-limit requests receive a sanitized `429`). They are **per-IP, process-local, in-memory guards** — they reset on restart and are **not billing caps**.
 - **Provider-side budgets are the real backstop.** For hard spend protection, configure limits where the money is: OpenAI platform usage limits, Google Cloud budget alerts + per-API quotas, and equivalent controls for any other keyed provider.
 - **Pinokio LAN and Cloudflare sharing are refused.** The current supported
   Pinokio release re-reads sharing state when an app registers its Open URL and
@@ -67,7 +67,7 @@ The dev server is a **key broker**: every server-side key above is spendable by 
   stream. Before preflight, the launcher rewrites its app-scoped sharing controls
   to disabled values, clears any Pinokio-global passcode from the child, and
   pins the platform share trigger to a disabled sentinel. A stale or requested
-  sharing value is therefore discarded rather than honored, and GEV starts on
+  sharing value is therefore discarded rather than honored, and EVOL starts on
   loopback only. Use a separately reviewed authentication proxy for remote
   access and keep provider-side quotas as the spend backstop.
 

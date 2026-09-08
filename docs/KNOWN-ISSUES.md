@@ -38,14 +38,14 @@ Context:
 
 Workaround:
 - In browser console:
-  - `localStorage.removeItem('devilsEyeView.v6.panelPos.cctv-panel');`
-  - `localStorage.removeItem('devilsEyeView.v6.panelCollapsed.cctv-panel');`
+  - `localStorage.removeItem('evolEyeView.v6.panelPos.cctv-panel');`
+  - `localStorage.removeItem('evolEyeView.v6.panelCollapsed.cctv-panel');`
   - `location.reload();`
 
 Related keys (current versions):
-- Panel positions: `devilsEyeView.v7.panelPos.<panel-id>` (re-versioned 2026-06-10)
-- Panel collapsed state: `devilsEyeView.v6.panelCollapsed.<panel-id>`
-- CCTV calibration: `devilsEyeView.cctv.calibration.v2`
+- Panel positions: `evolEyeView.v7.panelPos.<panel-id>` (re-versioned 2026-06-10)
+- Panel collapsed state: `evolEyeView.v6.panelCollapsed.<panel-id>`
+- CCTV calibration: `evolEyeView.cctv.calibration.v2`
 
 ---
 

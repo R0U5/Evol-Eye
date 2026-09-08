@@ -14,10 +14,10 @@ test('bootstrapRuntimeRoot recovers the runtime root for the bootstrap layout', 
     ? base
     : path.dirname(base);
   try {
-    process.env.GEV_BOOTSTRAP_NODE = process.execPath;
+    process.env.EVOL_BOOTSTRAP_NODE = process.execPath;
     assert.equal(bootstrapRuntimeRoot(), expected);
   } finally {
-    delete process.env.GEV_BOOTSTRAP_NODE;
+    delete process.env.EVOL_BOOTSTRAP_NODE;
   }
   assert.equal(bootstrapRuntimeRoot(), null);
 });
@@ -83,7 +83,7 @@ test('health and static UI are served without network', async (t) => {
   const res = await fetch(`${started.baseUrl}/`);
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.ok(html.includes('Devil'));
+  assert.ok(html.includes('EVOL'));
   assert.ok(html.includes('installer.js'));
 });
 
@@ -119,7 +119,7 @@ test('a full install runs end-to-end with the fixture source', async (t) => {
   const fixture = await startFixtureServer({ repoZip: makeRepoArchive() });
   t.after(async () => { await fixture.close(); });
 
-  const installDir = await tempDir('gev-server-');
+  const installDir = await tempDir('evol-server-');
   const started = await bootServer(t, {}, { sourceArchiveUrl: `${fixture.baseUrl}/archive.zip` });
 
   const res = await fetch(`${started.baseUrl}/api/install`, {
@@ -158,7 +158,7 @@ test('install rejects cross-origin requests', async (t) => {
 
 test('launch rejects an install dir without a launcher', async (t) => {
   const started = await bootServer(t, {}, {});
-  const dir = await tempDir('gev-launch-');
+  const dir = await tempDir('evol-launch-');
   const res = await fetch(`${started.baseUrl}/api/launch`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -171,7 +171,7 @@ test('launch rejects an install dir without a launcher', async (t) => {
 
 test('non-loopback server without a token refuses mutating endpoints', async (t) => {
   const started = await bootServer(t, {}, { host: '0.0.0.0' });
-  const dir = await tempDir('gev-launch-');
+  const dir = await tempDir('evol-launch-');
 
   const install = await fetch(`${started.baseUrl}/api/install`, {
     method: 'POST',
@@ -196,7 +196,7 @@ test('non-loopback server without a token refuses mutating endpoints', async (t)
 
 test('non-loopback server with a token admits mutating endpoints only with the token', async (t) => {
   const started = await bootServer(t, {}, { host: '0.0.0.0', token: 's3cret' });
-  const dir = await tempDir('gev-launch-');
+  const dir = await tempDir('evol-launch-');
 
   const refused = await fetch(`${started.baseUrl}/api/launch`, {
     method: 'POST',

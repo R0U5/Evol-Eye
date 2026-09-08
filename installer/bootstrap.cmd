@@ -1,5 +1,5 @@
 @echo off
-rem Devil's Eye installer bootstrap - zero-prerequisite launcher for Windows.
+rem EVOL Eye installer bootstrap - zero-prerequisite launcher for Windows.
 setlocal EnableDelayedExpansion
 set "ROOT=%~dp0"
 if "%ROOT%"=="" set "ROOT=%CD%\"

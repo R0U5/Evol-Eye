@@ -650,8 +650,8 @@ test('the DISPLAY rail starts expanded on a first run (so overlay toggles incl. 
 
 test('the voice TOOL SCHEMA is byte-identical to main — the mission mapping is instructions only', () => {
   const src = fs.readFileSync(new URL('../vite.config.js', import.meta.url), 'utf8');
-  const start = src.indexOf('const GEV_REALTIME_TOOLS = [');
-  assert.ok(start > 0, 'GEV_REALTIME_TOOLS must still be a single literal array');
+  const start = src.indexOf('const EVOL_REALTIME_TOOLS = [');
+  assert.ok(start > 0, 'EVOL_REALTIME_TOOLS must still be a single literal array');
   const end = src.indexOf('\n];\n', start);
   const block = src.slice(start, end + 4);
 
@@ -660,10 +660,15 @@ test('the voice TOOL SCHEMA is byte-identical to main — the mission mapping is
   // exactly the kind of schema change this pin exists to make loud). The
   // guarded claim is unchanged: first-run missions ride existing tools, and
   // any NEW drift from this recorded schema still fails here.
-  assert.equal(block.length, 31180, 'tool schema byte length drifted from the pinned release schema');
+  // Re-pinned 2026-09-08 (rebrand): the EVOL Eye rename changed brand
+  // strings inside tool descriptions ("Devil's Eye" → "EVOL Eye", "GEV" →
+  // "EVOL") and the const name itself. NO tool moved, no schema shape or
+  // behavior changed — the guard's claim (first-run missions ride existing
+  // tools) is unchanged.
+  assert.equal(block.length, 31176, 'tool schema byte length drifted from the pinned release schema');
   assert.equal(
     crypto.createHash('sha256').update(block).digest('hex'),
-    'a3a251cba8f45abaf083597634f4cfb88a8fd1656594fb4b718f8b0177fdff14',
+    '8af0059b175de9f03f94b6cdd796922f2d66ac3b4964e27327129350300269b8',
     'the first-run missions must ride EXISTING tools: no schema edit, no cache bust',
   );
 

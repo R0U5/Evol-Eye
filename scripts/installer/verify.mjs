@@ -15,7 +15,7 @@ function fail(message) {
 
 async function main() {
   const files = await fsp.readdir(outDir);
-  const zipFiles = files.filter((f) => /^Devils-Eye-Setup-.+\.zip$/.test(f));
+  const zipFiles = files.filter((f) => /^Evol-Eye-Setup-.+\.zip$/.test(f));
   if (zipFiles.length !== 1) fail(`expected exactly one setup zip in ${outDir}, found ${zipFiles.join(', ') || 'none'}`);
   const zipName = zipFiles[0];
   const rootFolder = zipName.replace(/\.zip$/, '');

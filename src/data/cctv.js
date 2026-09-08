@@ -1,7 +1,7 @@
 /**
  * @module cctv
  *
- * CCTV camera data layer for Devil's Eye.
+ * CCTV camera data layer for EVOL Eye.
  *
  * Architecture:
  * - Camera catalog: built from seed definitions (CAMERA_SEEDS) merged with live
@@ -146,9 +146,9 @@ const LIVE_RETRY_BACKOFF_MS = 3000;
 // legacy import): kept here only as a documented constant so nothing ever
 // re-reads it by accident. Exported for the unit suite's "v1 is ignored"
 // assertion; there is NO read path for this key anywhere in the module.
-export const CCTV_CALIBRATION_STORAGE_KEY_V1 = 'devilsEyeView.cctv.calibration.v1';
+export const CCTV_CALIBRATION_STORAGE_KEY_V1 = 'evolEyeView.cctv.calibration.v1';
 /** v2 store key. Entries: { values: <7-field calibration offsets>, source: 'manual', savedAt: <epoch ms> }. */
-export const CCTV_CALIBRATION_STORAGE_KEY_V2 = 'devilsEyeView.cctv.calibration.v2';
+export const CCTV_CALIBRATION_STORAGE_KEY_V2 = 'evolEyeView.cctv.calibration.v2';
 // H5: throttle for double-buffered canvas texture swaps (<=1Hz; each swap is a
 // full 1080p texture re-upload because Cesium re-uploads only on a NEW image
 // object reference).
@@ -360,7 +360,7 @@ let _activeTileset = null;
 // scene.globe.show) against this so bing→osm switches (same 'terrain-globe'
 // regime) don't trigger a pointless full-catalog rewrite.
 let _lastAppliedRegime = null;
-// Task 5: window listener handle for the 'gev:map-stack-changed' CustomEvent
+// Task 5: window listener handle for the 'evol:map-stack-changed' CustomEvent
 // main.js dispatches from MapStackController's onChange (removed in destroy).
 let _mapStackListener = null;
 // Field-test fix (2026-07-06): camera.moveEnd handle for the horizon-culling
@@ -2536,7 +2536,7 @@ function applyLateGroundPriors(records, priors) {
 }
 
 /**
- * Task 5: surface-regime change handler ('gev:map-stack-changed'
+ * Task 5: surface-regime change handler ('evol:map-stack-changed'
  * CustomEvent, dispatched by main.js from MapStackController.onChange). The
  * surface HEIGHT at a camera differs between regimes (a photogrammetric
  * deck/building-top in google-3d vs bare Re:Earth DEM on globe stacks), so
@@ -2949,7 +2949,7 @@ function rebuildViewshedVolume(record, isActive) {
   const color = isActive ? record.viewshedColors.fillActive : record.viewshedColors.fill;
   const primitive = createFrustumVolumePrimitive(record.frustumPositions, color);
   // QA tag: the harness counts viewshed volumes by this marker.
-  primitive._gevViewshed = record.camera.id;
+  primitive._evolViewshed = record.camera.id;
   record.viewshedPrimitive = _viewer.scene.primitives.add(primitive);
   record.viewshedActiveTint = !!isActive;
 }
@@ -4669,7 +4669,7 @@ const cctvLayer = {
     _lastAppliedRegime = currentSurfaceRegime();
     if (!_mapStackListener && typeof window !== 'undefined') {
       _mapStackListener = () => handleMapStackChanged();
-      window.addEventListener('gev:map-stack-changed', _mapStackListener);
+      window.addEventListener('evol:map-stack-changed', _mapStackListener);
     }
 
     // Field-test fix (2026-07-06): horizon-cull on camera settle (pairs with
@@ -4846,7 +4846,7 @@ const cctvLayer = {
   destroy(viewer) {
     unregisterPickOwner('cctv');
     if (_mapStackListener && typeof window !== 'undefined') {
-      window.removeEventListener('gev:map-stack-changed', _mapStackListener);
+      window.removeEventListener('evol:map-stack-changed', _mapStackListener);
       _mapStackListener = null;
     }
     const teardownViewer = viewer || _viewer;
