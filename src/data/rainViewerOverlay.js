@@ -38,7 +38,7 @@ const SMOOTH_SNOW = '1_1';
 const MAPS_CACHE_TTL_MS = 30 * 60 * 1000;
 
 /** localStorage key for the enabled preference. */
-const ENABLED_KEY = 'devilsEyeView.radarOverlay.enabled';
+const ENABLED_KEY = 'evolEyeView.radarOverlay.enabled';
 
 // ─── Credit ─────────────────────────────────────────────────────────────────
 

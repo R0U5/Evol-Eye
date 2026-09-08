@@ -130,12 +130,12 @@ test('the installed keyless HUD route stays successful after the voice quota is 
   const previousBase = process.env.OPENAI_BASE_URL;
   const previousOllamaBase = process.env.OLLAMA_BASE_URL;
   const previousOllamaModel = process.env.OLLAMA_HUD_SUMMARY_MODEL;
-  const previousLimit = process.env.GEV_RATELIMIT_OPENAI_PER_MIN;
+  const previousLimit = process.env.EVOL_RATELIMIT_OPENAI_PER_MIN;
   process.env.OPENAI_API_KEY = '';
   process.env.OPENAI_BASE_URL = '';
   process.env.OLLAMA_BASE_URL = '';
   process.env.OLLAMA_HUD_SUMMARY_MODEL = '';
-  process.env.GEV_RATELIMIT_OPENAI_PER_MIN = '1';
+  process.env.EVOL_RATELIMIT_OPENAI_PER_MIN = '1';
   // Build the rate limiter inside the exact env the test intends it to see.
   resetRateLimiterCacheForTests();
   try {
@@ -167,8 +167,8 @@ test('the installed keyless HUD route stays successful after the voice quota is 
     else process.env.OLLAMA_BASE_URL = previousOllamaBase;
     if (previousOllamaModel === undefined) delete process.env.OLLAMA_HUD_SUMMARY_MODEL;
     else process.env.OLLAMA_HUD_SUMMARY_MODEL = previousOllamaModel;
-    if (previousLimit === undefined) delete process.env.GEV_RATELIMIT_OPENAI_PER_MIN;
-    else process.env.GEV_RATELIMIT_OPENAI_PER_MIN = previousLimit;
+    if (previousLimit === undefined) delete process.env.EVOL_RATELIMIT_OPENAI_PER_MIN;
+    else process.env.EVOL_RATELIMIT_OPENAI_PER_MIN = previousLimit;
   }
 });
 
@@ -179,7 +179,7 @@ const HUD_PROVIDER_ENV_VARS = [
   'OPENAI_HUD_SUMMARY_MODEL',
   'OLLAMA_BASE_URL',
   'OLLAMA_HUD_SUMMARY_MODEL',
-  'GEV_RATELIMIT_OPENAI_PER_MIN',
+  'EVOL_RATELIMIT_OPENAI_PER_MIN',
 ];
 
 /**
@@ -347,7 +347,7 @@ test('HUD summary rate-limits by default (25/min) even when the env var is unset
 ));
 
 test('HUD summary shares the configured env-var limiter with the token route when set', withProviderRoute(
-  { OPENAI_API_KEY: 'sk-test', GEV_RATELIMIT_OPENAI_PER_MIN: '2' },
+  { OPENAI_API_KEY: 'sk-test', EVOL_RATELIMIT_OPENAI_PER_MIN: '2' },
   async () => ({ ok: true, status: 200, json: async () => ({ output_text: 'Fog over the Golden Gate' }) }),
   async (hud, fetchCalls) => {
     const first = await invokeRoute(hud, { method: 'POST', body: '{}' });

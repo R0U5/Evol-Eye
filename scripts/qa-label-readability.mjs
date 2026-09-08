@@ -205,7 +205,7 @@ async function settle(page) {
   while (Date.now() - started < SETTLE_MAX_MS) {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     const state = await page.evaluate(() => {
-      const { viewer, tileset } = window.__devilsEyeView;
+      const { viewer, tileset } = window.__evolEyeView;
       return {
         tilesLoaded: tileset?.tilesLoaded !== false,
         pending: viewer.scene.globe?._surface?._tileLoadQueueHigh?.length ?? 0,
@@ -254,7 +254,7 @@ async function main() {
 
     await page.goto(APP_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 });
     await page.waitForFunction(
-      () => window.__devilsEyeView?.viewer && window.__devilsEyeView?.styleManager,
+      () => window.__evolEyeView?.viewer && window.__evolEyeView?.styleManager,
       { timeout: 60_000, polling: 100 },
     );
     // flyToAustin arrives ~500 ms after init; let it start and land before any
@@ -269,7 +269,7 @@ async function main() {
     for (const scene of selected) {
       process.stdout.write(`  ${scene.id} … `);
       await page.evaluate((spec) => {
-        const { viewer, dataManager, styleManager } = window.__devilsEyeView;
+        const { viewer, dataManager, styleManager } = window.__evolEyeView;
         viewer.camera.cancelFlight();
         const Cartesian3 = viewer.camera.position.constructor;
 
@@ -397,7 +397,7 @@ async function main() {
       );
       const stats = await measureShot(page, base64);
       const diagnostics = await page.evaluate(
-        () => window.__devilsEyeView.styleManager.getDetectionState?.() || {},
+        () => window.__evolEyeView.styleManager.getDetectionState?.() || {},
       );
       results.push({ scene: scene.id, converged, ...stats });
       console.log(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge all scraped Axis camera data into the Devil's Eye CCTV catalog.
+"""Merge all scraped Axis camera data into the EVOL Eye CCTV catalog.
 
 Sources (all local, keyless):
   - data/insecam-cameras.json        (86 cams, geolocated)
@@ -17,7 +17,7 @@ from urllib.request import urlopen, Request
 WORKSPACE = os.path.expanduser('~/.openclaw/workspace')
 OUT = os.path.expanduser('~/apps/gods-eye-view/config/cctv_sources_axis.json')
 
-HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; DevilsEye/1.0)'}
+HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; EvolEye/1.0)'}
 
 def load(name):
     p = os.path.join(WORKSPACE, 'data', name)

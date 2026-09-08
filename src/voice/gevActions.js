@@ -925,7 +925,7 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
       return clearAnnotations(annotations);
     }
 
-    throw new Error(`Unknown GEV tool: ${name}`);
+    throw new Error(`Unknown EVOL tool: ${name}`);
   };
 }
 
@@ -1949,8 +1949,8 @@ export async function getBasemapLabelContext(viewer) {
 }
 
 function installViewTargetPrewarm(viewer) {
-  if (viewer.__gevViewTargetPrewarmInstalled) return;
-  viewer.__gevViewTargetPrewarmInstalled = true;
+  if (viewer.__evolViewTargetPrewarmInstalled) return;
+  viewer.__evolViewTargetPrewarmInstalled = true;
   let timer = null;
   let reportedPrewarmFailure = false;
   viewer.camera.moveEnd.addEventListener(() => {
@@ -2190,10 +2190,10 @@ function focusDataLayerRow(layerId) {
   const row = document.querySelector(`#data-toggles [data-layer-id="${CSS.escape(layerId)}"]`);
   if (!row) return null;
   row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  row.classList.remove('gev-voice-focus');
+  row.classList.remove('evol-voice-focus');
   void row.offsetWidth;
-  row.classList.add('gev-voice-focus');
-  window.setTimeout(() => row.classList.remove('gev-voice-focus'), 3000);
+  row.classList.add('evol-voice-focus');
+  window.setTimeout(() => row.classList.remove('evol-voice-focus'), 3000);
   const name = row.querySelector('.data-name')?.textContent?.trim() || layerId;
   return { id: layerId, name };
 }
@@ -2646,7 +2646,7 @@ async function getBasemapContext(viewer, viewTarget = null) {
     );
     return {
       source: 'Google Photorealistic 3D Tiles / Cesium basemap',
-      hasGoogle3DTiles: Boolean(window.__devilsEyeView?.tileset),
+      hasGoogle3DTiles: Boolean(window.__evolEyeView?.tileset),
       viewScale,
       viewportSamples: samples,
       viewportPlaces,
@@ -2682,7 +2682,7 @@ async function getBasemapContext(viewer, viewTarget = null) {
   const nearbyPlaces = resolvedNearbyPlaces || [];
   return {
     source: 'Google Photorealistic 3D Tiles / Cesium basemap',
-    hasGoogle3DTiles: Boolean(window.__devilsEyeView?.tileset),
+    hasGoogle3DTiles: Boolean(window.__evolEyeView?.tileset),
     viewScale,
     viewportSamples: samples,
     viewportPlaces,
@@ -3148,7 +3148,7 @@ function approximateCoordinateDistanceSq(latA, lonA, latB, lonB) {
 function logSlowContext(startedAt, scope) {
   const durationMs = Math.round(performance.now() - startedAt);
   if (durationMs >= 500) {
-    console.info(`[GEV Voice] ${scope} scene context completed in ${durationMs}ms`);
+    console.info(`[EVOL Voice] ${scope} scene context completed in ${durationMs}ms`);
   }
 }
 
@@ -3166,9 +3166,9 @@ function dominantValue(values) {
 
 function summarizeEntity(viewer, entity, { includeProperties = false } = {}) {
   const now = Cesium.JulianDate.now();
-  if (entity.__gevContextId) {
-    const store = window.__gevContextStore;
-    const record = store?.entities?.get(entity.__gevContextId);
+  if (entity.__evolContextId) {
+    const store = window.__evolContextStore;
+    const record = store?.entities?.get(entity.__evolContextId);
     if (record) return summarizeContextRecord(record, { includeProperties });
   }
   const props = propertyObject(entity);

@@ -39,34 +39,34 @@ test('the fresh template keeps provider credentials out of native Configure', ()
   }
   assert.equal(configured.PINOKIO_SHARE_CLOUDFLARE, 'false');
   assert.equal(configured.PINOKIO_SHARE_LOCAL, 'false');
-  assert.equal(configured.PINOKIO_SHARE_VAR, '__gev_sharing_disabled__');
-  assert.equal(configured.GEV_RATELIMIT_OPENAI_PER_MIN, '30');
-  assert.equal(configured.GEV_RATELIMIT_GOOGLE_PER_MIN, '120');
+  assert.equal(configured.PINOKIO_SHARE_VAR, '__evol_sharing_disabled__');
+  assert.equal(configured.EVOL_RATELIMIT_OPENAI_PER_MIN, '30');
+  assert.equal(configured.EVOL_RATELIMIT_GOOGLE_PER_MIN, '120');
   assert.match(source, /Do not enter credentials in Pinokio 8\.0\.40's native Configure panel/);
   assert.match(source, /trusted local text editor/);
   assert.match(source, /Stop and Start the app/);
 });
 
 test('raw app-file values override Pinokio-global values, including blanks', () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'gev-pinokio-env-'));
+  const root = mkdtempSync(path.join(tmpdir(), 'evol-pinokio-env-'));
   try {
     const filepath = path.join(root, 'ENVIRONMENT');
     writeFileSync(filepath, [
       'GOOGLE_MAPS_API_KEY=app-configured',
       'OPENAI_API_KEY=',
-      'GEV_RATELIMIT_OPENAI_PER_MIN=45',
-      'GEV_RATELIMIT_GOOGLE_PER_MIN=',
+      'EVOL_RATELIMIT_OPENAI_PER_MIN=45',
+      'EVOL_RATELIMIT_GOOGLE_PER_MIN=',
       'PINOKIO_SHARE_CLOUDFLARE=false',
       'PINOKIO_SHARE_LOCAL=false',
-      'PINOKIO_SHARE_VAR=__gev_sharing_disabled__',
+      'PINOKIO_SHARE_VAR=__evol_sharing_disabled__',
       '',
     ].join('\n'));
     const environment = {
       GOOGLE_MAPS_API_KEY: 'global-google',
       CESIUM_ION_TOKEN: 'global-ion',
       OPENAI_API_KEY: 'global-openai',
-      GEV_RATELIMIT_OPENAI_PER_MIN: '999',
-      GEV_RATELIMIT_GOOGLE_PER_MIN: '999',
+      EVOL_RATELIMIT_OPENAI_PER_MIN: '999',
+      EVOL_RATELIMIT_GOOGLE_PER_MIN: '999',
       PINOKIO_SHARE_CLOUDFLARE: 'true',
       PINOKIO_SHARE_LOCAL: 'true',
       PINOKIO_SHARE_PASSCODE: 'global-passcode',
@@ -77,11 +77,11 @@ test('raw app-file values override Pinokio-global values, including blanks', () 
     assert.equal(environment.GOOGLE_MAPS_API_KEY, 'app-configured');
     assert.equal(environment.CESIUM_ION_TOKEN, '');
     assert.equal(environment.OPENAI_API_KEY, '');
-    assert.equal(environment.GEV_RATELIMIT_OPENAI_PER_MIN, '45');
-    assert.equal(environment.GEV_RATELIMIT_GOOGLE_PER_MIN, '');
+    assert.equal(environment.EVOL_RATELIMIT_OPENAI_PER_MIN, '45');
+    assert.equal(environment.EVOL_RATELIMIT_GOOGLE_PER_MIN, '');
     assert.equal(environment.PINOKIO_SHARE_CLOUDFLARE, 'false');
     assert.equal(environment.PINOKIO_SHARE_LOCAL, 'false');
-    assert.equal(environment.PINOKIO_SHARE_VAR, '__gev_sharing_disabled__');
+    assert.equal(environment.PINOKIO_SHARE_VAR, '__evol_sharing_disabled__');
     assert.equal(environment.PINOKIO_SHARE_PASSCODE, '');
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -89,14 +89,14 @@ test('raw app-file values override Pinokio-global values, including blanks', () 
 });
 
 test('an existing Pinokio file gains the canonical non-secret sharing boundary', () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'gev-pinokio-env-legacy-'));
+  const root = mkdtempSync(path.join(tmpdir(), 'evol-pinokio-env-legacy-'));
   try {
     const filepath = path.join(root, 'ENVIRONMENT');
     writeFileSync(filepath, 'OPENAI_API_KEY=app-value\nPINOKIO_SHARE_CLOUDFLARE=false\n');
     const environment = {
       GOOGLE_MAPS_API_KEY: 'global-google',
-      GEV_RATELIMIT_OPENAI_PER_MIN: '999',
-      GEV_RATELIMIT_GOOGLE_PER_MIN: '999',
+      EVOL_RATELIMIT_OPENAI_PER_MIN: '999',
+      EVOL_RATELIMIT_GOOGLE_PER_MIN: '999',
       PINOKIO_SHARE_LOCAL: 'true',
       PINOKIO_SHARE_VAR: 'url',
       PINOKIO_SHARE_PASSCODE: 'global-passcode',
@@ -106,24 +106,24 @@ test('an existing Pinokio file gains the canonical non-secret sharing boundary',
 
     assert.equal(environment.OPENAI_API_KEY, 'app-value');
     assert.equal(environment.GOOGLE_MAPS_API_KEY, '');
-    assert.equal(environment.GEV_RATELIMIT_OPENAI_PER_MIN, '30');
-    assert.equal(environment.GEV_RATELIMIT_GOOGLE_PER_MIN, '120');
+    assert.equal(environment.EVOL_RATELIMIT_OPENAI_PER_MIN, '30');
+    assert.equal(environment.EVOL_RATELIMIT_GOOGLE_PER_MIN, '120');
     assert.equal(environment.PINOKIO_SHARE_LOCAL, 'false');
-    assert.equal(environment.PINOKIO_SHARE_VAR, '__gev_sharing_disabled__');
+    assert.equal(environment.PINOKIO_SHARE_VAR, '__evol_sharing_disabled__');
     assert.equal(environment.PINOKIO_SHARE_PASSCODE, '');
     const persisted = readFileSync(filepath, 'utf8');
     assert.match(persisted, /^PINOKIO_SHARE_LOCAL=false$/m);
-    assert.match(persisted, /^PINOKIO_SHARE_VAR=__gev_sharing_disabled__$/m);
+    assert.match(persisted, /^PINOKIO_SHARE_VAR=__evol_sharing_disabled__$/m);
     assert.match(persisted, /^OPENAI_API_KEY=app-value$/m);
-    assert.doesNotMatch(persisted, /^GEV_RATELIMIT_OPENAI_PER_MIN=/m);
-    assert.doesNotMatch(persisted, /^GEV_RATELIMIT_GOOGLE_PER_MIN=/m);
+    assert.doesNotMatch(persisted, /^EVOL_RATELIMIT_OPENAI_PER_MIN=/m);
+    assert.doesNotMatch(persisted, /^EVOL_RATELIMIT_GOOGLE_PER_MIN=/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test('blank and duplicate sharing controls are canonicalized before Pinokio re-reads them', () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'gev-pinokio-env-duplicates-'));
+  const root = mkdtempSync(path.join(tmpdir(), 'evol-pinokio-env-duplicates-'));
   try {
     const filepath = path.join(root, 'ENVIRONMENT');
     const providerLines = [
@@ -151,7 +151,7 @@ test('blank and duplicate sharing controls are canonicalized before Pinokio re-r
 
     assert.equal(environment.PINOKIO_SHARE_CLOUDFLARE, 'false');
     assert.equal(environment.PINOKIO_SHARE_LOCAL, 'false');
-    assert.equal(environment.PINOKIO_SHARE_VAR, '__gev_sharing_disabled__');
+    assert.equal(environment.PINOKIO_SHARE_VAR, '__evol_sharing_disabled__');
     assert.equal(environment.PINOKIO_SHARE_PASSCODE, '');
     const persisted = readFileSync(filepath, 'utf8');
     for (const providerLine of providerLines) {
@@ -162,7 +162,7 @@ test('blank and duplicate sharing controls are canonicalized before Pinokio re-r
     assert.equal((persisted.match(/^PINOKIO_SHARE_VAR=/gm) || []).length, 1);
     assert.match(persisted, /^PINOKIO_SHARE_CLOUDFLARE=false$/m);
     assert.match(persisted, /^PINOKIO_SHARE_LOCAL=false$/m);
-    assert.match(persisted, /^PINOKIO_SHARE_VAR=__gev_sharing_disabled__$/m);
+    assert.match(persisted, /^PINOKIO_SHARE_VAR=__evol_sharing_disabled__$/m);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -173,7 +173,7 @@ for (const fixture of [
   { name: 'UTF-16BE', encode: encodeUtf16be },
 ]) {
   test(`${fixture.name} Pinokio configuration preserves provider values during migration`, () => {
-    const root = mkdtempSync(path.join(tmpdir(), 'gev-pinokio-env-utf16-'));
+    const root = mkdtempSync(path.join(tmpdir(), 'evol-pinokio-env-utf16-'));
     try {
       const filepath = path.join(root, 'ENVIRONMENT');
       writeFileSync(filepath, fixture.encode([
@@ -196,7 +196,7 @@ for (const fixture of [
       assert.equal(environment.OPENAI_API_KEY, 'provider-value');
       assert.equal(environment.PINOKIO_SHARE_CLOUDFLARE, 'false');
       assert.equal(environment.PINOKIO_SHARE_LOCAL, 'false');
-      assert.equal(environment.PINOKIO_SHARE_VAR, '__gev_sharing_disabled__');
+      assert.equal(environment.PINOKIO_SHARE_VAR, '__evol_sharing_disabled__');
       assert.equal(environment.PINOKIO_SHARE_PASSCODE, '');
       assert.equal(readPinokioEnvironment(filepath).OPENAI_API_KEY, 'provider-value');
       const persisted = readFileSync(filepath);

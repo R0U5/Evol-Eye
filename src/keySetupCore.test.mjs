@@ -31,7 +31,7 @@ test('the boot provenance snapshot survives in-process Vite config re-evaluation
   const source = readFileSync(new URL('../vite.config.js', import.meta.url), 'utf8');
   assert.match(
     source,
-    /const PROVIDER_ENV_AT_BOOT = globalThis\.__GEV_PROVIDER_ENV_AT_BOOT \?\?= Object\.freeze\(/,
+    /const PROVIDER_ENV_AT_BOOT = globalThis\.__EVOL_PROVIDER_ENV_AT_BOOT \?\?= Object\.freeze\(/,
   );
 });
 
@@ -358,7 +358,7 @@ test('the sharing gate treats a real PINOKIO_SHARE_VAR as sharing, but not the e
   // The ordinary launch states: unset, empty, or the explicit disabled sentinel.
   assert.equal(admitKeySetupRequest({ ...base, env: {} }).ok, true, 'unset SHARE_VAR is normal');
   assert.equal(admitKeySetupRequest({ ...base, env: { PINOKIO_SHARE_VAR: '' } }).ok, true, 'empty SHARE_VAR is normal');
-  assert.equal(admitKeySetupRequest({ ...base, env: { PINOKIO_SHARE_VAR: '__gev_sharing_disabled__' } }).ok, true, 'the disabled sentinel is normal');
+  assert.equal(admitKeySetupRequest({ ...base, env: { PINOKIO_SHARE_VAR: '__evol_sharing_disabled__' } }).ok, true, 'the disabled sentinel is normal');
   // A real tunnel var disables the surface.
   assert.equal(admitKeySetupRequest({ ...base, env: { PINOKIO_SHARE_VAR: 'MY_TUNNEL_TOKEN' } }).ok, false, 'a real share var is sharing');
 });

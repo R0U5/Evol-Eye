@@ -15,7 +15,7 @@ import {
   formatTrackedEntityLabel,
   knownRadioLocation,
   normalizeStackId,
-} from './gevActions.js';
+} from './evolActions.js';
 import { MAP_STACKS } from '../mapStackController.js';
 import { readFileSync } from 'node:fs';
 
@@ -472,7 +472,7 @@ test('voice Stop Tracking reports exact layers whose active or durable clear fai
     getAll: () => [],
   };
   const viewer = {
-    trackedEntity: { gevTrackedId: 'flights:active' },
+    trackedEntity: { evolTrackedId: 'flights:active' },
     scene: {
       canvas: { addEventListener() {}, removeEventListener() {} },
       preRender: { addEventListener() {} },
@@ -1237,7 +1237,7 @@ test('control_cockpit delegates selected-flight adoption to the canonical cockpi
     scene: { canvas: { addEventListener() {}, removeEventListener() {} } },
     camera: { moveEnd: { addEventListener() {} } },
   };
-  const recordCarrier = { __gevContextId: 'selected-flight-for-cockpit-enter' };
+  const recordCarrier = { __evolContextId: 'selected-flight-for-cockpit-enter' };
   const record = registerEntityContext(recordCarrier, {
     id: 'abc123',
     layerId: 'flights',
@@ -1378,10 +1378,10 @@ test('control_cockpit rolls Contacts back when the turn becomes stale at commit'
 test('control_cockpit adopts the newest selection after Contacts settles', async () => {
   globalThis.window = globalThis.window || { clearTimeout, setTimeout, requestIdleCallback: null };
   const contextStore = getContextStore();
-  const first = registerEntityContext({ __gevContextId: 'cockpit-selection-first' }, {
+  const first = registerEntityContext({ __evolContextId: 'cockpit-selection-first' }, {
     id: 'first', layerId: 'flights', label: 'FIRST',
   });
-  const second = registerEntityContext({ __gevContextId: 'cockpit-selection-second' }, {
+  const second = registerEntityContext({ __evolContextId: 'cockpit-selection-second' }, {
     id: 'second', layerId: 'flights', label: 'SECOND',
   });
   contextStore.selectedEntityId = first.id;
@@ -1647,7 +1647,7 @@ test('control_cockpit enter skips selected non-flight context', async () => {
     scene: { canvas: { addEventListener() {}, removeEventListener() {} } },
     camera: { moveEnd: { addEventListener() {} } },
   };
-  const recordCarrier = { __gevContextId: 'selected-non-flight-cockpit-enter' };
+  const recordCarrier = { __evolContextId: 'selected-non-flight-cockpit-enter' };
   const record = registerEntityContext(recordCarrier, {
     id: 'poi-001',
     layerId: 'local-datacenters',
