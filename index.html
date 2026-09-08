@@ -638,9 +638,11 @@
         <button id="cctv-coverage-btn" class="scene-btn">COVERAGE OFF</button>
         <button id="cctv-auto-hop-btn" class="scene-btn">AUTO HOP OFF</button>
       </div>
-      <!-- Presentation row: calibration quality chip (projection is ALWAYS
-           on — the PROJECTION OFF toggle was removed 2026-09-07) -->
+      <!-- Presentation row: projection toggle + calibration quality chip.
+           Projection OFF (default, 2026-09-07) shows camera icons only — the
+           button opts into the 3D projected screen AND its blue outline. -->
       <div class="cctv-toolbar cctv-toolbar-presentation">
+        <button id="cctv-projection-btn" class="scene-btn">PROJECTION OFF</button>
         <span id="cctv-quality-chip" class="cctv-quality-chip">CAL · --</span>
       </div>
       <details class="cctv-calibration-block" id="cctv-calibration-block">
