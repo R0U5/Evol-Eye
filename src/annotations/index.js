@@ -3,7 +3,7 @@ import { createHybridAnnotationRenderer } from './hybridAnnotationRenderer.js';
 
 /**
  * Initialize the map-annotation engine and expose it for the voice agent and
- * for manual/dev use via `window.__gevAnnotations`.
+ * for manual/dev use via `window.__evolAnnotations`.
  *
  * This module is the single swap point between annotation rendering strategies.
  * This branch (Direction C) uses the HYBRID renderer: world-space draping for
@@ -17,6 +17,6 @@ export function initAnnotations({ viewer, tileset = null }) {
   }
   const renderer = createHybridAnnotationRenderer(viewer);
   const engine = createAnnotationEngine({ viewer, renderer });
-  window.__gevAnnotations = engine;
+  window.__evolAnnotations = engine;
   return engine;
 }

@@ -1,5 +1,5 @@
 /**
- * Vite configuration for Devil's Eye — a cinematic geospatial app.
+ * Vite configuration for EVOL Eye — a cinematic geospatial app.
  *
  * Registers the dev-server proxy middlewares that bypass CORS and add
  * caching/auth for upstream APIs:
@@ -100,7 +100,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * reflect the real launcher (scripts/pinokio-start.mjs sets it) and never a
  * value a project `.env` could inject.
  */
-const LAUNCHER_AT_BOOT = process.env.GEV_LAUNCHER;
+const LAUNCHER_AT_BOOT = process.env.EVOL_LAUNCHER;
 
 /**
  * Provider values present before Vite loads the checkout's dotenv files.
@@ -109,7 +109,7 @@ const LAUNCHER_AT_BOOT = process.env.GEV_LAUNCHER;
  * Recomputing the snapshot there would classify the panel's own keys as
  * external (read-only) until the whole process is relaunched.
  */
-const PROVIDER_ENV_AT_BOOT = globalThis.__GEV_PROVIDER_ENV_AT_BOOT ??= Object.freeze(Object.fromEntries(
+const PROVIDER_ENV_AT_BOOT = globalThis.__EVOL_PROVIDER_ENV_AT_BOOT ??= Object.freeze(Object.fromEntries(
   [...knownKeySetupEnvVars()].map((name) => [name, String(process.env[name] ?? '').trim()]),
 ));
 
@@ -120,7 +120,7 @@ const PROVIDER_ENV_AT_BOOT = globalThis.__GEV_PROVIDER_ENV_AT_BOOT ??= Object.fr
  * Pinokio deliberately treats its app-scoped ENVIRONMENT as authoritative.
  */
 const DEV_FRESH_EXTERNAL_KEYS_AT_BOOT = new Set(
-  String(process.env.GEV_KEY_SETUP_EXTERNAL_KEYS ?? '')
+  String(process.env.EVOL_KEY_SETUP_EXTERNAL_KEYS ?? '')
     .split(',')
     .map((name) => name.trim())
     .filter((name) => knownKeySetupEnvVars().has(name)),
@@ -232,7 +232,7 @@ const OVERPASS_DISK_TTL_MS = 7 * 86_400_000;
  */
 const OVERPASS_BOUNDARY_DISK_TTL_MS = 30 * 86_400_000;
 /** Disk-cache directory for Overpass responses. */
-const OVERPASS_DISK_DIR = path.join(process.cwd(), '.gev-cache', 'overpass');
+const OVERPASS_DISK_DIR = path.join(process.cwd(), '.evol-cache', 'overpass');
 /** Per-upstream fetch timeout (ms). */
 const OVERPASS_TIMEOUT_MS = 22000;
 /** Max entries in the Overpass response cache (LRU-like, oldest evicted first). */
@@ -520,12 +520,12 @@ let _openAiRateLimiter; // undefined = not built yet; null = unlimited; fn = act
 let _googleRateLimiter;
 /** OpenAI cost endpoints (realtime/token + hud-summary). Null = unlimited (default). */
 function openAiRateLimiter() {
-  if (_openAiRateLimiter === undefined) _openAiRateLimiter = makeOptInRateLimiter(process.env.GEV_RATELIMIT_OPENAI_PER_MIN);
+  if (_openAiRateLimiter === undefined) _openAiRateLimiter = makeOptInRateLimiter(process.env.EVOL_RATELIMIT_OPENAI_PER_MIN);
   return _openAiRateLimiter;
 }
 /** Google cost endpoint (nearby-places). Null = unlimited (default). */
 function googleRateLimiter() {
-  if (_googleRateLimiter === undefined) _googleRateLimiter = makeOptInRateLimiter(process.env.GEV_RATELIMIT_GOOGLE_PER_MIN);
+  if (_googleRateLimiter === undefined) _googleRateLimiter = makeOptInRateLimiter(process.env.EVOL_RATELIMIT_GOOGLE_PER_MIN);
   return _googleRateLimiter;
 }
 
@@ -534,7 +534,7 @@ const HUD_SUMMARY_DEFAULT_RATE_LIMIT_PER_MIN = 25;
 let _openAiHudSummaryRateLimiter; // undefined = not built yet; fn = active limiter
 /**
  * Rate limiter for /api/openai/hud-summary. DEFAULT-ON: when
- * GEV_RATELIMIT_OPENAI_PER_MIN is unset, `0`, or non-numeric, this route still
+ * EVOL_RATELIMIT_OPENAI_PER_MIN is unset, `0`, or non-numeric, this route still
  * gets a sane 25/min per-IP cap instead of unlimited — the HUD summary is a
  * paid OpenAI call per request, and the client polls it every 15 s. When the
  * env var IS set, the route shares the same limiter as /api/realtime/token
@@ -542,7 +542,7 @@ let _openAiHudSummaryRateLimiter; // undefined = not built yet; fn = active limi
  */
 function openAiHudSummaryRateLimiter() {
   if (_openAiHudSummaryRateLimiter === undefined) {
-    const configured = Number(process.env.GEV_RATELIMIT_OPENAI_PER_MIN);
+    const configured = Number(process.env.EVOL_RATELIMIT_OPENAI_PER_MIN);
     _openAiHudSummaryRateLimiter = Number.isFinite(configured) && configured > 0
       ? openAiRateLimiter()
       : makeRateLimiter({
@@ -852,7 +852,7 @@ const RADIO_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 const RADIO_DIRECTORY_LIMIT = 750;
 const RADIO_CATALOG_MIN_SUCCESSFUL_QUERIES = 5;
 const RADIO_CATALOG_HEALTHY_MIN_STATIONS = Math.ceil(RADIO_DIRECTORY_LIMIT / 2);
-const RADIO_USER_AGENT = 'DevilsEyeView/1.0 (Radio Browser directory client)';
+const RADIO_USER_AGENT = 'EvolEyeView/1.0 (Radio Browser directory client)';
 const RADIO_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RADIO_FALLBACK_MIRRORS = Object.freeze([
   'https://de1.api.radio-browser.info',
@@ -1433,7 +1433,7 @@ const OPENAI_REALTIME_CONTEXT_RETENTION_DEFAULT = 0.5;
 const OPENAI_HUD_SUMMARY_MODEL_DEFAULT = 'gpt-5-nano';
 const OLLAMA_HUD_SUMMARY_TIMEOUT_MS = 30000;
 const HUD_SUMMARY_PROMPT = [
-  "Write one concise intelligence-HUD summary for Devil's Eye.",
+  "Write one concise intelligence-HUD summary for EVOL Eye.",
   'Use only the supplied place, street, nearby-place, and enabled-layer text labels.',
   'Prefer the clearest named place and include a relevant enabled layer only when useful.',
   'Do not infer from coordinates or invent a place.',
@@ -1444,7 +1444,7 @@ const HUD_SUMMARY_PROVIDER_LABELS = Object.freeze({
   'openai-compatible': 'OpenAI-compatible',
   openai: 'OpenAI',
 });
-const REALTIME_DEBUG_LOG_DIR = path.join(__dirname, '.gev-logs');
+const REALTIME_DEBUG_LOG_DIR = path.join(__dirname, '.evol-logs');
 const REALTIME_DEBUG_LOG_FILE = path.join(REALTIME_DEBUG_LOG_DIR, 'realtime-conversations.jsonl');
 const REALTIME_DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -1625,7 +1625,7 @@ function buildOpenSkyHeaders({ cacheStatus, requestedMode, usedMode, reason, sta
  */
 function celestrakProxy() {
   const TLE_TTL_MS = 6 * 3600_000;
-  const CACHE_DIR = path.join(process.cwd(), '.gev-cache');
+  const CACHE_DIR = path.join(process.cwd(), '.evol-cache');
   const mem = new Map(); // group -> { at: epochMs, body: string }
   const inflight = new Map(); // group -> Promise<{at, body}|null>
 
@@ -1656,7 +1656,7 @@ function celestrakProxy() {
       signal: AbortSignal.timeout(20000),
       // CelesTrak 403s bulk groups (e.g. `active`) unless the request carries a
       // descriptive User-Agent with a contact point.
-      headers: { 'User-Agent': 'devils-eye-celestrak-proxy/1.0 (+https://github.com/bilawalsidhu/devils-eye)' },
+      headers: { 'User-Agent': 'evol-eye-celestrak-proxy/1.0 (+https://github.com/bilawalsidhu/devils-eye)' },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.text();
@@ -1740,7 +1740,7 @@ function rocketLaunchesProxy() {
   const ttlMs = LL2_CACHE_TTL_MS;
   const maxResponseBytes = 12 * 1024 * 1024;
   const maxDiskCacheBytes = 24 * 1024 * 1024;
-  const cachePath = path.join(process.cwd(), '.gev-cache', 'launch-library-2-v2.3.json');
+  const cachePath = path.join(process.cwd(), '.evol-cache', 'launch-library-2-v2.3.json');
   let cache = null;
   let diskLoaded = false;
   const inFlight = new Map();
@@ -1772,7 +1772,7 @@ function rocketLaunchesProxy() {
     res.writeHead(status, {
       'Content-Type': 'application/json',
       'Cache-Control': status === 200 ? 'public, max-age=900' : 'no-store',
-      'X-GEV-Cache': cacheState,
+      'X-EVOL-Cache': cacheState,
     });
     res.end(body);
   }
@@ -1856,12 +1856,12 @@ function rocketLaunchesProxy() {
  * "Traffic flow"). The key comes from TOMTOM_API_KEY server-side only — the
  * browser fetches same-origin `/api/tomtom/flow/{z}/{x}/{y}.pbf`.
  *
- * Cache: memory + disk (.gev-cache/tomtom/), TTL 120 s (traffic is fresh
+ * Cache: memory + disk (.evol-cache/tomtom/), TTL 120 s (traffic is fresh
  * data), single-flight per tile, serve-stale-on-failure — the celestrakProxy
  * pattern. Cache hits never count against the budget.
  *
  * Budget governor (mirrors the OpenSky credit-governor philosophy — last-good
- * data beats a dead layer): a persistent counter (.gev-cache/tomtom/budget.json,
+ * data beats a dead layer): a persistent counter (.evol-cache/tomtom/budget.json,
  * keyed by UTC date, reset on day change) counts upstream fetch attempts
  * against a soft cap (TOMTOM_DAILY_TILE_BUDGET, default 40,000 of the free
  * tier's ~50k/day). Over the cap the proxy serves stale tiles when available,
@@ -1875,7 +1875,7 @@ function rocketLaunchesProxy() {
  */
 function tomtomProxy() {
   const TILE_TTL_MS = 120_000;
-  const CACHE_DIR = path.join(process.cwd(), '.gev-cache', 'tomtom');
+  const CACHE_DIR = path.join(process.cwd(), '.evol-cache', 'tomtom');
   const BUDGET_PATH = path.join(CACHE_DIR, 'budget.json');
   const DEFAULT_DAILY_BUDGET = 40000;
   const MEM_MAX_ENTRIES = 256;
@@ -2125,7 +2125,7 @@ function tomtomProxy() {
  * clamps to the trailing 24 h via src/data/firmsCsv.js. FIRMS quota is
  * 5,000 transactions / 10 min per MAP_KEY, so the cache is the point:
  * TTL 30 min, single-flight refresh, serve-stale-on-failure, and a
- * fresh-enough disk cache (.gev-cache/firms.json) prevents ANY upstream
+ * fresh-enough disk cache (.evol-cache/firms.json) prevents ANY upstream
  * fetch across dev-server restarts. Pattern mirrors celestrakProxy.
  *
  * Routes:
@@ -2141,7 +2141,7 @@ function firmsProxy() {
   const TTL_MS = 30 * 60_000;
   const STATUS_TTL_MS = 5 * 60_000;
   const SOURCES = ['VIIRS_NOAA20_NRT', 'VIIRS_NOAA21_NRT', 'VIIRS_SNPP_NRT'];
-  const CACHE_DIR = path.join(process.cwd(), '.gev-cache');
+  const CACHE_DIR = path.join(process.cwd(), '.evol-cache');
   const CACHE_PATH = path.join(CACHE_DIR, 'firms.json');
 
   /** @type {?{at: number, sources: Array<object>, fires: Array<object>}} */
@@ -2350,7 +2350,7 @@ function firmsProxy() {
  */
 function terrainHeightsProxy() {
   const TTL_MS = 30 * 24 * 3600_000;
-  const CACHE_DIR = path.join(process.cwd(), '.gev-cache');
+  const CACHE_DIR = path.join(process.cwd(), '.evol-cache');
   const CACHE_PATH = path.join(CACHE_DIR, 'terrain-heights.json');
   const UPSTREAM_CHUNK = 256;
   const MAX_POINTS = 2000;
@@ -2555,7 +2555,7 @@ function terrainHeightsProxy() {
  */
 function adsbdbProxy() {
   const TTL_MS = 24 * 3600_000;
-  const CACHE_PATH = path.join(process.cwd(), '.gev-cache', 'adsbdb.json');
+  const CACHE_PATH = path.join(process.cwd(), '.evol-cache', 'adsbdb.json');
   // Bounded per-store caches: every distinct callsign/hex mints a persistent
   // entry (404s negative-cached), so cap both stores with LRU eviction to keep
   // memory and the on-disk JSON bounded. Maps preserve insertion order for all
@@ -2806,7 +2806,7 @@ export async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'devils-eye-overpass-proxy/1.0',
+          'User-Agent': 'evol-eye-overpass-proxy/1.0',
         },
         body,
         signal: controller.signal,
@@ -3072,7 +3072,7 @@ function overpassProxy() {
           try {
             const upstreamRes = await fetch(upstream, {
               signal: controller.signal,
-              headers: { 'User-Agent': 'devils-eye/dev (local)' },
+              headers: { 'User-Agent': 'evol-eye/dev (local)' },
             });
             if (!upstreamRes.ok) return fail('no route found');
             const ctype = upstreamRes.headers.get('content-type') || '';
@@ -3134,7 +3134,7 @@ async function fetchAdsbLolPointFallback(req) {
         {
           headers: {
             Accept: 'application/json',
-            'User-Agent': 'devils-eye-adsblol-regional-fallback/1.0',
+            'User-Agent': 'evol-eye-adsblol-regional-fallback/1.0',
           },
           signal: controller.signal,
         },
@@ -3551,7 +3551,7 @@ async function fetchGbfsUpstream(url, { signal = null } = {}) {
         method: 'GET',
         headers: {
           Accept: 'application/json',
-          'User-Agent': 'devils-eye-gbfs-proxy/1.0',
+          'User-Agent': 'evol-eye-gbfs-proxy/1.0',
         },
         signal,
         redirect: 'manual',
@@ -4962,7 +4962,7 @@ async function fetchCctvUpstream(url, {
     let upstream;
     try {
       upstream = await fetchImpl(current, {
-        headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0', ...headers },
+        headers: { 'User-Agent': 'evol-eye-cctv-proxy/1.0', ...headers },
         signal: controller.signal,
         redirect: 'manual',
       });
@@ -5182,7 +5182,7 @@ function cctvProxy() {
       sv.searchParams.set('key', streetViewKey);
 
       const svResp = await fetch(sv.toString(), {
-        headers: { 'User-Agent': 'devils-eye-cctv-proxy/1.0' },
+        headers: { 'User-Agent': 'evol-eye-cctv-proxy/1.0' },
         signal: AbortSignal.timeout(CCTV_FRAME_FETCH_TIMEOUT_MS),
       });
       const svType = svResp.headers.get('content-type') || '';
@@ -5270,7 +5270,7 @@ function cctvProxy() {
             }
 
             try {
-              const upstreamHeaders = { 'User-Agent': 'devils-eye-cctv-proxy/1.0' };
+              const upstreamHeaders = { 'User-Agent': 'evol-eye-cctv-proxy/1.0' };
               const requestRange = req.headers?.range;
               if (requestRange) upstreamHeaders.Range = requestRange;
               cctvLog(`media ${cameraId}: fetching ${mediaUrl}`);
@@ -5475,7 +5475,7 @@ function adsbLolProxy() {
             return;
           }
           const upstream = await fetch('https://api.adsb.lol/v2/mil', {
-            headers: { 'User-Agent': 'devils-eye-adsblol-proxy/1.0' },
+            headers: { 'User-Agent': 'evol-eye-adsblol-proxy/1.0' },
             // A hung upstream must not hang the client; the stale-cache fallback
             // below is the reason this proxy exists.
             signal: AbortSignal.timeout(20000),
@@ -5875,17 +5875,17 @@ export function openAiRealtimeProxy() {
     // budget) so .env values applied by loadEnv are visible, then normalized
     // against today's UTC day key + the current API key identity on every
     // read. Persisted on every mutation.
-    const VOICE_LEDGER_PATH = path.join(process.cwd(), '.gev-cache', 'openai-realtime-ledger.json');
+    const VOICE_LEDGER_PATH = path.join(process.cwd(), '.evol-cache', 'openai-realtime-ledger.json');
     let voiceLedger = null;
     let voiceLedgerLoaded = false;
 
     function voiceDailyBudgetUsd() {
-      const raw = Number(process.env.GEV_VOICE_DAILY_BUDGET_USD);
+      const raw = Number(process.env.EVOL_VOICE_DAILY_BUDGET_USD);
       return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_VOICE_DAILY_BUDGET_USD;
     }
 
     function voiceDailyMintCap() {
-      const raw = Number(process.env.GEV_VOICE_DAILY_MINT_CAP);
+      const raw = Number(process.env.EVOL_VOICE_DAILY_MINT_CAP);
       return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : DEFAULT_VOICE_DAILY_MINT_CAP;
     }
 
@@ -5997,7 +5997,7 @@ export function openAiRealtimeProxy() {
       }
 
       // Per-IP throttle for the HUD summary. DEFAULT-ON (M11): when
-      // GEV_RATELIMIT_OPENAI_PER_MIN is unset this route still gets a 25/min
+      // EVOL_RATELIMIT_OPENAI_PER_MIN is unset this route still gets a 25/min
       // cap instead of unlimited — every request is a paid provider call and
       // the client polls every 15 s. Keyless HUD fallback has no provider cost
       // and resolves above without consuming a quota slot.
@@ -6080,7 +6080,7 @@ export function openAiRealtimeProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_OPENAI_PER_MIN). No-op when unset.
+      // Opt-in per-IP throttle (EVOL_RATELIMIT_OPENAI_PER_MIN). No-op when unset.
       if (!enforceOptInRateLimit(openAiRateLimiter(), req, res)) return;
 
       const apiKey = process.env.OPENAI_API_KEY;
@@ -6175,11 +6175,11 @@ export function openAiRealtimeProxy() {
             output: { voice },
           },
           instructions: [
-            "You are GEV Voice Control, a concise voice controller for a Cesium geospatial app called Devil's Eye.",
+            "You are EVOL Voice Control, a concise voice controller for a Cesium geospatial app called EVOL Eye.",
             'Have a natural spoken conversation with the user while the mic session is active.',
-            'Do not require a wake phrase. Treat direct commands like "zoom into London" or "open datacenters" as GEV control requests.',
+            'Do not require a wake phrase. Treat direct commands like "zoom into London" or "open datacenters" as EVOL control requests.',
             'Only control the app by calling the provided tools. Never invent tool names or arguments.',
-            'Call tools only for clear GEV control, navigation, visual-style, layer, or app-state requests. For ordinary conversation, answer normally without tools.',
+            'Call tools only for clear EVOL control, navigation, visual-style, layer, or app-state requests. For ordinary conversation, answer normally without tools.',
             'For requests to open, show, reveal, or focus a menu/panel, call set_panel_open or show_data_layers_menu. "Open Context" means only set_panel_open{panelId:"global-context-panel",open:true}; it does not activate a Context sub-mode. "Open Contacts" means set_context_mode{mode:"contacts"}; that action expands the parent Context panel before activating Contacts.',
             'For requests like "show me the datacenter layers", open the data layers menu and focus the matching layer row; do not enable the layer unless the user asks to turn it on.',
             'For questions like "what am I looking at?", "what is in view?", "what is this?", "that selected thing", nearby datacenter, dam, cable, ship, or current view contents, call get_entity_context first, then answer from the returned scene/entity context.',
@@ -6213,7 +6213,7 @@ export function openAiRealtimeProxy() {
             // infrastructure tile at all. See src/firstRunExperience.js for why.
             //
             // Fully expressible with tools that already exist, so
-            // GEV_REALTIME_TOOLS is deliberately untouched — deleting this one
+            // EVOL_REALTIME_TOOLS is deliberately untouched — deleting this one
             // string is the whole rollback.
             'NAMED VIEWS are shorthand for tool calls you already have — there is no "mode" tool for them. Treat ONLY these as the shorthand: "infrastructure mode" / "the infrastructure view" / "show me global infrastructure" means three set_layer_visibility calls (local-datacenters, local-dams, telegeography-submarine-cables) plus zoom_to_globe; "environmental mode" / "earth watch" / "active events", said as the name of a view, means set_layer_visibility for local-firms and earthquakes plus zoom_to_globe. Anything vaguer is NOT this shorthand — an open-ended question about the world or the news is an ordinary question: answer it, or use analyst_query over the layers already on. Never switch a whole view on to answer a question nobody asked to see. When you do run one, make every call before speaking, then give one confirmation naming the resulting state; if the fires layer comes back unavailable because no FIRMS key is configured, say so plainly — the earthquakes still loaded. "Live contacts" and "space missions" are NOT this pattern: they stay set_context_mode{mode:"contacts"} and set_context_mode{mode:"space-missions"}.',
             'For visual filter requests, call set_visual_style with one of the allowed style IDs.',
@@ -6227,7 +6227,7 @@ export function openAiRealtimeProxy() {
             'Confirmations echo the RESULTING state, never the request: "HUD operator layout", "Density twenty-five percent", "Bing aerial imagery", "Tracking UAL428", "Framed fourteen aircraft". On ok=false, state the failure plainly: "Nothing matched UAL999", "No ships within 120 kilometers". Never claim an action without ok=true in the tool result.',
             'For destination requests such as "take me to Italy", "go to NYC", or "show me the Eiffel Tower", call fly_to_location. Prefer known city IDs when available; otherwise pass the plain place query.',
             'Navigation-only requests ("take me to X", "go to X", "fly to X") are NOT descriptions: call fly_to_location alone and do NOT also call annotate_map, unless the user explicitly asks to mark the place or you go on to explain specific places there. Never drop a point pin on a region-scale natural feature (a mountain range, desert, sea, or forest) — a single point in the middle of the Rockies is meaningless. If the user explicitly asks to mark such a region, prefer type=area.',
-            'For country and city destinations, omit rangeM so GEV frames the whole country or city in view. For landmarks and buildings, omit rangeM so GEV chooses a close landmark view.',
+            'For country and city destinations, omit rangeM so EVOL frames the whole country or city in view. For landmarks and buildings, omit rangeM so EVOL chooses a close landmark view.',
             'Only supply rangeM when the user asks for a particular numeric height, distance, closer view, or wider view.',
             'For relative requests such as "zoom out a little", "pull back", "zoom in more", or "get closer", always call adjust_camera_zoom. But "globe view", "whole earth", "the whole planet", or "zoom all the way out" is an ABSOLUTE framing: call zoom_to_globe once instead — repeated adjust_camera_zoom calls can never reach the globe. Never claim the camera moved without the tool returning ok=true.',
             'Keep spoken confirmations short, e.g. "Opening datacenters" or "Flying to London".',
@@ -6238,7 +6238,7 @@ export function openAiRealtimeProxy() {
             'PREFER NAMES. Only when you cannot name or geocode a place but you can clearly SEE the exact spot in the most recent viewport screenshot, fall back to screenX/screenY (normalized 0..1 from that image) to point at it; the app converts the pixel to a real world point. Never use screenX/screenY for something you could name.',
             'PATHS vs DISTANCES: for "walking/driving route from A to B" (or through several stops), use type=route with the ordered points and the matching mode (walking/driving/cycling) — the app draws the real street-following path on the map and reports distance and travel time, which you can read aloud. For "how far is X from Y", "is it nearby", or "X is next to Y", use type=arrow between the two — it draws a floating connector and shows the straight-line distance. Do NOT use route for a simple distance/proximity question.',
           ].join('\n'),
-          tools: GEV_REALTIME_TOOLS,
+          tools: EVOL_REALTIME_TOOLS,
           tool_choice: 'auto',
         },
       };
@@ -6249,7 +6249,7 @@ export function openAiRealtimeProxy() {
           headers: {
             Authorization: `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
-            'OpenAI-Safety-Identifier': 'gev-local-dev',
+            'OpenAI-Safety-Identifier': 'evol-local-dev',
           },
           // This is on the mic path — a hang here is a dead voice feature and a
           // stuck client request. Bound it.
@@ -6275,10 +6275,10 @@ export function openAiRealtimeProxy() {
         // body is passed through untouched (the client parses it verbatim), so
         // these headers are the authoritative echo — including the case where a
         // bogus ?tier= was silently downgraded to standard.
-        res.setHeader('X-GEV-Voice-Tier', tier);
-        res.setHeader('X-GEV-Voice-Model', model);
+        res.setHeader('X-EVOL-Voice-Tier', tier);
+        res.setHeader('X-EVOL-Voice-Model', model);
         if (requestedTier && !isKnownVoiceTier(requestedTier)) {
-          res.setHeader('X-GEV-Voice-Tier-Fallback', '1');
+          res.setHeader('X-EVOL-Voice-Tier-Fallback', '1');
         }
         res.end(body);
       } catch (error) {
@@ -6334,7 +6334,7 @@ export function openAiRealtimeProxy() {
             method: 'DELETE',
             headers: {
               Authorization: `Bearer ${apiKey}`,
-              'OpenAI-Safety-Identifier': 'gev-local-dev',
+              'OpenAI-Safety-Identifier': 'evol-local-dev',
             },
             signal: AbortSignal.timeout(15000),
           }
@@ -6452,7 +6452,7 @@ export function googlePlacesContextProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_GOOGLE_PER_MIN). No-op when unset.
+      // Opt-in per-IP throttle (EVOL_RATELIMIT_GOOGLE_PER_MIN). No-op when unset.
       // Inlined (not the shared helper) so the 429 body keeps this endpoint's
       // `places: []` contract that the client expects on every error response.
       const _grl = googleRateLimiter();
@@ -6574,7 +6574,7 @@ export function googlePlacesContextProxy() {
         return;
       }
 
-      // Opt-in per-IP throttle (GEV_RATELIMIT_GOOGLE_PER_MIN). No-op when unset.
+      // Opt-in per-IP throttle (EVOL_RATELIMIT_GOOGLE_PER_MIN). No-op when unset.
       // Inlined (like nearby-places) so the 429 body keeps the `places: []`
       // contract the client expects on every error response.
       const _grl = googleRateLimiter();
@@ -6700,7 +6700,7 @@ export function googlePlacesContextProxy() {
         }
         const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
           headers: {
-            'User-Agent': 'Devils-Eye/1.0 searchbar geocoder',
+            'User-Agent': 'Evol-Eye/1.0 searchbar geocoder',
             Referer: 'https://github.com/R0U5/Devils-Eye',
             Accept: 'application/json',
           },
@@ -6755,11 +6755,11 @@ function approximateDistanceM(latA, lonA, latB, lonB) {
   ));
 }
 
-const GEV_REALTIME_TOOLS = [
+const EVOL_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'fly_to_location',
-    description: "Fly the Devil's Eye camera to a known city, geocoded country/region/city/landmark, or explicit WGS84 coordinate. Countries/cities frame the whole place; landmarks/buildings use close framing.",
+    description: "Fly the EVOL Eye camera to a known city, geocoded country/region/city/landmark, or explicit WGS84 coordinate. Countries/cities frame the whole place; landmarks/buildings use close framing.",
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -6778,7 +6778,7 @@ const GEV_REALTIME_TOOLS = [
         viewMode: {
           type: 'string',
           enum: ['close', 'overview'],
-          description: 'Optional framing intent. Usually omit this; GEV infers whole-place framing for countries/cities and close framing for landmarks.',
+          description: 'Optional framing intent. Usually omit this; EVOL infers whole-place framing for countries/cities and close framing for landmarks.',
         },
         rangeM: {
           type: 'number',
@@ -6856,7 +6856,7 @@ const GEV_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'set_layer_visibility',
-    description: "Enable or disable one registered Devil's Eye data layer.",
+    description: "Enable or disable one registered EVOL Eye data layer.",
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -6920,7 +6920,7 @@ const GEV_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'set_panel_open',
-    description: 'Open or close a GEV UI panel/dropdown.',
+    description: 'Open or close a EVOL UI panel/dropdown.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -6980,7 +6980,7 @@ const GEV_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'set_visual_style',
-    description: "Set the active Devil's Eye visual filter/style.",
+    description: "Set the active EVOL Eye visual filter/style.",
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -6996,7 +6996,7 @@ const GEV_REALTIME_TOOLS = [
   {
     type: 'function',
     name: 'get_entity_context',
-    description: 'Get current GEV scene context, including basemap/3D-tile target context, selected entity metadata if active, and entities currently visible in the camera view.',
+    description: 'Get current EVOL scene context, including basemap/3D-tile target context, selected entity metadata if active, and entities currently visible in the camera view.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -7805,7 +7805,7 @@ export const MILITARY_INSTALLATION_ELEMENT_CAP = 700;
  */
 const MILITARY_INSTALLATION_DISK_TTL_MS = 30 * 86_400_000;
 /** Disk-cache directory for mapped installation payloads. */
-const MILITARY_INSTALLATION_DISK_DIR = path.join(process.cwd(), '.gev-cache', 'military-installations');
+const MILITARY_INSTALLATION_DISK_DIR = path.join(process.cwd(), '.evol-cache', 'military-installations');
 /**
  * Cache-key grid step in degrees (~5.5 km).
  *
@@ -8265,7 +8265,7 @@ function fetchRegionalPlace(point) {
     });
     const payload = await fetchRegionalJson(`https://nominatim.openstreetmap.org/reverse?${params}`, {
       headers: {
-        'User-Agent': 'DevilsEyeView/0.1 (+https://github.com/bilawalsidhu/devils-eye)',
+        'User-Agent': 'EvolEyeView/0.1 (+https://github.com/bilawalsidhu/devils-eye)',
         Referer: 'https://github.com/bilawalsidhu/devils-eye',
       },
     });
@@ -8286,7 +8286,7 @@ async function fetchRegionalNews(place) {
   });
   try {
     const xml = await fetchRegionalText(`https://news.google.com/rss/search?${rssParams}`, {
-      headers: { 'User-Agent': 'DevilsEyeView/0.1' },
+      headers: { 'User-Agent': 'EvolEyeView/0.1' },
       timeoutMs: 12_000,
     });
     const articles = normalizeRssArticles(xml, 5);
@@ -8302,7 +8302,7 @@ async function fetchRegionalNews(place) {
   });
   try {
     const payload = await fetchRegionalJson(`https://api.gdeltproject.org/api/v2/doc/doc?${params}`, {
-      headers: { 'User-Agent': 'DevilsEyeView/0.1' },
+      headers: { 'User-Agent': 'EvolEyeView/0.1' },
       timeoutMs: 12_000,
     });
     const articles = normalizeRegionalArticles(payload, 5);
@@ -8593,7 +8593,7 @@ function keySetupEndpoint() {
   // touches a store some other workflow owns.
   // The launcher marker is read from the BOOT environment captured before
   // Vite's loadEnv merges dotenv files into process.env — otherwise a stray
-  // `GEV_LAUNCHER=pinokio` line in someone's .env would silently redirect a
+  // `EVOL_LAUNCHER=pinokio` line in someone's .env would silently redirect a
   // plain `npm run dev` to write the Pinokio store it never loaded.
   const pinokioManaged = () => LAUNCHER_AT_BOOT === 'pinokio';
   const storeName = () => (pinokioManaged() ? 'pinokio-environment' : 'env-file');
@@ -8624,7 +8624,7 @@ function keySetupEndpoint() {
     } catch (error) {
       if (error?.code === 'ENOENT') return ''; // The first saved key births the file.
       const unreadable = new Error('the existing configuration could not be read, so nothing was changed');
-      unreadable.code = 'GEV_STORE_UNREADABLE';
+      unreadable.code = 'EVOL_STORE_UNREADABLE';
       throw unreadable;
     }
   };
@@ -8710,7 +8710,7 @@ function keySetupEndpoint() {
       // secret never on disk unprotected — no rollback path to get wrong.
       if (!hardenCredentialFile(tmp)) {
         const error = new Error('could not restrict the credential file to your account; nothing was saved');
-        error.code = 'GEV_HARDEN_FAILED';
+        error.code = 'EVOL_HARDEN_FAILED';
         throw error;
       }
       // writeSync may write fewer bytes than asked; loop until the whole
@@ -8735,7 +8735,7 @@ function keySetupEndpoint() {
     }
   };
   return {
-    name: 'gev-key-setup',
+    name: 'evol-key-setup',
     // serve AND not preview: `vite preview` resolves with command 'serve' too,
     // so a bare apply:'serve' would still configure under preview. The endpoints
     // only install via configureServer (never configurePreviewServer), so they
@@ -8792,7 +8792,7 @@ function keySetupEndpoint() {
             // "saved world-readable" must never be reported as a generic write
             // error. Everything else returns a fixed message (a raw filesystem
             // error can carry an absolute path; that stays in the server log).
-            if (error?.code === 'GEV_HARDEN_FAILED' || error?.code === 'GEV_STORE_UNREADABLE') {
+            if (error?.code === 'EVOL_HARDEN_FAILED' || error?.code === 'EVOL_STORE_UNREADABLE') {
               return respond(res, 500, { error: `The key was not saved: ${error.message}` });
             }
             return respond(res, 500, { error: `Could not write the ${storeName()} store` });

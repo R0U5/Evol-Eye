@@ -650,8 +650,8 @@ test('the DISPLAY rail starts expanded on a first run (so overlay toggles incl. 
 
 test('the voice TOOL SCHEMA is byte-identical to main — the mission mapping is instructions only', () => {
   const src = fs.readFileSync(new URL('../vite.config.js', import.meta.url), 'utf8');
-  const start = src.indexOf('const GEV_REALTIME_TOOLS = [');
-  assert.ok(start > 0, 'GEV_REALTIME_TOOLS must still be a single literal array');
+  const start = src.indexOf('const EVOL_REALTIME_TOOLS = [');
+  assert.ok(start > 0, 'EVOL_REALTIME_TOOLS must still be a single literal array');
   const end = src.indexOf('\n];\n', start);
   const block = src.slice(start, end + 4);
 

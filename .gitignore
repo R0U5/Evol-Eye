@@ -6,8 +6,8 @@ dist-installer
 screenshots/
 qa-shots/
 output/
-.gev-logs/
-.gev-cache/
+.evol-logs/
+.evol-cache/
 .DS_Store
 .gstack/
 3d-models/

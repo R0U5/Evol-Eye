@@ -23,8 +23,8 @@ const BUNDLE_FILES = [
   'installer.css',
   'installer.js',
   'manifest.json',
-  'Devils Eye.cmd',
-  'Devils-Eye.sh',
+  'EVOL Eye.cmd',
+  'Evol-Eye.sh',
 ];
 
 export { BUNDLE_FILES };
@@ -32,7 +32,7 @@ export { BUNDLE_FILES };
 async function main() {
   const pkg = JSON.parse(await fsp.readFile(path.join(repoRoot, 'package.json'), 'utf8'));
   const appVersion = pkg.version;
-  const rootFolder = `Devils-Eye-Setup-${appVersion}`;
+  const rootFolder = `Evol-Eye-Setup-${appVersion}`;
   const zipName = `${rootFolder}.zip`;
 
   await fsp.mkdir(outDir, { recursive: true });
