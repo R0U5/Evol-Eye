@@ -1,14 +1,14 @@
 {
   "name": "EVOL Eye",
   "owner": "R0U5",
-  "repo": "Devils-Eye",
+  "repo": "Evol-Eye",
   "defaultBranch": "main",
   "repoIsPrivate": true,
   "installerPort": 8787,
   "appPort": 4173,
   "recommendedNodeVersion": "24.14.0",
   "minNodeVersion": "20.0.0",
-  "homepage": "https://github.com/R0U5/Devils-Eye",
+  "homepage": "https://github.com/R0U5/Evol-Eye",
   "installDir": {
     "win32": "%LOCALAPPDATA%\\EvolEye",
     "darwin": "~/Library/Application Support/EvolEye",
