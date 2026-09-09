@@ -29,6 +29,7 @@ import cctvLayer, {
   _pushAmbientCardEntriesForTest,
   _setAmbientCardStateForTest,
   _setCctvOverlayHostForTest,
+  _getCctvLiveConnectionStateForTest,
   activationProbeClampRange,
   bindCctvWorldClickGesture,
   clearProbeClampOnDeactivation,
@@ -1620,6 +1621,213 @@ test('liveMediaModeDecision: primary always wins the first slot, secondary falls
 test('liveMediaSlotAvailable: bounded by the exported client cap', () => {
   // Fresh module state has no open connections.
   assert.equal(liveMediaSlotAvailable(), true);
+});
+
+test('live-media connection counter stays in [0,2] through the full camera lifecycle', () => {
+  // Regression for the Axis projection bug: the active camera's sidebar
+  // reservation was gated on liveMediaSlotAvailable(), so the first
+  // getUIState() call (activeCamera field) released the reservation when the
+  // projection already held a slot (count=2=cap), then the second call
+  // (cameras[] map) re-reserved it — the counter oscillated 1<->2 and the
+  // sidebar fell back to snapshot. The active camera must ALWAYS hold both
+  // feeds (projection + sidebar = cap 2); only a third concurrent demand
+  // falls back to snapshot.
+  const originalDocument = globalThis.document;
+  const originalImage = globalThis.Image;
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalCaf = globalThis.cancelAnimationFrame;
+
+  function makeCanvas() {
+    return {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+        createLinearGradient: () => ({ addColorStop() {} }),
+        fillRect() {},
+        fillText() {},
+        strokeRect() {},
+        arc() {},
+        beginPath() {},
+        moveTo() {},
+        lineTo() {},
+        stroke() {},
+        measureText: (text) => ({ width: String(text).length * 10 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(64 * 36 * 4) }),
+        imageSmoothing: true,
+      }),
+    };
+  }
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? makeCanvas() : { tag }),
+    hidden: false,
+    addEventListener() {},
+    removeEventListener() {},
+    body: { classList: { contains: () => false } },
+  };
+  globalThis.Image = class {
+    constructor() { this.decoding = 'async'; this.crossOrigin = 'anonymous'; }
+    set src(v) { this._src = v; }
+    get src() { return this._src; }
+    removeAttribute() {}
+  };
+  globalThis.requestAnimationFrame = (fn) => { setTimeout(fn, 16); return 1; };
+  globalThis.cancelAnimationFrame = () => {};
+
+  const viewer = {
+    entities: new Cesium.EntityCollection(),
+    isDestroyed: () => false,
+    trackedEntity: null,
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 4000),
+      positionCartographic: Cesium.Cartographic.fromDegrees(-97.7431, 30.2672, 4000),
+      heading: 0.4, pitch: -0.7, roll: 0.1,
+      transform: Cesium.Matrix4.clone(Cesium.Matrix4.IDENTITY),
+      flyTo() {},
+      moveEnd: { addEventListener() {}, removeEventListener() {} },
+      moveStart: { addEventListener() {}, removeEventListener() {} },
+    },
+    scene: {
+      canvas: { clientWidth: 1200, clientHeight: 800 },
+      cartesianToCanvasCoordinates: () => undefined,
+      primitives: { add: (p) => p, remove: () => true },
+      requestRender() {},
+      pickFromRay: () => null,
+      globe: { show: true },
+    },
+  };
+
+  function makeRecord(id) {
+    return {
+      camera: {
+        id,
+        name: `Cam ${id}`,
+        city: 'Austin',
+        lat: 30.2672,
+        lon: -97.7431,
+        headingDeg: 41,
+        fovDeg: 60,
+        pitchDeg: -10,
+        rangeM: 500,
+        mountHeightM: 10,
+        groundElevationM: 150,
+        feedType: 'mjpeg',
+        provider: 'axis',
+        sourceKind: 'discovered',
+        feedConfigured: true,
+        calibration: { rangeScale: 1 },
+      },
+      position: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 160),
+      coverageEntities: [],
+      projection: null,
+      activationDone: false,
+      probeClampRangeM: null,
+      groundPrior: { ellipsoid: 150 },
+      groundResolved: {},
+      groundSamples: {},
+      frustumGeometry: null,
+      frustumPositions: null,
+    };
+  }
+
+  try {
+    _setCctvOverlayHostForTest({
+      setEntries() {}, setVisible() {}, clearSource() {}, hitTest: () => null,
+    });
+
+    const camA = makeRecord('axis-a');
+    const camB = makeRecord('axis-b');
+    const camC = makeRecord('axis-c');
+    const records = [camA, camB, camC];
+
+    const counter = () => _getCctvLiveConnectionStateForTest();
+    const assertInvariant = (label) => {
+      const s = counter();
+      assert.ok(
+        s.count >= 0 && s.count <= LIVE_MEDIA_CONNECTION_CAP,
+        `${label}: count ${s.count} must stay in [0, ${LIVE_MEDIA_CONNECTION_CAP}]`,
+      );
+      assert.equal(
+        liveMediaSlotAvailable(),
+        s.count < LIVE_MEDIA_CONNECTION_CAP,
+        `${label}: liveMediaSlotAvailable() must reflect count=${s.count}`,
+      );
+    };
+
+    // init-active: A active, projection on.
+    _setCctvCoverageStateForTest({
+      viewer,
+      records,
+      activeCameraId: 'axis-a',
+      enabled: true,
+      coverageMode: 'off',
+      showProjection: true,
+    });
+    assertInvariant('after setup');
+
+    // enable() path: ensureProjectionRuntime + notify.
+    cctvLayer.enable();
+    let s = counter();
+    assert.equal(s.count, 2, 'enable(): projection + sidebar = 2');
+    assert.equal(s.sidebarReservedForId, 'axis-a');
+    assert.equal(cctvLayer.getUIState().activeCamera.feedMode, 'live');
+    assertInvariant('after enable');
+
+    // Switch A -> B: the counter must land on exactly 2 for the new camera.
+    setActiveCamera('axis-b');
+    s = counter();
+    assert.equal(s.count, 2, 'switch A->B: count must be exactly 2');
+    assert.equal(s.sidebarReservedForId, 'axis-b');
+    assert.equal(cctvLayer.getUIState().activeCamera.feedMode, 'live');
+    assertInvariant('after switch A->B');
+
+    // Switch B -> A: back to the original camera, still exactly 2.
+    setActiveCamera('axis-a');
+    s = counter();
+    assert.equal(s.count, 2, 'switch B->A: count must be exactly 2');
+    assert.equal(s.sidebarReservedForId, 'axis-a');
+    assert.equal(cctvLayer.getUIState().activeCamera.feedMode, 'live');
+    assertInvariant('after switch B->A');
+
+    // Deactivate: everything released.
+    deactivateActiveCamera();
+    s = counter();
+    assert.equal(s.count, 0, 'deactivate: count must drop to 0');
+    assert.equal(s.sidebarReservedForId, null);
+    assert.equal(liveMediaSlotAvailable(), true);
+    assertInvariant('after deactivate');
+
+    // Re-activate: exactly 2 again.
+    setActiveCamera('axis-c');
+    s = counter();
+    assert.equal(s.count, 2, 're-activate: count must be exactly 2');
+    assert.equal(s.sidebarReservedForId, 'axis-c');
+    assert.equal(cctvLayer.getUIState().activeCamera.feedMode, 'live');
+    assertInvariant('after re-activate');
+
+    // Projection off: sidebar keeps its slot, projection releases.
+    cctvLayer.setParams({ showProjection: false });
+    s = counter();
+    assert.equal(s.count, 1, 'projection off: only the sidebar reservation remains');
+    assert.equal(s.sidebarReservedForId, 'axis-c');
+    assert.equal(cctvLayer.getUIState().activeCamera.feedMode, 'live');
+    assertInvariant('after projection off');
+
+    // Projection back on: exactly 2 again.
+    cctvLayer.setParams({ showProjection: true });
+    s = counter();
+    assert.equal(s.count, 2, 'projection on: count must be exactly 2');
+    assert.equal(s.sidebarReservedForId, 'axis-c');
+    assert.equal(cctvLayer.getUIState().activeCamera.feedMode, 'live');
+    assertInvariant('after projection on');
+  } finally {
+    cctvLayer.disable();
+    globalThis.document = originalDocument;
+    globalThis.Image = originalImage;
+    globalThis.requestAnimationFrame = originalRaf;
+    globalThis.cancelAnimationFrame = originalCaf;
+  }
 });
 
 test('mediaUrlFor: stable URL with optional resolution passthrough, no cache-buster', () => {
