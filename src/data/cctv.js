@@ -640,9 +640,16 @@ function isVideoFeedType(feedType) {
  */
 export function isMjpgStreamUrl(url) {
   if (!url || typeof url !== 'string') return false;
-  const lower = url.toLowerCase();
-  if (lower.includes('/mjpg/') || lower.includes('/mjpeg/')) return true;
-  return /(\.mjpg|\.mjpeg|video\.mjpg)(\?|$)/i.test(lower);
+  let pathname;
+  try {
+    // Match against the pathname only: a `.mjpg` (or `/mjpg/`) in the QUERY
+    // string must not upgrade a static image URL to the live-stream path.
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (pathname.includes('/mjpg/') || pathname.includes('/mjpeg/')) return true;
+  return /(\.mjpg|\.mjpeg|video\.mjpg)$/i.test(pathname);
 }
 
 /**
@@ -671,6 +678,30 @@ export function normalizeSourceFeedType(rawFeedType, url) {
  */
 export function liveMediaSlotAvailable() {
   return _liveMediaConnectionCount < LIVE_MEDIA_CONNECTION_CAP;
+}
+
+/**
+ * Releases the sidebar live reservation (if any) and its client slot. The
+ * sidebar feed is counted against LIVE_MEDIA_CONNECTION_CAP just like the
+ * projection feed, so every release path must go through here to keep the
+ * counter in sync. Idempotent.
+ */
+function releaseSidebarLiveReservation() {
+  if (_sidebarLiveReservedForId !== null) {
+    _sidebarLiveReservedForId = null;
+    _liveMediaConnectionCount = Math.max(0, _liveMediaConnectionCount - 1);
+  }
+}
+
+/**
+ * Test seam: current client-side live connection accounting.
+ * @returns {{count: number, sidebarReservedForId: string|null}}
+ */
+export function _getCctvLiveConnectionStateForTest() {
+  return {
+    count: _liveMediaConnectionCount,
+    sidebarReservedForId: _sidebarLiveReservedForId,
+  };
 }
 
 /**
@@ -3821,11 +3852,23 @@ function getPublicCameraState(record, activeId = null) {
   let feedUrl;
   let feedMode;
   if (isActive && isLiveJpeg && liveMediaSlotAvailable()) {
-    _sidebarLiveReservedForId = camera.id;
+    if (_sidebarLiveReservedForId !== camera.id) {
+      // New sidebar reservation: release any previous holder and count this
+      // one against the client cap (mirrors openLiveJpegConnection). The
+      // active camera's state is computed twice per uiState() (activeCamera +
+      // cameras[]), so the idempotency check above prevents double-counting.
+      if (_sidebarLiveReservedForId !== null) {
+        _liveMediaConnectionCount = Math.max(0, _liveMediaConnectionCount - 1);
+      }
+      _sidebarLiveReservedForId = camera.id;
+      _liveMediaConnectionCount += 1;
+    }
     feedUrl = mediaUrlFor(camera, SIDEBAR_FEED_RESOLUTION);
     feedMode = 'live';
   } else {
-    if (_sidebarLiveReservedForId === camera.id) _sidebarLiveReservedForId = null;
+    if (_sidebarLiveReservedForId === camera.id) {
+      releaseSidebarLiveReservation();
+    }
     feedUrl = frameUrlFor(camera, refreshMs);
     feedMode = isLiveJpeg ? 'snapshot' : (isVideoFeedType(feedType) ? 'video' : 'image');
   }
@@ -4141,7 +4184,7 @@ export function setActiveCamera(cameraId) {
     if (previousActiveRecord && previousActiveRecord !== record) {
       closeLiveJpegConnection(previousActiveRecord.projection);
     }
-    _sidebarLiveReservedForId = null;
+    releaseSidebarLiveReservation();
     _activeCameraId = cameraId;
     _autoHopSuspended = false;
     refreshProjectionImage(record, true); // no-op with null position guard below
@@ -4174,7 +4217,7 @@ export function setActiveCamera(cameraId) {
   }
   // The sidebar live slot follows the active camera; the new camera's
   // reservation is made in getPublicCameraState on the next notify.
-  _sidebarLiveReservedForId = null;
+  releaseSidebarLiveReservation();
   // The clicked camera leaves the ambient quota immediately (never graced).
   // Shipped behavior publishes no card for it because the monitor plane is
   // now the active representation; the opt-in protected-card path republishes
@@ -4245,7 +4288,7 @@ export function deactivateActiveCamera() {
   // Release the active camera's live projection connection and sidebar slot —
   // with no active camera there is nothing to stream.
   closeLiveJpegConnection(record.projection);
-  _sidebarLiveReservedForId = null;
+  releaseSidebarLiveReservation();
   clearProbeClampOnDeactivation(record, (previous) => {
     applyFrustumGeometry(previous, groundAltFor(previous));
   });
@@ -4462,7 +4505,7 @@ function clearRuntimeState() {
   // destroyCoverageEntities() already closed every live projection connection
   // (decrementing the counter); reset defensively so a re-init starts clean.
   _liveMediaConnectionCount = 0;
-  _sidebarLiveReservedForId = null;
+  releaseSidebarLiveReservation();
   _records = [];
   _recordById = new Map();
   _healthById = new Map();
@@ -4989,7 +5032,7 @@ const cctvLayer = {
     stopGeometryLoadQueue();
     // The sidebar live slot is layer-scoped — release it so a re-enable
     // re-reserves cleanly (the sidebar <img> is cleared by the UI on disable).
-    _sidebarLiveReservedForId = null;
+    releaseSidebarLiveReservation();
     // Ambient cards tear down COMPLETELY on disable (owner design point 6):
     // source entries, pacer timer, in-flight handlers, and caches.
     teardownAmbientCards();

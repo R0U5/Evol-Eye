@@ -32,6 +32,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import http from 'node:http';
 import https from 'node:https';
 import { lookup as lookupDns } from 'node:dns/promises';
 import { directionToHeading } from './src/data/directionText.js';
@@ -3878,9 +3879,36 @@ export const CCTV_FRAME_FETCH_TIMEOUT_MS = 8 * 1000;
  * non-cooperating client can't starve the primary feed. Excess requests get a
  * 429 and the client falls back to snapshot frames. */
 export const LIVE_MEDIA_STREAM_CAP = 4;
+/** Per-client-IP sub-cap on live streams. The global cap bounds the TOTAL, not
+ * the per-client share: without this, one non-cooperating client could open
+ * LIVE_MEDIA_STREAM_CAP streams, hold them forever, and 429 every other viewer
+ * (including the app's own primary feed). A legit client uses at most 2
+ * (projection + sidebar), so 2 per IP leaves the rest of the budget for other
+ * viewers. */
+export const LIVE_MEDIA_STREAM_PER_IP_CAP = 2;
+/** Idle timeout for live streams: if no upstream bytes arrive within this
+ * window the stream is torn down and its slot released. A healthy MJPEG/HLS
+ * feed sends frames/segments continuously, so this only fires for stalled
+ * cameras — and it bounds the blast radius of any leaked upstream socket. */
+export const LIVE_MEDIA_STREAM_IDLE_TIMEOUT_MS = 45 * 1000;
 /** @type {number} Currently-open live media streams (incremented on accept,
  * decremented on client disconnect via proxyMediaResponse's res.on('close')). */
 let _activeLiveMediaStreams = 0;
+/** @type {Map<string, number>} Live streams held per client IP (see
+ * LIVE_MEDIA_STREAM_PER_IP_CAP). */
+const _activeLiveMediaStreamsByIp = new Map();
+
+/**
+ * Client IP for the per-IP live-stream sub-cap. The dev server sees the
+ * client's real socket address; x-forwarded-for is client-controlled and
+ * trivially spoofable, so it is deliberately ignored — the per-IP cap is a
+ * fairness backstop, not a security boundary.
+ * @param {import('http').IncomingMessage} req
+ * @returns {string}
+ */
+function clientIpFor(req) {
+  return req?.socket?.remoteAddress || 'unknown';
+}
 
 /**
  * Whether a new live media stream may be opened under LIVE_MEDIA_STREAM_CAP.
@@ -3889,6 +3917,17 @@ let _activeLiveMediaStreams = 0;
  */
 export function liveStreamSlotAvailable() {
   return _activeLiveMediaStreams < LIVE_MEDIA_STREAM_CAP;
+}
+
+/**
+ * Test seam: current live-stream slot accounting (global + per-IP).
+ * @returns {{active: number, byIp: Map<string, number>}}
+ */
+export function _getLiveMediaStreamStateForTest() {
+  return {
+    active: _activeLiveMediaStreams,
+    byIp: new Map(_activeLiveMediaStreamsByIp),
+  };
 }
 /** @type {Array<object>} Cached merged + normalized CCTV source list. */
 let _cctvSourceCache = [];
@@ -4824,7 +4863,7 @@ async function readCappedResponseText(upstream, maxBytes) {
   return { tooLarge: false, text };
 }
 
-async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } = {}) {
+export async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream', idleTimeoutMs = 0 } = {}) {
   const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
   const cacheControl = upstream.headers.get('cache-control') || 'no-store';
   const contentLength = upstream.headers.get('content-length');
@@ -4864,14 +4903,71 @@ async function proxyMediaResponse(res, upstream, { sourceHeader = 'upstream' } =
   });
   // A client disconnect mid-stream must tear down the upstream socket too —
   // otherwise live MJPEG/HLS connections stay open until the upstream closes
-  // them (or the 30 s media timeout fires), leaking sockets on every refresh.
+  // them, leaking sockets on every refresh. cancel() on a reader-locked web
+  // stream is a NO-OP (the reader created by Readable.fromWeb holds the lock),
+  // so first destroy the piped Readable to release the lock, then cancel the
+  // body. Verified: destroy() + cancel() closes the upstream socket; cancel()
+  // alone does not.
   res.on('close', () => {
+    stream.destroy();
     // cancel() on a locked web stream returns a REJECTED promise (not a
     // synchronous throw), so a bare try/catch leaks an unhandled rejection
     // that crashes the process on every client disconnect mid-stream.
     try { upstream.body?.cancel()?.catch(() => {}); } catch { /* no-op */ }
   });
+
+  // Live streams are unbounded by design; a stalled camera (no upstream bytes)
+  // would otherwise hold its slot forever. Reset the idle timer on every chunk
+  // and tear the stream down when the window elapses.
+  let idleTimer = null;
+  if (idleTimeoutMs > 0) {
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        idleTimer = null;
+        stream.destroy();
+        try { upstream.body?.cancel()?.catch(() => {}); } catch { /* no-op */ }
+        if (!res.writableEnded) res.end();
+      }, idleTimeoutMs);
+      idleTimer.unref?.();
+    };
+    stream.on('data', resetIdleTimer);
+    stream.on('end', () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = null;
+    });
+    resetIdleTimer();
+  }
   stream.pipe(res);
+}
+
+/**
+ * Wrap an http.IncomingMessage so proxyMediaResponse can consume it like a
+ * fetch() Response. The live path uses http.request (not fetch) so the
+ * upstream socket can be destroyed the moment the client disconnects —
+ * fetch's abort signal rejects the promise but leaves the connection in
+ * undici's keep-alive pool for seconds, leaking the upstream socket on every
+ * mid-handshake disconnect. http.request + AbortSignal destroys the socket
+ * immediately (verified ~100 ms).
+ * @param {import('http').IncomingMessage} incomingMessage
+ * @returns {{status: number, headers: {get(name: string): string|null}, body: import('http').IncomingMessage, arrayBuffer: () => Promise<Buffer>}}
+ */
+function toFetchLikeResponse(incomingMessage) {
+  return {
+    status: incomingMessage.statusCode,
+    headers: {
+      get(name) {
+        const value = incomingMessage.headers[name.toLowerCase()];
+        return value == null ? null : String(value);
+      },
+    },
+    body: incomingMessage,
+    arrayBuffer: async () => {
+      const chunks = [];
+      for await (const chunk of incomingMessage) chunks.push(chunk);
+      return Buffer.concat(chunks);
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4894,9 +4990,16 @@ const cctvLog = (...args) => {
  */
 export function isMjpgStreamUrl(url) {
   if (!url || typeof url !== 'string') return false;
-  const lower = url.toLowerCase();
-  if (lower.includes('/mjpg/') || lower.includes('/mjpeg/')) return true;
-  return /(\.mjpg|\.mjpeg|video\.mjpg)(\?|$)/i.test(lower);
+  let pathname;
+  try {
+    // Match against the pathname only: a `.mjpg` (or `/mjpg/`) in the QUERY
+    // string must not upgrade a static image URL to the live-stream path.
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (pathname.includes('/mjpg/') || pathname.includes('/mjpeg/')) return true;
+  return /(\.mjpg|\.mjpeg|video\.mjpg)$/i.test(pathname);
 }
 
 /**
@@ -5152,6 +5255,328 @@ async function fetchBoundedBody(url, { fetchImpl = fetch, timeoutMs = CCTV_FRAME
 }
 
 /**
+ * Serve GET /api/cctv/media/:id — proxy an upstream image or live stream to
+ * the client. Live streams (MJPEG/HLS) are capped globally and per client IP,
+ * aborted on client disconnect mid-handshake, and torn down on disconnect or
+ * idle (see proxyMediaResponse). Extracted from the middleware so the teardown
+ * and cap behavior is unit-testable.
+ *
+ * Only server-registered (host-validated) source URLs are fetched — never a
+ * client-supplied URL. `redirect: 'manual'` and the fail-closed behavior are
+ * preserved exactly.
+ *
+ * @param {import('http').IncomingMessage} req
+ * @param {import('http').ServerResponse} res
+ * @param {URL} url - Parsed request URL.
+ * @param {Map<string, object>} sourceById - Server-registered sources.
+ * @param {(cameraId: string, patch: object) => void} setHealth - Health writer.
+ * @returns {Promise<void>}
+ */
+export async function handleCctvMediaRequest(req, res, url, sourceById, setHealth) {
+  const cameraId = decodeURIComponent(url.pathname.replace('/media/', '').trim()) || 'camera';
+  const source = sourceById.get(cameraId);
+  const mediaUrl = source?.url || '';
+  const feedType = normalizeFeedType(source?.feedType || 'image');
+  const isLive = isLiveStreamFeedType(feedType);
+
+  if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
+    cctvLog(`media ${cameraId}: no stream URL configured`);
+    setHealth(cameraId, {
+      status: 'degraded',
+      sourceKind: 'fallback',
+      label: source?.provider || 'No upstream URL',
+      message: 'No stream URL configured',
+    });
+    res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'No media URL configured for this camera' }));
+    return;
+  }
+
+  // Live streams hold an upstream socket for the whole session, so they are
+  // capped. At the cap, excess live requests get a 429 and the client falls
+  // back to snapshot frames (see liveMediaModeDecision). Both checks run
+  // BEFORE the slot increment and BEFORE any fetch — a 429 opens no upstream
+  // connection and has nothing to cancel.
+  if (isLive && !liveStreamSlotAvailable()) {
+    cctvLog(`media ${cameraId}: live stream cap reached (${_activeLiveMediaStreams}/${LIVE_MEDIA_STREAM_CAP})`);
+    setHealth(cameraId, {
+      status: 'degraded',
+      sourceKind: 'live',
+      label: source?.provider || 'Configured source',
+      message: 'Live stream cap reached',
+    });
+    res.writeHead(429, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'live-stream-cap-reached' }));
+    return;
+  }
+  const clientIp = clientIpFor(req);
+  if (isLive) {
+    const ipCount = _activeLiveMediaStreamsByIp.get(clientIp) || 0;
+    if (ipCount >= LIVE_MEDIA_STREAM_PER_IP_CAP) {
+      cctvLog(`media ${cameraId}: per-IP live cap reached (${ipCount}/${LIVE_MEDIA_STREAM_PER_IP_CAP})`);
+      setHealth(cameraId, {
+        status: 'degraded',
+        sourceKind: 'live',
+        label: source?.provider || 'Configured source',
+        message: 'Live stream per-client cap reached',
+      });
+      res.writeHead(429, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'live-stream-per-ip-cap-reached' }));
+      return;
+    }
+  }
+
+  // Client-requested stream resolution (e.g. ?resolution=960x540).
+  // NOT appended to the upstream MJPG URL: most public Axis cameras
+  // reject an unknown query param on /mjpg/video.mjpg with HTTP 400
+  // (verified against a live sample — 7 of 8 cams failed), which
+  // would break the live feed for the majority of the catalog. The
+  // camera serves its native resolution and the client downscales
+  // via CSS/canvas. The /frame endpoint owns snapshot sizing via its
+  // own res=hd/sd param.
+  const upstreamUrl = mediaUrl;
+
+  // Hold a live slot for the duration of the connection. Released on
+  // client disconnect (res 'close') and on every error path below.
+  if (isLive) {
+    _activeLiveMediaStreams += 1;
+    _activeLiveMediaStreamsByIp.set(clientIp, (_activeLiveMediaStreamsByIp.get(clientIp) || 0) + 1);
+  }
+  let capHeld = isLive;
+  const releaseLiveSlot = () => {
+    if (capHeld) {
+      capHeld = false;
+      _activeLiveMediaStreams = Math.max(0, _activeLiveMediaStreams - 1);
+      const ipCount = _activeLiveMediaStreamsByIp.get(clientIp) || 0;
+      if (ipCount <= 1) _activeLiveMediaStreamsByIp.delete(clientIp);
+      else _activeLiveMediaStreamsByIp.set(clientIp, ipCount - 1);
+    }
+  };
+  res.on('close', releaseLiveSlot);
+
+  // Abort the in-flight upstream request when the client disconnects
+  // mid-handshake. Without this, a disconnect before the upstream responds
+  // leaves the request running: when it resolves, the body is piped to a
+  // destroyed response and the upstream socket leaks. For live streams the
+  // abort also destroys the http.request socket immediately (see
+  // proxyLiveMediaRequest); fetch's abort alone would leave the connection
+  // in undici's keep-alive pool for seconds.
+  const liveAbortController = new AbortController();
+  res.on('close', () => liveAbortController.abort());
+
+  const upstreamHeaders = { 'User-Agent': 'evol-eye-cctv-proxy/1.0' };
+  const requestRange = req.headers?.range;
+  if (requestRange) upstreamHeaders.Range = requestRange;
+
+  // Live streams use http.request (not fetch) so the upstream socket can be
+  // destroyed the moment the client disconnects — see proxyLiveMediaRequest.
+  if (isLive) {
+    await proxyLiveMediaRequest({
+      res,
+      upstreamUrl,
+      upstreamHeaders,
+      liveAbortController,
+      releaseLiveSlot,
+      setHealth,
+      cameraId,
+      source,
+    });
+    return;
+  }
+
+  try {
+    cctvLog(`media ${cameraId}: fetching ${upstreamUrl}`);
+    const upstream = await fetch(upstreamUrl, {
+      headers: upstreamHeaders,
+      // Do not follow redirects — a catalog URL that 302s to an
+      // internal host would otherwise be silently followed (SSRF).
+      redirect: 'manual',
+      // Snapshot/image media gets a hard timeout. Live streams
+      // (HLS/MJPEG) must NOT get a fixed wall-clock abort: a healthy
+      // MJPEG <img> stays connected indefinitely, and a 30 s abort
+      // would kill the feed every half-minute. They stream until the
+      // client disconnects (which aborts the handshake fetch above and
+      // tears the piped stream down via proxyMediaResponse's
+      // res.on('close')), and a stalled camera is released by the idle
+      // timeout in proxyMediaResponse.
+      signal: AbortSignal.timeout(10000),
+    });
+    const contentType = upstream.headers.get('content-type') || '';
+    if (!upstream.ok) {
+      try { await upstream.body?.cancel(); } catch { /* no-op */ }
+      releaseLiveSlot();
+      cctvLog(`media ${cameraId}: upstream HTTP ${upstream.status}`);
+      setHealth(cameraId, {
+        status: 'degraded',
+        sourceKind: 'upstream',
+        label: source?.provider || 'Configured source',
+        message: `Upstream HTTP ${upstream.status}`,
+      });
+      res.writeHead(upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: `Upstream returned ${upstream.status}` }));
+      return;
+    }
+    setHealth(cameraId, {
+      status: 'ok',
+      sourceKind: 'snapshot',
+      label: source?.provider || 'Configured source',
+      message: 'Snapshot feed connected',
+    });
+
+    await proxyMediaResponse(res, upstream, {
+      sourceHeader: 'upstream-image',
+      idleTimeoutMs: 0,
+    });
+  } catch (error) {
+    releaseLiveSlot();
+    // A client-initiated abort (disconnect mid-handshake) is not an upstream
+    // failure: the response is already gone, so skip the health write and the
+    // 502 (writing to a destroyed response is safe but would mark a healthy
+    // camera degraded for a client that is no longer there).
+    if (res.destroyed) return;
+    cctvLog(`media ${cameraId}: fetch error ${error?.message || error}`);
+    setHealth(cameraId, {
+      status: 'degraded',
+      sourceKind: 'upstream',
+      label: source?.provider || 'Configured source',
+      message: error?.message || 'Media fetch failed',
+    });
+    res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: 'Media proxy failed' }));
+  }
+}
+
+/**
+ * Live-media path for handleCctvMediaRequest. Uses http.request (not fetch)
+ * so the upstream socket can be destroyed the moment the client disconnects.
+ *
+ * Why not fetch? fetch's abort signal rejects the in-flight promise but
+ * leaves the connection in undici's keep-alive pool for seconds, so a
+ * mid-handshake client disconnect leaks the upstream socket until the pool
+ * reaps it. http.request + AbortSignal destroys the socket immediately
+ * (verified ~100 ms), which is what the F1 socket-teardown regression test
+ * asserts. The response is wrapped with toFetchLikeResponse so
+ * proxyMediaResponse can consume it unchanged (header forwarding, idle
+ * timeout, and its own res.on('close') teardown for the mid-stream case).
+ *
+ * @param {object} opts
+ * @param {import('http').ServerResponse} opts.res
+ * @param {string} opts.upstreamUrl
+ * @param {Record<string, string>} opts.upstreamHeaders
+ * @param {AbortController} opts.liveAbortController
+ * @param {() => void} opts.releaseLiveSlot
+ * @param {(cameraId: string, patch: object) => void} opts.setHealth
+ * @param {string} opts.cameraId
+ * @param {object} opts.source
+ * @returns {Promise<void>}
+ */
+async function proxyLiveMediaRequest({ res, upstreamUrl, upstreamHeaders, liveAbortController, releaseLiveSlot, setHealth, cameraId, source }) {
+  cctvLog(`media ${cameraId}: fetching ${upstreamUrl}`);
+  const transport = upstreamUrl.startsWith('https:') ? https : http;
+  const upstreamReq = transport.request(upstreamUrl, {
+    method: 'GET',
+    headers: upstreamHeaders,
+    signal: liveAbortController.signal,
+  });
+  // Resolve once the upstream response has been received and the proxy is set
+  // up (or an error has been written), so handleCctvMediaRequest keeps its
+  // contract: by the time it returns, the client response is handled. The
+  // live stream itself continues in the background; proxyMediaResponse owns
+  // the mid-stream teardown via its own res.on('close').
+  await new Promise((resolve) => {
+    upstreamReq.on('error', (error) => {
+      releaseLiveSlot();
+      // A client-initiated abort (disconnect mid-handshake) is not an upstream
+      // failure: the response is already gone, so skip the health write and the
+      // 502 (writing to a destroyed response is safe but would mark a healthy
+      // camera degraded for a client that is no longer there).
+      if (res.destroyed) return resolve();
+      cctvLog(`media ${cameraId}: fetch error ${error?.message || error}`);
+      setHealth(cameraId, {
+        status: 'degraded',
+        sourceKind: 'upstream',
+        label: source?.provider || 'Configured source',
+        message: error?.message || 'Media fetch failed',
+      });
+      res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ error: 'Media proxy failed' }));
+      resolve();
+    });
+    upstreamReq.on('response', async (upstreamRes) => {
+      try {
+        const contentType = upstreamRes.headers['content-type'] || '';
+        // The client disconnected while the upstream handshake was in flight —
+        // the abort already destroyed the socket; just release the slot.
+        if (res.destroyed) {
+          upstreamRes.destroy();
+          releaseLiveSlot();
+          return resolve();
+        }
+        if (upstreamRes.statusCode < 200 || upstreamRes.statusCode >= 300) {
+          upstreamRes.destroy();
+          releaseLiveSlot();
+          cctvLog(`media ${cameraId}: upstream HTTP ${upstreamRes.statusCode}`);
+          setHealth(cameraId, {
+            status: 'degraded',
+            sourceKind: 'upstream',
+            label: source?.provider || 'Configured source',
+            message: `Upstream HTTP ${upstreamRes.statusCode}`,
+          });
+          res.writeHead(upstreamRes.statusCode, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: `Upstream returned ${upstreamRes.statusCode}` }));
+          return resolve();
+        }
+        // A live stream that answers with a non-video content-type (e.g. an HTML
+        // error page) must NOT be piped: the body is unbounded, the <img> can't
+        // decode it, and the slot would be held until disconnect. Destroy the
+        // upstream, release the slot, and fail closed (mirrors the !ok path).
+        if (!(contentType.startsWith('video/') || contentType.includes('mpegurl') || contentType.includes('multipart/x-mixed-replace'))) {
+          upstreamRes.destroy();
+          releaseLiveSlot();
+          cctvLog(`media ${cameraId}: unexpected media type ${contentType || 'unknown'}`);
+          setHealth(cameraId, {
+            status: 'degraded',
+            sourceKind: 'upstream',
+            label: source?.provider || 'Configured source',
+            message: `Unexpected media type ${contentType || 'unknown'}`,
+          });
+          res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: `Unexpected media type ${contentType || 'unknown'}` }));
+          return resolve();
+        }
+        setHealth(cameraId, {
+          status: 'ok',
+          sourceKind: 'live',
+          label: source?.provider || 'Configured source',
+          message: 'Live stream connected',
+        });
+        await proxyMediaResponse(res, toFetchLikeResponse(upstreamRes), {
+          sourceHeader: 'live-media',
+          idleTimeoutMs: LIVE_MEDIA_STREAM_IDLE_TIMEOUT_MS,
+        });
+        resolve();
+      } catch (error) {
+        releaseLiveSlot();
+        if (res.destroyed) return resolve();
+        cctvLog(`media ${cameraId}: fetch error ${error?.message || error}`);
+        setHealth(cameraId, {
+          status: 'degraded',
+          sourceKind: 'upstream',
+          label: source?.provider || 'Configured source',
+          message: error?.message || 'Media fetch failed',
+        });
+        if (!res.headersSent) {
+          res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          res.end(JSON.stringify({ error: 'Media proxy failed' }));
+        }
+        resolve();
+      }
+    });
+    upstreamReq.end();
+  });
+}
+
+/**
  * Vite plugin: CCTV camera proxy with source registry, frame/media serving,
  * fallback chain (upstream -> Street View -> synthetic SVG), and health tracking.
  *
@@ -5293,131 +5718,8 @@ function cctvProxy() {
           }
 
           if (url.pathname.startsWith('/media/')) {
-            const cameraId = decodeURIComponent(url.pathname.replace('/media/', '').trim()) || 'camera';
-            const source = sourceById.get(cameraId);
-            const mediaUrl = source?.url || '';
-            const feedType = normalizeFeedType(source?.feedType || 'image');
-            const isLive = isLiveStreamFeedType(feedType);
-
-            if (!mediaUrl || !/^https?:\/\//i.test(mediaUrl)) {
-              cctvLog(`media ${cameraId}: no stream URL configured`);
-              setHealth(cameraId, {
-                status: 'degraded',
-                sourceKind: 'fallback',
-                label: source?.provider || 'No upstream URL',
-                message: 'No stream URL configured',
-              });
-              res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-              res.end(JSON.stringify({ error: 'No media URL configured for this camera' }));
-              return;
-            }
-
-            // Live streams hold an upstream socket for the whole session, so
-            // they are capped. At the cap, excess live requests get a 429 and
-            // the client falls back to snapshot frames (see liveMediaModeDecision).
-            if (isLive && !liveStreamSlotAvailable()) {
-              cctvLog(`media ${cameraId}: live stream cap reached (${_activeLiveMediaStreams}/${LIVE_MEDIA_STREAM_CAP})`);
-              setHealth(cameraId, {
-                status: 'degraded',
-                sourceKind: 'live',
-                label: source?.provider || 'Configured source',
-                message: 'Live stream cap reached',
-              });
-              res.writeHead(429, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-              res.end(JSON.stringify({ error: 'live-stream-cap-reached' }));
-              return;
-            }
-
-            // Client-requested stream resolution (e.g. ?resolution=960x540).
-            // NOT appended to the upstream MJPG URL: most public Axis cameras
-            // reject an unknown query param on /mjpg/video.mjpg with HTTP 400
-            // (verified against a live sample — 7 of 8 cams failed), which
-            // would break the live feed for the majority of the catalog. The
-            // camera serves its native resolution and the client downscales
-            // via CSS/canvas. The /frame endpoint owns snapshot sizing via its
-            // own res=hd/sd param.
-            let upstreamUrl = mediaUrl;
-
-            // Hold a live slot for the duration of the connection. Released on
-            // client disconnect (res 'close') and on every error path below.
-            if (isLive) _activeLiveMediaStreams += 1;
-            let capHeld = isLive;
-            const releaseLiveSlot = () => {
-              if (capHeld) {
-                capHeld = false;
-                _activeLiveMediaStreams = Math.max(0, _activeLiveMediaStreams - 1);
-              }
-            };
-            res.on('close', releaseLiveSlot);
-
-            try {
-              const upstreamHeaders = { 'User-Agent': 'evol-eye-cctv-proxy/1.0' };
-              const requestRange = req.headers?.range;
-              if (requestRange) upstreamHeaders.Range = requestRange;
-              cctvLog(`media ${cameraId}: fetching ${upstreamUrl}`);
-              const upstream = await fetch(upstreamUrl, {
-                headers: upstreamHeaders,
-                // Do not follow redirects — a catalog URL that 302s to an
-                // internal host would otherwise be silently followed (SSRF).
-                redirect: 'manual',
-                // Snapshot/image media gets a hard timeout. Live streams
-                // (HLS/MJPEG) must NOT get a fixed wall-clock abort: a healthy
-                // MJPEG <img> stays connected indefinitely, and a 30 s abort
-                // would kill the feed every half-minute. They stream until the
-                // client disconnects (which tears the upstream down via
-                // proxyMediaResponse's res.on('close')), and a stalled camera
-                // is released by the client's own retry/placeholder path.
-                signal: isLive ? null : AbortSignal.timeout(10000),
-              });
-              const contentType = upstream.headers.get('content-type') || '';
-              if (!upstream.ok) {
-                try { await upstream.body?.cancel(); } catch { /* no-op */ }
-                releaseLiveSlot();
-                cctvLog(`media ${cameraId}: upstream HTTP ${upstream.status}`);
-                setHealth(cameraId, {
-                  status: 'degraded',
-                  sourceKind: 'upstream',
-                  label: source?.provider || 'Configured source',
-                  message: `Upstream HTTP ${upstream.status}`,
-                });
-                res.writeHead(upstream.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-                res.end(JSON.stringify({ error: `Upstream returned ${upstream.status}` }));
-                return;
-              }
-
-              if (isLive && !(contentType.startsWith('video/') || contentType.includes('mpegurl') || contentType.includes('multipart/x-mixed-replace'))) {
-                setHealth(cameraId, {
-                  status: 'degraded',
-                  sourceKind: 'upstream',
-                  label: source?.provider || 'Configured source',
-                  message: `Unexpected media type ${contentType || 'unknown'}`,
-                });
-              } else {
-                setHealth(cameraId, {
-                  status: 'ok',
-                  sourceKind: isLive ? 'live' : 'snapshot',
-                  label: source?.provider || 'Configured source',
-                  message: isLive ? 'Live stream connected' : 'Snapshot feed connected',
-                });
-              }
-
-              await proxyMediaResponse(res, upstream, {
-                sourceHeader: isLive ? 'live-media' : 'upstream-image',
-              });
-              return;
-            } catch (error) {
-              releaseLiveSlot();
-              cctvLog(`media ${cameraId}: fetch error ${error?.message || error}`);
-              setHealth(cameraId, {
-                status: 'degraded',
-                sourceKind: 'upstream',
-                label: source?.provider || 'Configured source',
-                message: error?.message || 'Media fetch failed',
-              });
-              res.writeHead(502, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-              res.end(JSON.stringify({ error: 'Media proxy failed' }));
-              return;
-            }
+            await handleCctvMediaRequest(req, res, url, sourceById, setHealth);
+            return;
           }
 
           if (!url.pathname.startsWith('/frame/')) {
