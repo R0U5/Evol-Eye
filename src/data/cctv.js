@@ -1723,13 +1723,14 @@ export function mediaUrlFor(camera, resolution) {
  *
  * The state is one of:
  *   - 'loading'   — a first frame is in flight and none has ever landed
- *                   (cyan "LOADING…" text, thin cyan border)
+ *                   (cyan "SIGNAL ACQUIRING" text, animated scanline sweep,
+ *                   pulsing corner reticle)
  *   - 'live'      — at least one real frame has been drawn (used only when a
  *                   refresh is in flight but the last good frame is kept;
  *                   this branch is normally skipped because the canvas keeps
  *                   the last frame)
  *   - 'error'     — the last fetch failed and no prior frame exists
- *                   (red "NO SIGNAL" text, red border)
+ *                   (red "NO SIGNAL" text, glitch interference bars)
  *   - 'no-feed'   — explicit availability message (default)
  *
  * @param {CanvasRenderingContext2D} ctx - 2D context for the projection canvas.
@@ -1738,8 +1739,10 @@ export function mediaUrlFor(camera, resolution) {
  * @param {string} [state='no-feed'] - Placeholder state, see above.
  * @param {string} [feedMode=''] - Runtime feed mode ('live-jpeg'|'video'|'image')
  *   used for the status fallback line (LIVE vs SNAPSHOT).
+ * @param {number} [nowMs=Date.now()] - Timestamp for the animated loading
+ *   scanline/reticle pulse.
  */
-function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed', feedMode = '') {
+function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed', feedMode = '', nowMs = Date.now()) {
   if (!ctx) return;
   const w = PROJECTION_CANVAS_WIDTH;
   const h = PROJECTION_CANVAS_HEIGHT;
@@ -1753,15 +1756,17 @@ function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed
   const label = String(camera?.name || 'CCTV');
   const city = String(camera?.city || 'GLOBAL');
   const isLoading = state === 'loading';
+  const isError = state === 'error';
   const status = String(
     isLoading
       ? 'SIGNAL ACQUIRING'
-      : state === 'error'
+      : isError
         ? (health?.message || 'NO SIGNAL')
         : (health?.message || health?.status || (feedMode === 'live-jpeg' ? 'LIVE' : feedMode === 'image' ? 'SNAPSHOT' : camera?.feedType) || 'NO FEED')
   ).toUpperCase();
 
-  const accent = state === 'error' ? '255, 60, 60' : '0, 220, 255';
+  // Tactical cyan (#3ee0ff) / red (#ff3c3c) accent, matching the app theme.
+  const accent = isError ? '255, 60, 60' : '62, 224, 255';
   ctx.strokeStyle = `rgba(${accent}, 0.24)`;
   ctx.lineWidth = 2;
   ctx.strokeRect(18, 18, w - 36, h - 36);
@@ -1775,6 +1780,148 @@ function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed
   ctx.fillText(city.toUpperCase(), 46, 112);
   ctx.font = '500 21px "JetBrains Mono", monospace';
   ctx.fillText(status.slice(0, 58), 46, h - 42);
+
+  // Spy-feed flavor per state: a scanline sweep + targeting reticle while
+  // acquiring, glitch interference bars on a hard failure.
+  if (isLoading) {
+    paintScanlineSweep(ctx, w, h, nowMs);
+    paintCornerReticle(ctx, w, h, nowMs, accent);
+  } else if (isError) {
+    paintGlitchBars(ctx, w, h, accent);
+  }
+}
+
+/**
+ * Draws the persistent surveillance-monitor chrome over a live projection
+ * frame: a thin cyan border frame, a "CAM: <id>" tag, a pulsing LIVE dot,
+ * a UTC timestamp, and the feed source label. Kept to the frame edges so the
+ * feed stays the focus — nothing covers the center.
+ * @param {CanvasRenderingContext2D} ctx - 2D context for the projection canvas.
+ * @param {Object} camera - Camera object for the id/source labels.
+ * @param {Object|null} [health=null] - Health state for the source label.
+ * @param {number} [nowMs=Date.now()] - Timestamp for the LIVE dot pulse.
+ */
+function paintProjectionChrome(ctx, camera, health = null, nowMs = Date.now()) {
+  if (!ctx) return;
+  const w = PROJECTION_CANVAS_WIDTH;
+  const h = PROJECTION_CANVAS_HEIGHT;
+  const cyan = '62, 224, 255';
+
+  // Thin cyan border frame — reads as a surveillance monitor bezel.
+  ctx.strokeStyle = `rgba(${cyan}, 0.35)`;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(18, 18, w - 36, h - 36);
+
+  // Top-left: camera ID tag.
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.9)';
+  ctx.font = '600 22px "JetBrains Mono", monospace';
+  ctx.fillText(`CAM: ${String(camera?.id || 'UNKNOWN').toUpperCase().slice(0, 28)}`, 34, 52);
+
+  // Top-right: pulsing LIVE dot + label.
+  const pulse = 0.5 + 0.5 * Math.sin(nowMs / 280);
+  const dotR = 7;
+  const dotX = w - 34 - 64;
+  const dotY = 40;
+  ctx.fillStyle = `rgba(255, 60, 60, ${0.3 + 0.7 * pulse})`;
+  ctx.beginPath();
+  ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255, 60, 60, 0.95)';
+  ctx.font = '600 22px "JetBrains Mono", monospace';
+  ctx.fillText('LIVE', dotX + dotR + 10, dotY + 7);
+
+  // Bottom-left: UTC timestamp.
+  const ts = new Date(nowMs).toISOString().replace('T', ' ').replace('Z', ' UTC');
+  ctx.fillStyle = 'rgba(127, 216, 231, 0.75)';
+  ctx.font = '500 20px "JetBrains Mono", monospace';
+  ctx.fillText(ts, 34, h - 30);
+
+  // Bottom-right: feed source label (e.g. AXIS·INSECAM).
+  const source = projectionSourceLabel(camera, health);
+  ctx.fillStyle = 'rgba(127, 216, 231, 0.75)';
+  ctx.font = '500 20px "JetBrains Mono", monospace';
+  ctx.fillText(source, w - 34 - ctx.measureText(source).width, h - 30);
+}
+
+/**
+ * Derives the tactical feed-source label for the projection chrome. Prefers
+ * the health label, then derives "AXIS·INSECAM"-style text from the camera id
+ * (dashes/underscores become interpuncts, trailing numeric suffix dropped).
+ * @param {Object} camera - Camera object.
+ * @param {Object|null} [health=null] - Health state.
+ * @returns {string} Uppercased source label, truncated to 24 chars.
+ */
+function projectionSourceLabel(camera, health = null) {
+  const raw = String(health?.label || '').trim();
+  if (raw) return raw.toUpperCase().slice(0, 24);
+  const id = String(camera?.id || '').toUpperCase()
+    .replace(/[_-]+/g, '·')
+    .replace(/·\d+$/, '');
+  return (id || 'SOURCE').slice(0, 24);
+}
+
+/**
+ * Paints an animated cyan scanline sweep across the placeholder — the
+ * "signal acquiring" radar sweep aesthetic.
+ * @param {CanvasRenderingContext2D} ctx - 2D context.
+ * @param {number} w - Canvas width.
+ * @param {number} h - Canvas height.
+ * @param {number} nowMs - Timestamp for the sweep position.
+ */
+function paintScanlineSweep(ctx, w, h, nowMs) {
+  const sweepY = ((nowMs / 1000) * 140) % h;
+  const grad = ctx.createLinearGradient(0, sweepY - 60, 0, sweepY + 60);
+  grad.addColorStop(0, 'rgba(62, 224, 255, 0)');
+  grad.addColorStop(0.5, 'rgba(62, 224, 255, 0.22)');
+  grad.addColorStop(1, 'rgba(62, 224, 255, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, sweepY - 60, w, 120);
+  ctx.fillStyle = 'rgba(62, 224, 255, 0.5)';
+  ctx.fillRect(0, sweepY - 1, w, 2);
+}
+
+/**
+ * Paints a pulsing targeting reticle (top-left + bottom-right brackets) over
+ * the loading placeholder.
+ * @param {CanvasRenderingContext2D} ctx - 2D context.
+ * @param {number} w - Canvas width.
+ * @param {number} h - Canvas height.
+ * @param {number} nowMs - Timestamp for the pulse phase.
+ * @param {string} rgb - "r, g, b" accent triple.
+ */
+function paintCornerReticle(ctx, w, h, nowMs, rgb) {
+  const pulse = 0.45 + 0.35 * Math.sin(nowMs / 320);
+  const alpha = Math.max(0.15, Math.min(0.9, pulse));
+  const len = 64;
+  const gap = 26;
+  ctx.strokeStyle = `rgba(${rgb}, ${alpha})`;
+  ctx.lineWidth = 3;
+  // Top-left bracket.
+  ctx.beginPath();
+  ctx.moveTo(gap, gap + len);
+  ctx.lineTo(gap, gap);
+  ctx.lineTo(gap + len, gap);
+  ctx.stroke();
+  // Bottom-right bracket.
+  ctx.beginPath();
+  ctx.moveTo(w - gap - len, h - gap);
+  ctx.lineTo(w - gap, h - gap);
+  ctx.lineTo(w - gap, h - gap - len);
+  ctx.stroke();
+}
+
+/**
+ * Paints two thin horizontal interference lines over the error placeholder —
+ * the static "glitch bars" aesthetic for a dead feed.
+ * @param {CanvasRenderingContext2D} ctx - 2D context.
+ * @param {number} w - Canvas width.
+ * @param {number} h - Canvas height.
+ * @param {string} rgb - "r, g, b" accent triple.
+ */
+function paintGlitchBars(ctx, w, h, rgb) {
+  ctx.fillStyle = `rgba(${rgb}, 0.35)`;
+  ctx.fillRect(0, h * 0.30, w, 2);
+  ctx.fillRect(0, h * 0.68, w, 2);
 }
 
 /**
@@ -2270,30 +2417,39 @@ function drawProjectionFrame(record) {
     if (live.complete && live.naturalWidth > 0 && runtime.liveFrameCount > runtime.lastDrawnLiveFrame) {
       // A fresh MJPEG frame landed since the last draw — blit the current
       // pixels onto the projection canvas. The live <img> advances itself.
+      // No clearRect: the frame fills the canvas, so clearing to transparent
+      // between frames is a flash opportunity if the swap ever reads mid-draw.
       runtime.lastDrawnLiveFrame = runtime.liveFrameCount;
       runtime.lastGoodFrameAt = Date.now();
       runtime.feedError = null;
-      runtime.ctx.clearRect(0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.ctx.drawImage(live, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
       runtime.lastPlaceholderPaintAt = 0;
+      paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
       return;
     }
-    // No live frame has landed yet (or the stream is stalled): show the
-    // static spy "SIGNAL ACQUIRING" placeholder instead of flashing.
-    paintPlaceholderThrottled(record, runtime, health);
+    // No fresh frame has landed (or the stream is stalled/reconnecting). Once
+    // ANY frame has ever been drawn for this runtime, keep the last good
+    // frame on the canvas instead of flashing the placeholder over it — the
+    // placeholder only paints when nothing has ever been drawn (first connect
+    // or a failure before the first frame).
+    if (runtime.lastGoodFrameAt === 0) {
+      paintPlaceholderThrottled(record, runtime, health);
+    }
     return;
   }
 
   if (runtime.mode === 'video' && runtime.video) {
     const video = runtime.video;
     if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-      runtime.ctx.clearRect(0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.ctx.drawImage(video, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
+      paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
       return;
     }
-    paintPlaceholderThrottled(record, runtime, health);
+    if (runtime.lastGoodFrameAt === 0) {
+      paintPlaceholderThrottled(record, runtime, health);
+    }
     return;
   }
 
@@ -2319,10 +2475,10 @@ function drawProjectionFrame(record) {
       runtime.lastFrameSignature = signature;
       runtime.lastGoodFrameAt = Date.now();
       runtime.feedError = null;
-      runtime.ctx.clearRect(0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.ctx.drawImage(runtime.image, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
       runtime.lastPlaceholderPaintAt = 0;
+      paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
     }
     return;
   }
@@ -3843,20 +3999,22 @@ function getPublicCameraState(record, activeId = null) {
   const feedType = normalizeFeedType(camera.feedType);
   const isLiveJpeg = feedType === 'mjpeg';
 
-  // Sidebar feed: the ACTIVE camera may hold a live MJPEG connection (one of
-  // the two client slots; the other belongs to the projection plane). All
-  // other cameras — and the active camera when no slot is free — get the
-  // snapshot frame URL. The slot is reserved for the active camera so the URL
-  // is stable across uiState() notifications (a changing URL would make the
-  // sidebar <img> reconnect every notify).
+  // Sidebar feed: the ACTIVE camera ALWAYS holds a live MJPEG connection —
+  // one of the two client slots, the other belongs to the projection plane.
+  // The reservation is unconditional for the active camera so it gets BOTH
+  // feeds (projection + sidebar) and only a THIRD concurrent demand falls to
+  // snapshot (liveMediaSlotAvailable gates that third demand). The slot is
+  // reserved for the active camera so the URL is stable across uiState()
+  // notifications (a changing URL would make the sidebar <img> reconnect every
+  // notify). The active camera's state is computed twice per uiState()
+  // (activeCamera + cameras[]), so the idempotency check below prevents
+  // double-counting.
   let feedUrl;
   let feedMode;
-  if (isActive && isLiveJpeg && liveMediaSlotAvailable()) {
+  if (isActive && isLiveJpeg) {
     if (_sidebarLiveReservedForId !== camera.id) {
       // New sidebar reservation: release any previous holder and count this
-      // one against the client cap (mirrors openLiveJpegConnection). The
-      // active camera's state is computed twice per uiState() (activeCamera +
-      // cameras[]), so the idempotency check above prevents double-counting.
+      // one against the client cap (mirrors openLiveJpegConnection).
       if (_sidebarLiveReservedForId !== null) {
         _liveMediaConnectionCount = Math.max(0, _liveMediaConnectionCount - 1);
       }
