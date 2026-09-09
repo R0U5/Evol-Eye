@@ -14,7 +14,6 @@ import {
   isPublicCctvUrl,
   liveStreamSlotAvailable,
   normalizeSourceFeedType,
-  proxyMediaResponse,
 } from '../../vite.config.js';
 import {
   MockServerResponse,
@@ -245,23 +244,26 @@ test('live stream cap: server allows up to LIVE_MEDIA_STREAM_CAP concurrent stre
 
 test('F1: proxyMediaResponse closes the upstream socket when the client disconnects mid-stream', async () => {
   const upstream = await startMockMjpgUpstream();
+  const sourceById = new Map([['cam1', { id: 'cam1', url: `http://127.0.0.1:${upstream.port}/mjpg/video.mjpg`, feedType: 'mjpeg' }]]);
   const proxy = http.createServer(async (req, res) => {
-    try {
-      const upstreamResp = await fetch(`http://127.0.0.1:${upstream.port}/mjpg/video.mjpg`);
-      await proxyMediaResponse(res, upstreamResp, { sourceHeader: 'live-media' });
-    } catch {
-      if (!res.writableEnded) res.end();
-    }
+    const url = new URL(req.url, 'http://localhost');
+    await handleCctvMediaRequest(req, res, url, sourceById, () => {});
   });
   await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
   try {
-    const client = http.get(`http://127.0.0.1:${proxy.address().port}/stream`, (res) => {
-      res.once('data', () => client.destroy());
-    });
+    const client = http.get(`http://127.0.0.1:${proxy.address().port}/media/cam1`);
     client.on('error', () => {});
+    // Assert the open -> close lifecycle, not a vacuous 0: the socket must
+    // first OPEN (accepted >= 1, openSockets === 1), then close after the
+    // client disconnects. Waiting on openSockets === 0 up front returns true
+    // before the request has even flowed through.
+    const accepted = await waitFor(() => upstream.accepted >= 1, 3000);
+    assert.ok(accepted, 'upstream must have accepted the stream');
+    assert.equal(upstream.openSockets, 1, 'upstream must hold the open stream');
+    client.destroy();
     const closed = await waitFor(() => upstream.openSockets === 0, 3000);
-    assert.ok(upstream.accepted >= 1, 'upstream must have accepted the stream');
     assert.ok(closed, 'upstream socket must close after the client disconnects mid-stream');
+    assert.equal(_getLiveMediaStreamStateForTest().active, 0, 'the live slot must be released');
   } finally {
     proxy.closeAllConnections?.();
     await new Promise((resolve) => proxy.close(resolve));
