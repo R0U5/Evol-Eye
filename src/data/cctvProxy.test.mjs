@@ -1,16 +1,29 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import {
   CCTV_FRAME_FETCH_TIMEOUT_MS,
   LIVE_MEDIA_STREAM_CAP,
+  LIVE_MEDIA_STREAM_PER_IP_CAP,
+  _getLiveMediaStreamStateForTest,
   deriveAxisSnapshotUrls,
   extractFirstJpegFromMjpg,
   fetchCctvImageFromUpstream,
+  handleCctvMediaRequest,
   isMjpgStreamUrl,
   isPublicCctvUrl,
   liveStreamSlotAvailable,
   normalizeSourceFeedType,
+  proxyMediaResponse,
 } from '../../vite.config.js';
+import {
+  MockServerResponse,
+  mockReq,
+  startMockHtmlUpstream,
+  startMockMjpgUpstream,
+  startMockStalledUpstream,
+  waitFor,
+} from './cctvProxyTestHelpers.mjs';
 
 test('CCTV upstream frame fetch supplies a bounded abort signal', async () => {
   let observedSignal = null;
@@ -228,4 +241,112 @@ test('live stream cap: server allows up to LIVE_MEDIA_STREAM_CAP concurrent stre
   // tab or a non-cooperating client can't starve the primary feed.
   assert.equal(LIVE_MEDIA_STREAM_CAP, 4);
   assert.ok(LIVE_MEDIA_STREAM_CAP >= 2, 'server cap must cover at least one client at its cap');
+});
+
+test('F1: proxyMediaResponse closes the upstream socket when the client disconnects mid-stream', async () => {
+  const upstream = await startMockMjpgUpstream();
+  const proxy = http.createServer(async (req, res) => {
+    try {
+      const upstreamResp = await fetch(`http://127.0.0.1:${upstream.port}/mjpg/video.mjpg`);
+      await proxyMediaResponse(res, upstreamResp, { sourceHeader: 'live-media' });
+    } catch {
+      if (!res.writableEnded) res.end();
+    }
+  });
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = http.get(`http://127.0.0.1:${proxy.address().port}/stream`, (res) => {
+      res.once('data', () => client.destroy());
+    });
+    client.on('error', () => {});
+    const closed = await waitFor(() => upstream.openSockets === 0, 3000);
+    assert.ok(upstream.accepted >= 1, 'upstream must have accepted the stream');
+    assert.ok(closed, 'upstream socket must close after the client disconnects mid-stream');
+  } finally {
+    proxy.closeAllConnections?.();
+    await new Promise((resolve) => proxy.close(resolve));
+    await upstream.close();
+  }
+});
+
+test('F1: media handler aborts the in-flight upstream fetch when the client disconnects mid-handshake', async () => {
+  const upstream = await startMockStalledUpstream();
+  const sourceById = new Map([['cam1', { id: 'cam1', url: `http://127.0.0.1:${upstream.port}/stream`, feedType: 'mjpeg' }]]);
+  const proxy = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    await handleCctvMediaRequest(req, res, url, sourceById, () => {});
+  });
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  try {
+    const client = http.get(`http://127.0.0.1:${proxy.address().port}/media/cam1`);
+    client.on('error', () => {});
+    const accepted = await waitFor(() => upstream.accepted >= 1, 2000);
+    assert.ok(accepted, 'upstream must have accepted the handshake');
+    assert.equal(upstream.openSockets, 1, 'upstream must hold the pending handshake');
+    client.destroy();
+    const closed = await waitFor(() => upstream.openSockets === 0, 3000);
+    assert.ok(closed, 'upstream socket must close after a mid-handshake client disconnect');
+    assert.equal(_getLiveMediaStreamStateForTest().active, 0, 'the live slot must be released');
+  } finally {
+    proxy.closeAllConnections?.();
+    await new Promise((resolve) => proxy.close(resolve));
+    await upstream.close();
+  }
+});
+
+test('F2: one client IP cannot hold all live stream slots', async () => {
+  const upstream = await startMockMjpgUpstream();
+  const sourceById = new Map([['cam1', { id: 'cam1', url: `http://127.0.0.1:${upstream.port}/mjpg/video.mjpg`, feedType: 'mjpeg' }]]);
+  const url = new URL('/media/cam1', 'http://localhost');
+  const noopHealth = () => {};
+  const res1 = new MockServerResponse();
+  const res2 = new MockServerResponse();
+  const res3 = new MockServerResponse();
+  const res4 = new MockServerResponse();
+  try {
+    await handleCctvMediaRequest(mockReq('1.2.3.4'), res1, url, sourceById, noopHealth);
+    assert.equal(res1.statusCode, 200, 'first stream from an IP is accepted');
+    await handleCctvMediaRequest(mockReq('1.2.3.4'), res2, url, sourceById, noopHealth);
+    assert.equal(res2.statusCode, 200, 'second stream from an IP is accepted (per-IP cap)');
+    await handleCctvMediaRequest(mockReq('1.2.3.4'), res3, url, sourceById, noopHealth);
+    assert.equal(res3.statusCode, 429, 'third stream from the same IP is rejected');
+    assert.match(res3.body, /per-ip/, '429 must identify the per-IP cap');
+    await handleCctvMediaRequest(mockReq('5.6.7.8'), res4, url, sourceById, noopHealth);
+    assert.equal(res4.statusCode, 200, 'a different IP is not blocked by the first client');
+    const state = _getLiveMediaStreamStateForTest();
+    assert.equal(state.active, 3, 'three slots held (2 from IP A, 1 from IP B)');
+    assert.equal(state.byIp.get('1.2.3.4'), 2);
+    assert.equal(state.byIp.get('5.6.7.8'), 1);
+    assert.equal(LIVE_MEDIA_STREAM_PER_IP_CAP, 2, 'per-IP cap must cover one client at its cap');
+  } finally {
+    res1.destroy();
+    res2.destroy();
+    res4.destroy();
+    const released = await waitFor(() => _getLiveMediaStreamStateForTest().active === 0, 2000);
+    assert.ok(released, 'all slots must be released after teardown');
+    await upstream.close();
+  }
+});
+
+test('F4: isMjpgStreamUrl anchors to the pathname, not the query string', () => {
+  assert.equal(isMjpgStreamUrl('http://example.com/image.jpg?x=.mjpg'), false);
+  assert.equal(isMjpgStreamUrl('http://example.com/image.jpg?file=video.mjpg'), false);
+  assert.equal(isMjpgStreamUrl('http://example.com/mjpg/video.mjpg?x=1'), true);
+  assert.equal(isMjpgStreamUrl('http://example.com/axis-cgi/jpg/image.cgi'), false);
+});
+
+test('F5: live stream with a non-video content-type is cancelled, not piped', async () => {
+  const upstream = await startMockHtmlUpstream();
+  const sourceById = new Map([['cam1', { id: 'cam1', url: `http://127.0.0.1:${upstream.port}/error`, feedType: 'mjpeg' }]]);
+  const url = new URL('/media/cam1', 'http://localhost');
+  const res = new MockServerResponse();
+  try {
+    await handleCctvMediaRequest(mockReq('1.2.3.4'), res, url, sourceById, () => {});
+    assert.equal(res.statusCode, 502, 'content-type mismatch must fail closed');
+    assert.match(res.body, /Unexpected media type/);
+    assert.equal(_getLiveMediaStreamStateForTest().active, 0, 'the slot must be released on mismatch');
+  } finally {
+    res.destroy();
+    await upstream.close();
+  }
 });
