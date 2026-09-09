@@ -38,6 +38,7 @@ import cctvLayer, {
   cctvEmptyClickDeselects,
   cctvRecordNeedsActivation,
   deactivateActiveCamera,
+  drawProjectionFrame,
   CCTV_FOCUS_RESULT,
   FRUSTUM_GROUND_CLEARANCE_M,
   CCTV_CALIBRATION_STORAGE_KEY_V2,
@@ -1653,6 +1654,7 @@ test('live-media connection counter stays in [0,2] through the full camera lifec
         moveTo() {},
         lineTo() {},
         stroke() {},
+        fill() {},
         measureText: (text) => ({ width: String(text).length * 10 }),
         getImageData: () => ({ data: new Uint8ClampedArray(64 * 36 * 4) }),
         imageSmoothing: true,
@@ -1667,7 +1669,7 @@ test('live-media connection counter stays in [0,2] through the full camera lifec
     body: { classList: { contains: () => false } },
   };
   globalThis.Image = class {
-    constructor() { this.decoding = 'async'; this.crossOrigin = 'anonymous'; }
+    constructor() { this.decoding = 'async'; this.crossOrigin = 'anonymous'; this._src = ''; }
     set src(v) { this._src = v; }
     get src() { return this._src; }
     removeAttribute() {}
@@ -1821,6 +1823,382 @@ test('live-media connection counter stays in [0,2] through the full camera lifec
     assert.equal(s.sidebarReservedForId, 'axis-c');
     assert.equal(cctvLayer.getUIState().activeCamera.feedMode, 'live');
     assertInvariant('after projection on');
+  } finally {
+    cctvLayer.disable();
+    globalThis.document = originalDocument;
+    globalThis.Image = originalImage;
+    globalThis.requestAnimationFrame = originalRaf;
+    globalThis.cancelAnimationFrame = originalCaf;
+  }
+});
+
+test('projection plane stays hidden until the first frame renders (all feed modes)', () => {
+  // Option B for the Axis white-frame flash: a fresh projection runtime is
+  // created with the plane hidden, and refreshCoverageStyles keeps it hidden
+  // until the first real frame lands (video canplay / image onload / live-jpeg
+  // first draw). Regression: the plane must never show the material's white
+  // base color before a frame is on the canvas.
+  const originalDocument = globalThis.document;
+  const originalImage = globalThis.Image;
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalCaf = globalThis.cancelAnimationFrame;
+
+  function makeCanvas() {
+    return {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+        createLinearGradient: () => ({ addColorStop() {} }),
+        fillRect() {},
+        fillText() {},
+        strokeRect() {},
+        arc() {},
+        beginPath() {},
+        moveTo() {},
+        lineTo() {},
+        stroke() {},
+        fill() {},
+        measureText: (text) => ({ width: String(text).length * 10 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(64 * 36 * 4) }),
+        imageSmoothing: true,
+      }),
+    };
+  }
+  function makeVideo() {
+    const listeners = {};
+    return {
+      muted: false, loop: false, autoplay: false, playsInline: false,
+      crossOrigin: null, preload: '', src: '',
+      readyState: 0, videoWidth: 0, videoHeight: 0,
+      addEventListener: (type, fn) => { listeners[type] = fn; },
+      _listeners: listeners,
+      play: () => Promise.resolve(),
+      pause() {}, removeAttribute() {}, load() {},
+    };
+  }
+  globalThis.document = {
+    createElement: (tag) => (
+      tag === 'canvas' ? makeCanvas() : tag === 'video' ? makeVideo() : { tag }
+    ),
+    hidden: false,
+    addEventListener() {},
+    removeEventListener() {},
+    body: { classList: { contains: () => false } },
+  };
+  globalThis.Image = class {
+    constructor() { this.decoding = 'async'; this.crossOrigin = 'anonymous'; this._src = ''; }
+    set src(v) { this._src = v; }
+    get src() { return this._src; }
+    removeAttribute() {}
+  };
+  // No-op rAF: the projection loop must not tick during the test — every
+  // first-frame event is simulated explicitly so assertions are deterministic.
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+
+  const viewer = {
+    entities: new Cesium.EntityCollection(),
+    isDestroyed: () => false,
+    trackedEntity: null,
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 4000),
+      positionCartographic: Cesium.Cartographic.fromDegrees(-97.7431, 30.2672, 4000),
+      heading: 0.4, pitch: -0.7, roll: 0.1,
+      transform: Cesium.Matrix4.clone(Cesium.Matrix4.IDENTITY),
+      flyTo() {},
+      moveEnd: { addEventListener() {}, removeEventListener() {} },
+      moveStart: { addEventListener() {}, removeEventListener() {} },
+    },
+    scene: {
+      canvas: { clientWidth: 1200, clientHeight: 800 },
+      cartesianToCanvasCoordinates: () => undefined,
+      primitives: { add: (p) => p, remove: () => true },
+      requestRender() {},
+      pickFromRay: () => null,
+      globe: { show: true },
+    },
+  };
+
+  function makeRecord(id, feedType) {
+    return {
+      camera: {
+        id,
+        name: `Cam ${id}`,
+        city: 'Austin',
+        lat: 30.2672,
+        lon: -97.7431,
+        headingDeg: 41,
+        fovDeg: 60,
+        pitchDeg: -10,
+        rangeM: 500,
+        mountHeightM: 10,
+        groundElevationM: 150,
+        feedType,
+        provider: 'axis',
+        sourceKind: 'discovered',
+        feedConfigured: true,
+        calibration: { rangeScale: 1 },
+      },
+      position: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 160),
+      coverageEntities: [],
+      projection: null,
+      activationDone: false,
+      probeClampRangeM: null,
+      groundPrior: { ellipsoid: 150 },
+      groundResolved: {},
+      groundSamples: {},
+      frustumGeometry: null,
+      frustumPositions: null,
+    };
+  }
+
+  try {
+    _setCctvOverlayHostForTest({
+      setEntries() {}, setVisible() {}, clearSource() {}, hitTest: () => null,
+    });
+
+    const cases = [
+      {
+        feedType: 'mp4',
+        label: 'video',
+        firstFrame: (record) => {
+          record.projection.video._listeners.canplay();
+        },
+      },
+      {
+        feedType: 'mjpeg',
+        label: 'live-jpeg',
+        firstFrame: (record) => {
+          const live = record.projection.image;
+          live.complete = true;
+          live.naturalWidth = 640;
+          live.naturalHeight = 480;
+          live.onload();
+          drawProjectionFrame(record);
+        },
+      },
+      {
+        feedType: 'jpeg',
+        label: 'image',
+        firstFrame: (record) => {
+          record.projection.image.onload();
+        },
+      },
+    ];
+
+    for (const { feedType, label, firstFrame } of cases) {
+      const record = makeRecord(`axis-${label}`, feedType);
+      _setCctvCoverageStateForTest({
+        viewer,
+        records: [record],
+        activeCameraId: record.camera.id,
+        enabled: true,
+        coverageMode: 'off',
+        showProjection: true,
+      });
+      refreshCoverageStyles();
+
+      const runtime = record.projection;
+      assert.ok(runtime, `${label}: runtime must exist after refresh`);
+      assert.equal(runtime.mode, label, `${label}: mode must match feedType`);
+      assert.equal(
+        runtime.planeEntity.show,
+        false,
+        `${label}: plane must stay hidden before the first frame`,
+      );
+      assert.equal(
+        runtime._visibilityGranted,
+        false,
+        `${label}: visibility must not be granted before the first frame`,
+      );
+
+      firstFrame(record);
+
+      assert.equal(
+        runtime._visibilityGranted,
+        true,
+        `${label}: first frame must grant visibility`,
+      );
+      assert.equal(
+        runtime.planeEntity.show,
+        true,
+        `${label}: plane must become visible after the first frame`,
+      );
+    }
+  } finally {
+    cctvLayer.disable();
+    globalThis.document = originalDocument;
+    globalThis.Image = originalImage;
+    globalThis.requestAnimationFrame = originalRaf;
+    globalThis.cancelAnimationFrame = originalCaf;
+  }
+});
+
+test('camera switch: stale first-frame events cannot resurrect an inactive plane', () => {
+  // Regression for the camera-switch race: video canplay / image onload fire
+  // asynchronously and can land AFTER the user has switched to another camera.
+  // The grant must be entitlement-checked (active camera only) so a stale
+  // runtime never resurrects its plane for a camera that is no longer active.
+  // A warm camera (already granted) shows immediately on re-activation.
+  const originalDocument = globalThis.document;
+  const originalImage = globalThis.Image;
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalCaf = globalThis.cancelAnimationFrame;
+
+  function makeCanvas() {
+    return {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+        createLinearGradient: () => ({ addColorStop() {} }),
+        fillRect() {},
+        fillText() {},
+        strokeRect() {},
+        arc() {},
+        beginPath() {},
+        moveTo() {},
+        lineTo() {},
+        stroke() {},
+        fill() {},
+        measureText: (text) => ({ width: String(text).length * 10 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(64 * 36 * 4) }),
+        imageSmoothing: true,
+      }),
+    };
+  }
+  function makeVideo() {
+    const listeners = {};
+    return {
+      muted: false, loop: false, autoplay: false, playsInline: false,
+      crossOrigin: null, preload: '', src: '',
+      readyState: 0, videoWidth: 0, videoHeight: 0,
+      addEventListener: (type, fn) => { listeners[type] = fn; },
+      _listeners: listeners,
+      play: () => Promise.resolve(),
+      pause() {}, removeAttribute() {}, load() {},
+    };
+  }
+  globalThis.document = {
+    createElement: (tag) => (
+      tag === 'canvas' ? makeCanvas() : tag === 'video' ? makeVideo() : { tag }
+    ),
+    hidden: false,
+    addEventListener() {},
+    removeEventListener() {},
+    body: { classList: { contains: () => false } },
+  };
+  globalThis.Image = class {
+    constructor() { this.decoding = 'async'; this.crossOrigin = 'anonymous'; this._src = ''; }
+    set src(v) { this._src = v; }
+    get src() { return this._src; }
+    removeAttribute() {}
+  };
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+
+  const viewer = {
+    entities: new Cesium.EntityCollection(),
+    isDestroyed: () => false,
+    trackedEntity: null,
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 4000),
+      positionCartographic: Cesium.Cartographic.fromDegrees(-97.7431, 30.2672, 4000),
+      heading: 0.4, pitch: -0.7, roll: 0.1,
+      transform: Cesium.Matrix4.clone(Cesium.Matrix4.IDENTITY),
+      flyTo() {},
+      moveEnd: { addEventListener() {}, removeEventListener() {} },
+      moveStart: { addEventListener() {}, removeEventListener() {} },
+    },
+    scene: {
+      canvas: { clientWidth: 1200, clientHeight: 800 },
+      cartesianToCanvasCoordinates: () => undefined,
+      primitives: { add: (p) => p, remove: () => true },
+      requestRender() {},
+      pickFromRay: () => null,
+      globe: { show: true },
+    },
+  };
+
+  function makeRecord(id, feedType) {
+    return {
+      camera: {
+        id,
+        name: `Cam ${id}`,
+        city: 'Austin',
+        lat: 30.2672,
+        lon: -97.7431,
+        headingDeg: 41,
+        fovDeg: 60,
+        pitchDeg: -10,
+        rangeM: 500,
+        mountHeightM: 10,
+        groundElevationM: 150,
+        feedType,
+        provider: 'axis',
+        sourceKind: 'discovered',
+        feedConfigured: true,
+        calibration: { rangeScale: 1 },
+      },
+      position: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 160),
+      coverageEntities: [],
+      projection: null,
+      activationDone: false,
+      probeClampRangeM: null,
+      groundPrior: { ellipsoid: 150 },
+      groundResolved: {},
+      groundSamples: {},
+      frustumGeometry: null,
+      frustumPositions: null,
+    };
+  }
+
+  try {
+    _setCctvOverlayHostForTest({
+      setEntries() {}, setVisible() {}, clearSource() {}, hitTest: () => null,
+    });
+
+    const camA = makeRecord('axis-a', 'mp4');
+    const camB = makeRecord('axis-b', 'mp4');
+    const records = [camA, camB];
+
+    _setCctvCoverageStateForTest({
+      viewer,
+      records,
+      activeCameraId: 'axis-a',
+      enabled: true,
+      coverageMode: 'off',
+      showProjection: true,
+    });
+    refreshCoverageStyles();
+
+    // A is fresh: hidden until its first frame.
+    assert.equal(camA.projection.planeEntity.show, false, 'A starts hidden');
+    camA.projection.video._listeners.canplay();
+    assert.equal(camA.projection.planeEntity.show, true, 'A shows after its first frame');
+
+    // Switch to B: A's plane hides, B's runtime is fresh and hidden.
+    setActiveCamera('axis-b');
+    refreshCoverageStyles();
+    assert.equal(camA.projection.planeEntity.show, false, 'A hides on switch');
+    assert.equal(camB.projection.planeEntity.show, false, 'B stays hidden until its first frame');
+
+    // Stale async event from A's runtime (canplay fired late): must NOT resurrect A.
+    camA.projection.video._listeners.canplay();
+    assert.equal(camA.projection.planeEntity.show, false, 'stale A canplay must not resurrect A');
+
+    // B's first frame shows B.
+    camB.projection.video._listeners.canplay();
+    assert.equal(camB.projection.planeEntity.show, true, 'B shows after its first frame');
+
+    // Switch back to A: A is warm (already granted) — shows immediately.
+    setActiveCamera('axis-a');
+    refreshCoverageStyles();
+    assert.equal(camA.projection.planeEntity.show, true, 'warm A shows immediately on re-activation');
+    assert.equal(camB.projection.planeEntity.show, false, 'B hides on switch away');
   } finally {
     cctvLayer.disable();
     globalThis.document = originalDocument;

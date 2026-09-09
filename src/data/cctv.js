@@ -2011,6 +2011,38 @@ function setPlaneVisible(runtime, visible) {
   }
 }
 
+/**
+ * True when the given record is the one currently entitled to show a
+ * projection plane: the layer is enabled, projection is on, and the record
+ * is the active camera. Guards async first-frame grants (video canplay,
+ * image onload) that can fire AFTER a camera switch — without it, a stale
+ * runtime could resurrect its plane for a camera that is no longer active.
+ * @param {Object} record CCTV runtime record.
+ * @returns {boolean}
+ */
+function projectionPlaneEntitled(record) {
+  if (!_enabled || !_showProjection || !record) return false;
+  const active = getActiveRecord();
+  return !!active && record.camera.id === active.camera.id;
+}
+
+/**
+ * Grants plane visibility on the first real frame of a projection runtime
+ * (Option B for the Axis white-frame flash): the plane is created hidden and
+ * refreshCoverageStyles keeps it hidden until _visibilityGranted is set, so
+ * the monitor never shows the material's white base color before a frame is
+ * on the canvas. Idempotent; safe to call from every first-frame path
+ * (video canplay, image onload, live-jpeg/video/image first draw).
+ * @param {Object} runtime Projection runtime.
+ * @param {Object} record CCTV runtime record.
+ */
+function grantPlaneFirstFrame(runtime, record) {
+  if (!runtime || runtime._visibilityGranted) return;
+  if (!projectionPlaneEntitled(record)) return;
+  runtime._visibilityGranted = true;
+  setPlaneVisible(runtime, true);
+}
+
 /** Create the native monitor plane plus its cached host-label presentation. */
 function createProjectionPlane(record, runtime, geometry, positions) {
   runtime.labelPosition ||= new Cesium.Cartesian3();
@@ -2065,6 +2097,9 @@ export function _createCctvProjectionPlaneForTest(viewer, record) {
     labelPosition: new Cesium.Cartesian3(),
     overlayEntry: null,
     planeMaterial: new Cesium.ColorMaterialProperty(Cesium.Color.WHITE),
+    // Test helper: the plane is created ready-to-show (no media pipeline, so
+    // no first-frame event will ever grant visibility).
+    _visibilityGranted: true,
   };
   createProjectionPlane(record, runtime, geometry, positions);
   record.projection = runtime;
@@ -2152,6 +2187,9 @@ function createProjectionRuntime(record) {
     // only re-uploads the plane texture when there is genuinely new content.
     canvasStamp: 1,
     lastSwappedCanvasStamp: 0,
+    // Track whether visibility has been granted for this runtime (prevents
+    // white flash by keeping plane hidden until first real frame is ready).
+    _visibilityGranted: false,
   };
 
   paintProjectionPlaceholder(ctx, record.camera, null, 'no-feed', mode);
@@ -2203,6 +2241,7 @@ function createProjectionRuntime(record) {
     video.src = mediaUrlFor(record.camera);
     video.addEventListener('canplay', () => {
       video.play().catch(() => {});
+      grantPlaneFirstFrame(runtime, record);
     });
     video.addEventListener('error', () => {
       runtime.feedError = 'video-load-failed';
@@ -2220,6 +2259,7 @@ function createProjectionRuntime(record) {
       runtime.lastGoodFrameAt = Date.now();
       runtime.feedError = null;
       cctvLog(`frame loaded OK for ${record.camera.id} (${img.src.split('/').pop()})`);
+      grantPlaneFirstFrame(runtime, record);
     };
     img.onerror = () => {
       runtime.imageLoading = false;
@@ -2406,7 +2446,7 @@ function paintPlaceholderThrottled(record, runtime, health) {
  * texture uploads are already throttled to 1Hz buffer swaps.
  * @param {Object} record - Camera record with an initialized projection runtime.
  */
-function drawProjectionFrame(record) {
+export function drawProjectionFrame(record) {
   const runtime = record?.projection;
   if (!runtime || !runtime.ctx) return;
 
@@ -2426,6 +2466,7 @@ function drawProjectionFrame(record) {
       runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
       runtime.lastPlaceholderPaintAt = 0;
       paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
+      grantPlaneFirstFrame(runtime, record);
       return;
     }
     // No fresh frame has landed (or the stream is stalled/reconnecting). Once
@@ -2445,6 +2486,7 @@ function drawProjectionFrame(record) {
       runtime.ctx.drawImage(video, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
       runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
       paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
+      grantPlaneFirstFrame(runtime, record);
       return;
     }
     if (runtime.lastGoodFrameAt === 0) {
@@ -2479,6 +2521,7 @@ function drawProjectionFrame(record) {
       runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
       runtime.lastPlaceholderPaintAt = 0;
       paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
+      grantPlaneFirstFrame(runtime, record);
     }
     return;
   }
@@ -3895,7 +3938,12 @@ export function refreshCoverageStyles() {
     }
 
     if (record.projection) {
-      setPlaneVisible(record.projection, planeShowing);
+      // Option B (axis-projection-flash): a fresh runtime has no frame on the
+      // canvas yet — keep the plane hidden until the first frame lands
+      // (canplay / onload / first draw grant visibility via _visibilityGranted).
+      // An already-loaded runtime shows immediately, so toggling projection ON
+      // for a warm camera is instant.
+      setPlaneVisible(record.projection, planeShowing && record.projection._visibilityGranted);
     }
   }
 
