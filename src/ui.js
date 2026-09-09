@@ -4063,6 +4063,7 @@ export class StyleManager {
     this._initCommandDockPins();
     this._initCommandDockTrayMetrics();
     this._maybeNotifyLayoutReset();
+    this._migrateLegacyPanelPositionKeys();
   }
 
   /**
@@ -4186,6 +4187,63 @@ export class StyleManager {
         .some((key) => key.startsWith('evolEyeView.v6.panelPos.'));
       if (hadOldPositions) {
         this._showToast('Panel layout updated — positions reset to new defaults');
+      }
+    } catch {
+      // storage unavailable
+    }
+  }
+
+  /**
+   * Collapses the panel-position version ladder to a single source of truth.
+   * Legacy position keys from both the pre-rebrand (`devilsEyeView.v6/v7/v8.panelPos.*`)
+   * and post-rebrand (`evolEyeView.v6/v7.panelPos.*`) namespaces are migrated forward
+   * under the current key when no current-version key exists for that panel, and purged
+   * otherwise (or when the legacy value is malformed). Runs once at startup; after it,
+   * only current-version position keys remain.
+   * @returns {void}
+   */
+  _migrateLegacyPanelPositionKeys() {
+    try {
+      const legacyKeys = Object.keys(localStorage)
+        .filter((key) => /^(?:devilsEyeView\.v[678]|evolEyeView\.v[67])\.panelPos\./.test(key));
+      if (!legacyKeys.length) return;
+      // Group by panelId, keeping the newest legacy version per panel.
+      // Ordering: devilsEyeView.v6 < v7 < v8 < evolEyeView.v6 < v7 — the rebranded
+      // namespace is newer than the pre-rebrand one; v8 in either namespace is the
+      // previous current version (devilsEyeView pre-rebrand, evolEyeView would only
+      // exist from code that wrote between rebrand and a version bump, which hasn't
+      // happened — but we handle it defensively).
+      const newestByPanel = new Map();
+      for (const key of legacyKeys) {
+        const match = /^(?:devilsEyeView|evolEyeView)\.v([678])\.panelPos\.(.+)$/.exec(key);
+        const [, version, panelId] = match;
+        const rank = (key.startsWith('evolEyeView') ? 10 : 0) + Number(version);
+        const existing = newestByPanel.get(panelId);
+        if (!existing || rank > existing.rank) {
+          newestByPanel.set(panelId, { rank, key });
+        }
+      }
+      for (const [panelId, { key }] of newestByPanel) {
+        const currentKey = this._panelStorageKey(panelId);
+        if (localStorage.getItem(currentKey) === null) {
+          // No current-version key: migrate the newest legacy value forward.
+          const raw = localStorage.getItem(key);
+          try {
+            const pos = JSON.parse(raw);
+            if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
+              localStorage.setItem(currentKey, JSON.stringify({
+                left: Math.round(pos.left),
+                top: Math.round(pos.top),
+              }));
+            }
+          } catch {
+            // malformed legacy value — drop it rather than migrate garbage
+          }
+        }
+      }
+      // Purge every legacy key — the ladder collapses to the current version.
+      for (const key of legacyKeys) {
+        localStorage.removeItem(key);
       }
     } catch {
       // storage unavailable
@@ -7688,13 +7746,20 @@ export class StyleManager {
       if (!pos || typeof pos.left !== 'number' || typeof pos.top !== 'number') return;
       // Clamp to the viewport: a position saved at one window size would otherwise land off-screen at
       // another (audit U2 — observed a panel at x:-192). The drag handler clamps; restore must too.
-      const { left, top } = this._clampToViewport(Math.round(pos.left), Math.round(pos.top), panelEl);
+      const desiredLeft = Math.round(pos.left);
+      const desiredTop = Math.round(pos.top);
+      const { left, top } = this._clampToViewport(desiredLeft, desiredTop, panelEl);
       panelEl.style.left = `${left}px`;
       panelEl.style.top = `${top}px`;
       panelEl.style.right = 'auto';
       panelEl.style.bottom = 'auto';
       if (panelId === 'pp-toggles') {
         this._pinPanelToRight(panelEl);
+      }
+      // Self-heal: if clamping actually moved the position, persist the clamped value under the
+      // current key so the stored state converges and never needs re-clamping on the next load.
+      if (left !== desiredLeft || top !== desiredTop) {
+        localStorage.setItem(this._panelStorageKey(panelId), JSON.stringify({ left, top }));
       }
     } catch {
       // ignore malformed saved panel position

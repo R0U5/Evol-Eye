@@ -31,19 +31,22 @@ Next iteration candidates:
 ---
 
 ### CCTV panel can appear "missing" after layout refactors
-Status: Open (workaround available)
+Status: Open (mitigated — restore clamps + self-heals)
 
 Context:
 - Panel positions are persisted in local storage and can restore off-screen after UI changes.
+- Restore now clamps saved positions to the viewport (6 px inset) and writes the clamped value
+  back under the current key, so the stored state self-heals on the next load.
+- Legacy `v6`/`v7` position keys are migrated forward or purged once at startup; only the
+  current-version key is ever read.
 
-Workaround:
+Recovery (only if the panel is still unreachable after a reload):
 - In browser console:
-  - `localStorage.removeItem('evolEyeView.v6.panelPos.cctv-panel');`
-  - `localStorage.removeItem('evolEyeView.v6.panelCollapsed.cctv-panel');`
+  - `localStorage.removeItem('evolEyeView.v8.panelPos.cctv-panel');`
   - `location.reload();`
 
 Related keys (current versions):
-- Panel positions: `evolEyeView.v7.panelPos.<panel-id>` (re-versioned 2026-06-10)
+- Panel positions: `evolEyeView.v8.panelPos.<panel-id>` (re-versioned 2026-09-09)
 - Panel collapsed state: `evolEyeView.v6.panelCollapsed.<panel-id>`
 - CCTV calibration: `evolEyeView.cctv.calibration.v2`
 
