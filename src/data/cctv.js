@@ -2327,15 +2327,33 @@ function closeLiveJpegConnection(runtime) {
  * @returns {Object|null} The record's projection runtime.
  */
 function ensureProjectionRuntime(record) {
+  // Guard against null/undefined record early.
   if (!record) return null;
+
+  // After confirming we have a record, fetch health info.
+  const health = _healthById.get(record?.camera?.id);
+  const healthIndicatesLive = health && /mjpeg?|mjpg/.test(health.sourceKind || '');
+
+  // If a projection already exists, handle possible upgrade from image → live‑jpeg.
   if (record.projection) {
-    // Re-activation after a camera switch: the runtime survives (geometry
-    // reuse) but its live connection was closed on deactivation — reopen it.
+    // When the runtime is still in 'image' mode but health now indicates a live MJPEG source,
+    // we must destroy the old runtime and recreate it to get a proper <img> element.
+    if (record.projection.mode !== 'live-jpeg' && healthIndicatesLive) {
+      destroyProjectionRuntime(record.projection);
+      // Remove the old runtime reference; recreation will push a new entity.
+      record.projection = null;
+      // Recurse to create a fresh runtime with the correct mode and connection.
+      return ensureProjectionRuntime(record);
+    }
+    // If we already have a live‑jpeg runtime but the live connection is not established,
+    // (e.g., after a camera switch) reopen it.
     if (record.projection.mode === 'live-jpeg' && !record.projection.liveConnected) {
       openLiveJpegConnection(record.projection, record.camera);
     }
     return record.projection;
   }
+
+  // No existing projection – create a new one.
   const runtime = createProjectionRuntime(record);
   record.projection = runtime;
   if (runtime) {
