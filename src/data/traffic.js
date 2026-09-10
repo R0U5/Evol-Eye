@@ -187,6 +187,13 @@ let _cameraRemover = null;
 let _fetchTimeout = null;
 /** @type {{south:number,west:number,north:number,east:number}|null} Last fetched clamped bounds */
 let _lastBounds = null;
+/**
+ * @type {{south:number,west:number,north:number,east:number}|null} Last camera
+ * view rectangle, expanded by a hysteresis margin. Refreshed on camera change
+ * (not per frame) and used by the per-frame animation cull to skip dots on
+ * roads outside the viewport. (perf wave 3)
+ */
+let _lastViewBounds = null;
 /** @type {boolean} True while an Overpass fetch is in flight */
 let _fetching = false;
 /** @type {number} Current count of rendered dots */
@@ -650,7 +657,7 @@ function parseRoads(overpassData) {
       segmentDist.push(Cesium.Cartesian3.distance(waypoints[i], waypoints[i + 1]));
     }
 
-    roads.push({ coords, type, oneway, waypoints, segmentDist });
+    roads.push({ coords, type, oneway, waypoints, segmentDist, _inView: true });
   }
 
   return roads;
@@ -861,6 +868,30 @@ function orderRoadsViewportFirst(roads, viewportBounds) {
 }
 
 /**
+ * Mark each road's viewport visibility for the per-frame animation cull.
+ *
+ * The bounds are expanded by a hysteresis margin so dots near the screen edge
+ * keep animating between camera-change events (no popping); the flags are only
+ * refreshed on camera change, not per frame. O(roads) per camera change —
+ * negligible next to the per-frame dot loop it gates. (perf wave 3)
+ *
+ * @param {{south:number, west:number, north:number, east:number}} bounds
+ *   Camera view rectangle in degrees.
+ */
+function updateRoadViewVisibility(bounds) {
+  const margin = 0.02; // ~2.2 km at the equator — generous hysteresis
+  const expanded = {
+    south: bounds.south - margin,
+    north: bounds.north + margin,
+    west: bounds.west - margin,
+    east: bounds.east + margin,
+  };
+  for (const road of _roads) {
+    road._inView = roadVisibleInBounds(road, expanded);
+  }
+}
+
+/**
  * Spawn animated dot primitives along a single road.
  *
  * Each dot is placed at a random position along the road, assigned a
@@ -1020,6 +1051,13 @@ function animate() {
 
   for (let i = 0; i < _dots.length; i++) {
     const dot = _dots[i];
+
+    // Viewport cull (perf wave 3): skip dots on roads outside the last camera
+    // view rectangle (expanded by a hysteresis margin). Off-screen dots are
+    // invisible — animating them only burns CPU and dirties the collection's
+    // vertex buffer, forcing a VBO re-upload. The flag is refreshed on camera
+    // change, so a dot that enters view resumes within one camera event.
+    if (dot.road?._inView === false) continue;
 
     // Simulated stop-light pause — skip movement while timer is active
     if (now < dot.stoppedUntil) continue;
@@ -1281,6 +1319,7 @@ function onCameraChanged() {
   if (alt > ACTIVATION_ALTITUDE) {
     clearDots();
     _lastBounds = null;
+    _lastViewBounds = null;
     _lastViewCenter = null;
     // Stamp the last-update gate so the enable-kick timer self-clears while
     // the camera is parked above the activation altitude — otherwise it fires
@@ -1292,6 +1331,11 @@ function onCameraChanged() {
 
   const bounds = getViewBounds();
   if (!bounds) return;
+  // Refresh the per-road viewport visibility flags used by the per-frame
+  // animation cull. Done BEFORE the overlap gate so a small pan that skips a
+  // re-fetch still updates which dots animate. (perf wave 3)
+  _lastViewBounds = bounds;
+  updateRoadViewVisibility(bounds);
   // C4 fix: center the fetch box on the camera's look-at ground point (with
   // nadir fallback + 12 km horizon-gaze pull-back), NOT the view rectangle's
   // midpoint — at oblique pitch that midpoint drifts toward the horizon.
@@ -1827,6 +1871,7 @@ function renderRoadsForAltitude(roads, altitude, label, trace = null, viewportBo
 
   _count = _dots.length;
   _lastUpdate = Date.now();
+  syncTrafficRenderHold(); // dots/heat-lines exist → re-hold the continuous render
   console.log(`[Data:Traffic] ${label}: ${_count} dots (roads=${roads.length}, alt=${Math.round(altitude)}m)`);
   if (state) {
     const renderEnd = trafficTimingMark(state, 'render-return', renderMetrics);
@@ -2070,7 +2115,7 @@ function parseRoadsTimed(overpassData, trace) {
     _trafficTimingWaypointMaterializationMs += performance.now() - _trafficTimingMaterializeStart;
     /* TRACE_ONLY_END */
 
-    roads.push({ coords, type, oneway, waypoints, segmentDist });
+    roads.push({ coords, type, oneway, waypoints, segmentDist, _inView: true });
   }
 
   /* TRACE_ONLY_BEGIN */
@@ -2412,6 +2457,20 @@ async function prefetchTile(bounds, key) {
 
 // ─── Cleanup ───────────────────────────────────────────────
 
+/**
+ * Keep the continuous-render hold in sync with actual animation demand.
+ *
+ * The layer holds a render while dots or heat-lines exist (both animate per
+ * frame); when the camera parks above ACTIVATION_ALTITUDE and clearDots()
+ * empties the scene, the hold is released so the idle governor can stop the
+ * loop — otherwise a parked camera burns 60 fps for nothing. (perf wave 3)
+ */
+function syncTrafficRenderHold() {
+  const needsRender = _enabled && (_dots.length > 0 || _heatLineCount > 0);
+  if (needsRender) holdContinuousRender('traffic');
+  else releaseContinuousRender('traffic');
+}
+
 /** Remove all point primitives and reset dot/road arrays and counters. */
 function clearDots() {
   if (_pointCollection) _pointCollection.removeAll();
@@ -2421,6 +2480,7 @@ function clearDots() {
   _count = 0;
   _bucketCounts = { free: 0, slow: 0, jam: 0, sim: 0 };
   _closedRoads = 0;
+  syncTrafficRenderHold();
 }
 
 // ─── Data Layer Interface ──────────────────────────────────
@@ -2461,6 +2521,7 @@ const trafficLayer = {
     _count = 0;
     _lastUpdate = null;
     _lastBounds = null;
+    _lastViewBounds = null;
     _fetching = false;
     _loadGeneration = 0;
     _densityScale = 1.0;
@@ -2500,7 +2561,7 @@ const trafficLayer = {
    */
   enable(viewer) {
     _enabled = true;
-    holdContinuousRender('traffic'); // per-frame animator (perf wave 2)
+    syncTrafficRenderHold(); // per-frame animator (perf wave 2) — held only while dots/heat-lines exist
     _lastAnimTime = 0;
     _pointCollection.show = true;
 
@@ -2551,7 +2612,7 @@ const trafficLayer = {
    */
   disable(viewer) {
     _enabled = false;
-    releaseContinuousRender('traffic');
+    syncTrafficRenderHold(); // _enabled=false → always releases
     clearTimeout(_fetchTimeout);
     clearInterval(_enableKickTimer);
     _enableKickTimer = null;
