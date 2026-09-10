@@ -41,6 +41,7 @@ import { pickRenderAltitudeM } from './renderAltitude.js';
 import { cachedGroundFloor, floorAltitudeM, warmGroundFloor, resolveGroundFloorCellsBounded, GROUND_FLOOR_LIFT_M } from './groundFloor.js';
 import { sampleMeshFloorCells } from './meshFloorSampler.js';
 import { ensureGeoidReady, geoidHeight } from './geoid.js';
+import { getLoadedInstallationRecords } from './militaryInstallations.js';
 import {
   advanceProjectedSpriteFocus,
   clearFocusTarget,
@@ -273,6 +274,11 @@ let _lastStatus = null;
 let _geoidReady = false;
 /** @type {Map<string, number>} icao24 -> geoid undulation N (m), cached (negligible drift per-aircraft). */
 const _geoidNCache = new Map();
+/** @type {boolean} True once the static-installation floor pre-warm has been
+ *  attempted (P0.1 Option C). Installations are static, so one attempt per
+ *  session is enough; the warm is fire-and-forget and bounded to the loaded
+ *  installation footprints. */
+let _installationFloorPreWarmed = false;
 
 // -- Click-to-track state --
 /** @type {string|null} ICAO hex of the currently tracked aircraft */
@@ -835,6 +841,16 @@ export function _setTrackedMilitaryRefreshStateForTest({
   // seam is used to test.
   _backoff = false;
   _retryAt = 0;
+}
+
+/** Test hook: whether the one-shot installation floor pre-warm has been attempted. */
+export function _installationFloorPreWarmAttemptedForTest() {
+  return _installationFloorPreWarmed;
+}
+
+/** Test hook: reset the one-shot installation floor pre-warm latch between tests. */
+export function _setInstallationFloorPreWarmForTest(value) {
+  _installationFloorPreWarmed = !!value;
 }
 
 /** Seed the authoritative snapshot outcome used by share-Follow tests. */
@@ -2839,6 +2855,26 @@ const militaryFlightsLayer = {
       // batch-resolved once after it. Never a fetch inside the loop.
       const _floorWarmPoints = [];
 
+      // P0.1 Option C — military floor pre-warm: static military installations
+      // are loaded by the sibling installations layer (Overpass/Google Places,
+      // network-fetched THERE, not here). On the FIRST poll after the layer
+      // starts, collect the already-loaded installation coordinates and warm
+      // their coarse floor cells through the SAME fire-and-forget batch warm
+      // the per-poll loop uses (warmGroundFloor — single-flight, queued,
+      // deduped, zero network on the render path). Installations are static,
+      // so this is a one-time bounded cost: only cells for the loaded
+      // installation footprints, never the whole globe. Born-grounded military
+      // contacts (alt_baro:"ground", no alt_geom) then find their
+      // installation's floor warm — no geoid sentinel, no surfaceM branch
+      // change, no groundSnap/T7 disturbance.
+      if (!_installationFloorPreWarmed) {
+        _installationFloorPreWarmed = true;
+        const installationPoints = getLoadedInstallationRecords()
+          .filter((record) => Number.isFinite(record?.latitude) && Number.isFinite(record?.longitude))
+          .map((record) => ({ lat: record.latitude, lon: record.longitude }));
+        if (installationPoints.length) warmGroundFloor(installationPoints);
+      }
+
       // -- Parse each aircraft record from the adsb.lol response --
       // Fields used: hex (ICAO), lon, lat, alt_baro (ft, barometric/MSL),
       // alt_geom (ft, geometric/WGS84 ellipsoidal — probed live 2026-07-05:
@@ -2961,7 +2997,18 @@ const militaryFlightsLayer = {
           if (!modelOwnsVisual) {
             const floor = cachedGroundFloor(lat, lon);
             if (Number.isFinite(floor)) {
-              renderAltitudeM = floorAltitudeM(renderAltitudeM, floor);
+              // P0.1 Option C: a born-grounded contact (no alt_geom/alt_baro —
+              // pickedAltM is the null sentinel) renders at the 0 m altitudeM
+              // default on its first poll. When the installation floor is
+              // already warm (pre-warmed at load), lift it onto the floor
+              // immediately — the geoid sentinel never shows. Contacts WITH
+              // altitude data keep the existing floorAltitudeM clamp
+              // (down-only, never overrides a reported altitude).
+              if (pickedAltM == null && renderAltitudeM < floor) {
+                renderAltitudeM = floor + GROUND_FLOOR_LIFT_M;
+              } else {
+                renderAltitudeM = floorAltitudeM(renderAltitudeM, floor);
+              }
             }
           }
         }
