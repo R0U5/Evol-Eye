@@ -38,6 +38,15 @@ const CHUNK_SIZE = 200;
 const GEOID_FALLBACK_COOLDOWN_MS = 60_000;
 
 /**
+ * Max in-memory cache entries (LRU). Bounded so a long session panning the
+ * globe at 5dp granularity can't grow the Map without limit — the proxy twin
+ * in vite.config.js is bounded (256-entry LRU + disk cap), and the client
+ * cache must be too. 10k entries ≈ ~1 MB worst case, far below the unbounded
+ * growth a multi-hour session could otherwise reach. (perf wave 3)
+ */
+const CACHE_MAX_ENTRIES = 10_000;
+
+/**
  * In-memory cache: `"lat.toFixed(5),lon.toFixed(5)"` -> `{ellipsoid, source}`.
  * Module-scoped (not exported) — the only reads are through
  * `cachedEllipsoidalGround` and the internal lookup in
@@ -45,6 +54,36 @@ const GEOID_FALLBACK_COOLDOWN_MS = 60_000;
  * @type {Map<string, {ellipsoid: number, source: 'reearth'|'geoid-fallback', retryAt?: number}>}
  */
 const cache = new Map();
+
+/**
+ * LRU-aware cache write. Enforces CACHE_MAX_ENTRIES by evicting the oldest
+ * inserted entry (Map iteration order = insertion order; a read below
+ * re-inserts to promote recency).
+ * @param {string} key
+ * @param {{ellipsoid: number, source: 'reearth'|'geoid-fallback', retryAt?: number}} value
+ */
+function cacheSet(key, value) {
+  cache.set(key, value);
+  if (cache.size > CACHE_MAX_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    cache.delete(oldest);
+  }
+}
+
+/**
+ * LRU-aware cache read. Promotes the entry to most-recently-used so a hot
+ * coordinate is never the first evicted.
+ * @param {string} key
+ * @returns {{ellipsoid: number, source: 'reearth'|'geoid-fallback', retryAt?: number}|undefined}
+ */
+function cacheGet(key) {
+  const entry = cache.get(key);
+  if (entry !== undefined) {
+    cache.delete(key);
+    cache.set(key, entry);
+  }
+  return entry;
+}
 
 /**
  * Builds the rounded cache key shared between the in-memory cache and the
@@ -66,7 +105,7 @@ function cacheKey(lat, lon) {
  * @returns {number|null}
  */
 export function cachedEllipsoidalGround(lat, lon) {
-  const entry = cache.get(cacheKey(lat, lon));
+  const entry = cacheGet(cacheKey(lat, lon));
   return entry ? entry.ellipsoid : null;
 }
 
@@ -83,7 +122,7 @@ export function cachedEllipsoidalGround(lat, lon) {
  * @returns {number|null}
  */
 export function cachedRealEllipsoidalGround(lat, lon) {
-  const entry = cache.get(cacheKey(lat, lon));
+  const entry = cacheGet(cacheKey(lat, lon));
   return entry && entry.source === 'reearth' ? entry.ellipsoid : null;
 }
 
@@ -186,7 +225,7 @@ export async function resolveEllipsoidalGround(coords) {
   const seenKeys = new Set();
   const now = Date.now();
   for (const item of work) {
-    const entry = cache.get(item.key);
+    const entry = cacheGet(item.key);
     const fallbackCooling = entry?.source === 'geoid-fallback'
       && Number.isFinite(entry.retryAt)
       && now < entry.retryAt;
@@ -211,7 +250,7 @@ export async function resolveEllipsoidalGround(coords) {
         // one contact frozen at the geoid while its neighbors resolved).
         // An omitted point now caches nothing and retries on the next warm.
         if (Number.isFinite(ellipsoid)) {
-          cache.set(item.key, { ellipsoid, source: 'reearth' });
+          cacheSet(item.key, { ellipsoid, source: 'reearth' });
         }
       }
     } catch {
@@ -222,7 +261,7 @@ export async function resolveEllipsoidalGround(coords) {
       await ensureGeoidReady();
       for (const item of chunk) {
         const ellipsoid = geoidFallback(item.lat, item.lon, item.sourceOrthometricM);
-        cache.set(item.key, {
+        cacheSet(item.key, {
           ellipsoid,
           source: 'geoid-fallback',
           retryAt: Date.now() + GEOID_FALLBACK_COOLDOWN_MS,
@@ -235,7 +274,7 @@ export async function resolveEllipsoidalGround(coords) {
   // the upstream omitted has NO entry (round 6 — deliberately uncached so it
   // retries later): report it unresolved instead of throwing.
   return work.map((item) => {
-    const entry = cache.get(item.key);
+    const entry = cacheGet(item.key);
     return entry
       ? { ellipsoid: entry.ellipsoid, source: entry.source }
       : { ellipsoid: null, source: 'unresolved' };
