@@ -52,17 +52,20 @@ Related keys (current versions):
 
 ---
 
-### Height-datum residuals (branch `feat/height-datum`, pending merge)
-Status: Open (owner-accepted 2026-07-08, documented)
+### Height-datum residuals (implemented on main, floor-hold rounds Aug 19/21/23)
+Status: Implemented — residuals accepted-by-design (oracle-verified)
 
 - **Cold-start floor latency:** at a freshly-visited airport, grounded/low aircraft
   float low for ~1–2 poll cycles (30–60 s) and rise as terrain floors resolve;
-  a few stragglers take one more poll.
+  a few stragglers take one more poll. *(Accepted — DEM warm is async; cold
+  cells resolve within 1–2 poll cycles.)*
 - **Born-grounded first poll:** a contact first seen on the ground with no altitude
   data renders at the geoid for ≤1 poll until its floor cell warms.
-- Full context, improvement ideas, and the verification oracle
-  (`scripts/qa-floor-verify.mjs`):
-  `docs/superpowers/reports/2026-07-08-height-datum-handover.md`.
+  *(Civil: accepted-by-design — `geoidSurfaceLastResortM` is the intentional
+  one-poll stand-in. Military: mitigated by installation floor pre-warm —
+  see P0.1 commit.)*
+- Verification oracle: `scripts/qa-floor-verify.mjs` (also:
+  `scripts/qa-height-datum.mjs`, `scripts/qa-floor-hold.mjs`).
 
 ---
 

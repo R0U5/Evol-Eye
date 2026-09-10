@@ -672,4 +672,14 @@ const militaryInstallationsLayer = {
   },
 };
 
+/**
+ * Return the current loaded installation records (lat/lon coordinates) for
+ * sibling-layer consumption (e.g. military floor pre-warm). Empty array when
+ * no load has completed yet or the layer is idle.
+ * @returns {Array<{latitude: number, longitude: number, name?: string}>}
+ */
+export function getLoadedInstallationRecords() {
+  return state.records;
+}
+
 export default militaryInstallationsLayer;
