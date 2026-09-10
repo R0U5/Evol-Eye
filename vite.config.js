@@ -9281,6 +9281,25 @@ export default defineConfig(({ mode }) => {
       // The Cesium engine bundle is inherently large; raise the warning ceiling
       // so the build log isn't dominated by an expected chunk-size notice.
       chunkSizeWarningLimit: 1500,
+      rollupOptions: {
+        output: {
+          // Split the small, rarely-changing vendor deps out of the app chunk so
+          // they cache independently and load in parallel with app code. Cesium
+          // itself is NOT in the Rollup graph — vite-plugin-cesium externalizes
+          // it to a global and emits dist/cesium/Cesium.js separately — so a
+          // manualChunks rule for it would be a no-op.
+          manualChunks(id) {
+            if (
+              id.includes('node_modules/satellite.js')
+              || id.includes('node_modules/mgrs')
+              || id.includes('node_modules/pbf')
+              || id.includes('node_modules/@mapbox/vector-tile')
+            ) {
+              return 'vendor';
+            }
+          },
+        },
+      },
     },
   };
 });
