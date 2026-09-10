@@ -1,5 +1,10 @@
 import * as Cesium from 'cesium';
-import { deriveFetchCenter, clampBoundsAroundCenter } from './trafficBounds.js';
+import {
+  deriveFetchCenter,
+  clampBoundsAroundCenter,
+  roadVisibleInBounds,
+  neighborTileBounds,
+} from './trafficBounds.js';
 import { fetchFlowForBounds, getFlowSessionStats, resetFlowTileCache } from './flowTiles.js';
 import { matchFlowToRoads } from './flowMatch.js';
 import { flowBucket, flowSpeedScale, flowDensityMult } from './trafficFlowStyle.js';
@@ -55,6 +60,24 @@ const DOT_HEIGHT_OFFSET = 3.0;
 const OVERLAP_THRESHOLD = 0.6;
 /** @const {number} Hard cap on total rendered dot primitives for GPU/CPU performance */
 const MAX_DOTS = 6000;
+/**
+ * @const {number} Km — viewport-center shift that counts as a jump-to-city.
+ * Larger shifts trigger the neighbor prefetch ring so subsequent pans/zooms
+ * hit the tile cache instead of re-fetching serially (P0.3).
+ */
+const PREFETCH_JUMP_KM = 2.0;
+/** @const {number} Neighbor ring depth for post-jump prefetch (1 = 8 tiles). */
+const PREFETCH_RING = 1;
+/** @const {number} Target frame time in ms for the adaptive dot cap. */
+const FRAME_BUDGET_MS = 16;
+/** @const {number} EMA smoothing factor for frame-time tracking (slow — avoids oscillation). */
+const FRAME_TIME_EMA_ALPHA = 0.08;
+/**
+ * @const {number} Floor for the adaptive dot cap as a fraction of MAX_DOTS.
+ * Coverage first, density second: even under heavy frame pressure the cap
+ * never drops below this so every visible road keeps its fairness seed.
+ */
+const MIN_ADAPTIVE_CAP_FRACTION = 0.5;
 /** @const {number} Polylines longer than this are simplified by sub-sampling */
 const MAX_WAYPOINTS_PER_ROAD = 80;
 /** @const {number} Km — minimum viewport center shift before allowing refresh */
@@ -168,6 +191,24 @@ let _lastBounds = null;
 let _fetching = false;
 /** @type {number} Current count of rendered dots */
 let _count = 0;
+/**
+ * @type {number} EMA of per-frame animation time (ms), updated every preRender
+ * frame in `animate()`. Drives the adaptive dot cap: dense cores shed density
+ * (not coverage) when the frame budget is exceeded. 0 = no frames yet.
+ */
+let _frameTimeEMA = 0;
+/**
+ * @type {number} Effective dot cap for the current render (adaptive). Set at
+ * the top of `renderRoadsForAltitude` from `effectiveDotCap()` and read by
+ * `spawnDotsForRoad` as the hard stop, so allocation and spawn agree.
+ */
+let _activeDotCap = MAX_DOTS;
+/** @type {string} Multi-phase sync-chip label ('' = settled, falls back to loadingLabel). */
+let _phaseLabel = '';
+/** @type {number} 0–100 multi-phase sync-chip progress. */
+let _phaseProgressPct = 0;
+/** @type {Set<AbortController>} Controllers for in-flight neighbor prefetches. */
+let _prefetchControllers = new Set();
 /** @type {number|null} Timestamp of last successful render */
 let _lastUpdate = null;
 /** @type {number} Monotonic generation counter — incremented on each load to discard stale responses */
@@ -411,6 +452,13 @@ export function getTrafficTimingDiagnostics() {
     uncorrelatedTracesDropped: _trafficTimingDroppedTraces,
   };
 }
+
+/**
+ * Test/benchmark-facing pure helpers (P0.3). These named exports are unused by
+ * the application; they exist so the dense-core fixture and unit tests can
+ * exercise the allocation, ordering, and adaptive-cap logic without a viewer.
+ */
+export { allocateRoadDotBudgets, computeDotCount, effectiveDotCap, orderRoadsViewportFirst };
 
 /**
  * Tile cache keyed by "s,w,n,e" string.
@@ -681,20 +729,29 @@ function computeDotCount(road, altitude) {
  * This prevents high-density motorways from starving smaller residential roads
  * when the global MAX_DOTS cap is reached.
  *
+ * P0.3 viewport-first: an optional `priority` array (same length as `roads`,
+ * higher = earlier) reorders the fairness seed so roads inside the active
+ * viewport get their seed dot before off-screen segments. The default (null)
+ * keeps the shipped demand-only ordering byte-identical.
+ *
  * @param {Array} roads    - Parsed road objects.
  * @param {number} altitude - Camera altitude in meters (affects spacing).
  * @param {number} dotCap   - Maximum total dots to allocate.
+ * @param {Array<number>|null} [priority=null] - Per-road priority weights
+ *   (higher first); null keeps the shipped demand-only ordering.
  * @returns {number[]} Per-road dot budgets, same length as `roads`.
  */
-function allocateRoadDotBudgets(roads, altitude, dotCap) {
+function allocateRoadDotBudgets(roads, altitude, dotCap, priority = null) {
   const planned = roads.map((road) => computeDotCount(road, altitude));
   const budgets = new Array(roads.length).fill(0);
   let remaining = Math.max(0, dotCap);
 
-  // Pass 1 — fairness seed: give one dot to every road (highest-demand first)
+  // Pass 1 — fairness seed: give one dot to every road (visible-first, then
+  // highest-demand). `priority` is an optional per-road weight (higher first);
+  // the default keeps the shipped demand-only ordering byte-identical.
   const firstPassOrder = planned
-    .map((count, index) => ({ count, index }))
-    .sort((a, b) => b.count - a.count);
+    .map((count, index) => ({ count, index, priority: priority ? priority[index] : 0 }))
+    .sort((a, b) => (b.priority - a.priority) || (b.count - a.count));
 
   for (const entry of firstPassOrder) {
     if (remaining <= 0) break;
@@ -742,6 +799,65 @@ function allocateRoadDotBudgets(roads, altitude, dotCap) {
   }
 
   return budgets;
+}
+
+/**
+ * Report the current multi-phase load progress to the sync chip.
+ *
+ * The chip reducer (`reduceTrafficSyncFeedback` in loadingFeedback.js) already
+ * renders a phase label and percentage when the layer supplies them; this is
+ * the layer-side half of that contract (P0.3 sync-chip promotion). Phases:
+ * fetch → render → (fetch local) → (render local) → done. An empty label with
+ * 100 means settled — the chip falls back to `loadingLabel`.
+ *
+ * @param {string} label - Short phase label ('' = no phase, settled).
+ * @param {number} progressPct - 0–100 progress within the load.
+ */
+function setPhase(label, progressPct) {
+  _phaseLabel = label;
+  _phaseProgressPct = Math.max(0, Math.min(100, Math.round(progressPct)));
+}
+
+/**
+ * Effective dot cap for the current render.
+ *
+ * The hard MAX_DOTS stays the worst-case bound; the adaptive cap scales it
+ * down when the animation loop is exceeding the frame budget, so dense cores
+ * shed density (not coverage) under load. The EMA is updated every preRender
+ * frame in `animate()`; a fresh session with no frames yet uses the base cap.
+ *
+ * Tradeoff (documented, per P0.3 hard constraint): on a slow machine a dense
+ * core may render fewer dots per road than MAX_DOTS would allow, but every
+ * visible road still gets its fairness seed (coverage first). Sparse scenes
+ * never approach the cap, so the common case is unchanged.
+ *
+ * @returns {number} Effective dot cap (integer, 1..MAX_DOTS).
+ */
+function effectiveDotCap() {
+  if (_frameTimeEMA <= 0) return MAX_DOTS;
+  const ratio = FRAME_BUDGET_MS / _frameTimeEMA;
+  const fraction = Math.max(MIN_ADAPTIVE_CAP_FRACTION, Math.min(1, ratio));
+  return Math.max(1, Math.round(MAX_DOTS * fraction));
+}
+
+/**
+ * Split roads into viewport-visible and off-screen groups, preserving order
+ * within each group. The visible group is returned first so dot placement
+ * prioritizes on-screen roads under a tight cap (P0.3 viewport-first).
+ *
+ * @param {Array} roads - Parsed road objects.
+ * @param {{south:number, west:number, north:number, east:number}} viewportBounds
+ * @returns {{ordered:Array, visibleCount:number}} Reordered roads and how many
+ *   of the leading entries are viewport-visible.
+ */
+function orderRoadsViewportFirst(roads, viewportBounds) {
+  const visible = [];
+  const offScreen = [];
+  for (const road of roads) {
+    if (roadVisibleInBounds(road, viewportBounds)) visible.push(road);
+    else offScreen.push(road);
+  }
+  return { ordered: [...visible, ...offScreen], visibleCount: visible.length };
 }
 
 /**
@@ -808,7 +924,9 @@ function spawnDotsForRoad(road, altitude, budgetCount = null) {
   }
 
   for (let i = 0; i < count; i++) {
-    if (_dots.length >= MAX_DOTS) return;
+    // Adaptive cap: `_activeDotCap` is set by renderRoadsForAltitude from
+    // effectiveDotCap() so allocation and spawn agree on the same bound.
+    if (_dots.length >= _activeDotCap) return;
 
     // Random start position: pick a random segment and offset within it —
     // unless this is a queued jam dot with a platoon placement.
@@ -894,6 +1012,7 @@ let _animFrame = 0;
  * Delta time is capped at 100 ms to prevent large jumps after background tabs.
  */
 function animate() {
+  const frameStart = performance.now();
   const now = Date.now();
   // Delta time in seconds, capped to avoid jumps when returning from background tab
   const dt = _lastAnimTime ? Math.min((now - _lastAnimTime) / 1000, 0.1) : 0.016;
@@ -969,6 +1088,14 @@ function animate() {
   }
 
   _animFrame++;
+
+  // Frame-time EMA for the adaptive dot cap. Measured AFTER the dot loop so
+  // the cost of the dots themselves is what drives the cap; the slow alpha
+  // prevents oscillation between shed and restore.
+  const frameMs = performance.now() - frameStart;
+  _frameTimeEMA = _frameTimeEMA === 0
+    ? frameMs
+    : _frameTimeEMA + FRAME_TIME_EMA_ALPHA * (frameMs - _frameTimeEMA);
 }
 
 /**
@@ -1184,13 +1311,20 @@ function onCameraChanged() {
     return;
   }
 
+  // Jump-to-city detection (P0.3): a center shift beyond PREFETCH_JUMP_KM is a
+  // jump, not a pan — the neighbor ring is prefetched after the main load so
+  // subsequent pans/zooms hit the cache instead of re-fetching serially. The
+  // first load after enable also counts (last center is null → Infinity).
+  const shiftKm = _lastViewCenter ? distanceKm(center, _lastViewCenter) : Infinity;
+  const isJump = shiftKm >= PREFETCH_JUMP_KM;
+
   // Debounce: wait for camera to settle before triggering a fetch. In debug
   // captures the final changed event that arms this exact timeout is its
   // causal anchor; Cesium's later moveEnd notification is diagnostic only.
   const interactionAnchor = TRAFFIC_TIMING_ENABLED ? markTrafficTimingCameraChange() : null;
   clearTimeout(_fetchTimeout);
   _fetchTimeout = setTimeout(
-    () => _loadRoadsForBounds(clamped, alt, interactionAnchor),
+    () => _loadRoadsForBounds(clamped, alt, interactionAnchor, isJump),
     FETCH_DEBOUNCE,
   );
 }
@@ -1392,9 +1526,11 @@ const FLOW_RENDER_RACE_MS = 250;
  * @param {number} altitude - Camera altitude in meters.
  * @param {string} label - Render log label.
  * @param {Object|null} [trace=null] - Development-only correlated load trace.
+ * @param {{south:number,west:number,north:number,east:number}|null} [viewportBounds=null]
+ *   Current camera view rectangle in degrees (viewport-first ordering).
  * @returns {Promise<boolean>} True if this generation rendered.
  */
-async function applyFlowThenRender(roads, clamped, generation, altitude, label, trace = null) {
+async function applyFlowThenRender(roads, clamped, generation, altitude, label, trace = null, viewportBounds = null) {
   const state = TRAFFIC_TIMING_ENABLED && trace
     ? trafficTimingRenderState(trace, label)
     : null;
@@ -1417,7 +1553,7 @@ async function applyFlowThenRender(roads, clamped, generation, altitude, label, 
     });
   }
   if (generation !== _loadGeneration) return false;
-  renderRoadsForAltitude(roads, altitude, label, trace);
+  renderRoadsForAltitude(roads, altitude, label, trace, viewportBounds);
   if (outcome === 'timeout') {
     flowJob.then(() => {
       if (generation !== _loadGeneration) return;
@@ -1588,12 +1724,20 @@ function rebuildHeatLines(roads) {
  * When zoomed out (>5 km), only major road types are rendered to reduce clutter.
  * Dot budgets are allocated fairly across visible roads via `allocateRoadDotBudgets`.
  *
+ * P0.3 viewport-first: when `viewportBounds` is supplied, roads inside the
+ * active viewport are ordered first and get their fairness seed before
+ * off-screen segments, so a tight dot cap never starves a visible road behind
+ * off-screen geometry. The adaptive dot cap (`effectiveDotCap`) bounds the
+ * render by frame time — coverage first, density second.
+ *
  * @param {Array} roads    - Parsed road objects to render.
  * @param {number} altitude - Camera altitude in meters.
  * @param {string} label    - Logging label (e.g. "Cache full", "Loaded major").
  * @param {Object|null} [trace=null] - Development-only correlated load trace.
+ * @param {{south:number, west:number, north:number, east:number}|null} [viewportBounds=null]
+ *   Current camera view rectangle in degrees; null disables viewport-first ordering.
  */
-function renderRoadsForAltitude(roads, altitude, label, trace = null) {
+function renderRoadsForAltitude(roads, altitude, label, trace = null, viewportBounds = null) {
   const state = TRAFFIC_TIMING_ENABLED && trace
     ? trafficTimingRenderState(trace, label)
     : null;
@@ -1629,19 +1773,29 @@ function renderRoadsForAltitude(roads, altitude, label, trace = null) {
   _fadeScaleFar = Math.max(8000, areaDist * 1.5);
   _fadeTransFar = Math.max(10000, areaDist * 1.8);
 
+  // Viewport-first ordering (P0.3): roads inside the active viewport get their
+  // dots before off-screen segments. The priority array feeds the allocation
+  // seed pass; the reordered array feeds the spawn loop, so both stages agree.
+  const { ordered: orderedRoads, visibleCount } = viewportBounds
+    ? orderRoadsViewportFirst(filteredRoads, viewportBounds)
+    : { ordered: filteredRoads, visibleCount: filteredRoads.length };
+  const priority = orderedRoads.map((_, i) => (i < visibleCount ? 1 : 0));
+
   const dotStart = state ? trafficTimingMark(state, 'dot-construction-start', {
     renderId,
     renderLabel: label,
     roadCount: roads.length,
     visibleRoadCount: filteredRoads.length,
+    viewportVisibleRoadCount: visibleCount,
   }) : null;
-  const roadBudgets = allocateRoadDotBudgets(filteredRoads, altitude, MAX_DOTS);
-  for (let i = 0; i < filteredRoads.length; i++) {
-    const road = filteredRoads[i];
+  _activeDotCap = effectiveDotCap();
+  const roadBudgets = allocateRoadDotBudgets(orderedRoads, altitude, _activeDotCap, priority);
+  for (let i = 0; i < orderedRoads.length; i++) {
+    const road = orderedRoads[i];
     const budget = roadBudgets[i] || 0;
     if (budget <= 0) continue;
     spawnDotsForRoad(road, altitude, budget);
-    if (_dots.length >= MAX_DOTS) break;
+    if (_dots.length >= _activeDotCap) break;
   }
 
   const renderMetrics = state ? {
@@ -1649,7 +1803,9 @@ function renderRoadsForAltitude(roads, altitude, label, trace = null) {
     renderLabel: label,
     roadCount: roads.length,
     visibleRoadCount: filteredRoads.length,
+    viewportVisibleRoadCount: visibleCount,
     dotCount: _dots.length,
+    dotCap: _activeDotCap,
   } : null;
   if (state) {
     const dotEnd = trafficTimingMark(state, 'dot-construction-end', renderMetrics);
@@ -1983,11 +2139,11 @@ function scheduleTrafficTimingPostRender(state, renderEnd, renderId, renderMetri
 }
 
 /** Start a scheduling-correlated debug trace, or count and drop an unpaired load. */
-async function loadRoadsForBoundsTimed(bounds, altitude, expectedAnchor) {
+async function loadRoadsForBoundsTimed(bounds, altitude, expectedAnchor, prefetchRing = false) {
   const generation = _loadGeneration + 1;
   if (!expectedAnchor || expectedAnchor !== _trafficTimingCurrentAnchor) {
     _trafficTimingDroppedTraces += 1;
-    await loadRoadsForBounds(bounds, altitude);
+    await loadRoadsForBounds(bounds, altitude, null, prefetchRing);
     return;
   }
   _trafficTimingCurrentAnchor = null;
@@ -2004,7 +2160,7 @@ async function loadRoadsForBoundsTimed(bounds, altitude, expectedAnchor) {
     passes: new Map(),
   };
   _trafficTimingTracesCreated += 1;
-  await loadRoadsForBounds(bounds, altitude, trace);
+  await loadRoadsForBounds(bounds, altitude, trace, prefetchRing);
 }
 
 // Disabled-path contract: these references resolve directly to the original
@@ -2031,17 +2187,31 @@ const _loadRoadsForBounds = TRAFFIC_TIMING_ENABLED
  * Each fetch is guarded by a monotonic `_loadGeneration` counter so that
  * stale responses from superseded requests are silently discarded.
  *
+ * P0.3 additions:
+ *  - The current camera view rectangle is captured once and threaded into
+ *    every render so dot placement prioritizes viewport-visible roads.
+ *  - Multi-phase progress (`setPhase`) drives the sync chip through
+ *    fetch → render → (fetch local) → (render local) → done.
+ *  - When `prefetchRing` is true (jump-to-city center shift), the neighbor
+ *    tile ring is warmed after the main load commits so subsequent pans hit
+ *    the cache instead of re-fetching serially.
+ *
  * @param {{south:number, west:number, north:number, east:number}} bounds
  *   Viewport bounds (will be clamped internally).
  * @param {number} altitude - Camera altitude in meters.
  * @param {Object|null} [trace=null] - Development-only correlated load trace.
+ * @param {boolean} [prefetchRing=false] - True after a jump-to-city: warm the
+ *   neighbor tile ring once the main load commits.
  * @returns {Promise<void>}
  */
-async function loadRoadsForBounds(bounds, altitude, trace = null) {
+async function loadRoadsForBounds(bounds, altitude, trace = null, prefetchRing = false) {
   // Increment generation to invalidate any in-flight responses from prior calls
   const generation = ++_loadGeneration;
   cancelActiveFetch();
   const clamped = clampBounds(bounds);
+  // Capture the settled camera view once per load; every render in this load
+  // uses the same rectangle so viewport-first ordering is self-consistent.
+  const viewportBounds = getViewBounds();
 
   // Cache key: fixed-precision bounding-box string for deterministic lookups
   const cacheKey = `${clamped.south.toFixed(4)},${clamped.west.toFixed(4)},${clamped.north.toFixed(4)},${clamped.east.toFixed(4)}`;
@@ -2065,6 +2235,7 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
   _lastBounds = clamped;
   _lastViewCenter = getBoundsCenter(clamped);
   let renderedSomething = false;
+  let loadSucceeded = false;
 
   try {
     let cache = _tileCache.get(cacheKey);
@@ -2083,20 +2254,25 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
     // but congestion data has a 120s shelf life. The race renders within
     // FLOW_RENDER_RACE_MS either way; late flow recolors in place.
     if (cache.full) {
+      setPhase('rendering roads', 45);
       renderedSomething = await applyFlowThenRender(
-        cache.full, clamped, generation, altitude, 'Cache full', trace
+        cache.full, clamped, generation, altitude, 'Cache full', trace, viewportBounds
       );
+      if (!renderedSomething) return;
+      loadSucceeded = true;
       return;
     }
 
     // Intermediate path: render cached major roads while fetching the rest
     if (cache.major) {
+      setPhase('rendering roads', 45);
       if (!await applyFlowThenRender(
-        cache.major, clamped, generation, altitude, 'Cache major', trace
+        cache.major, clamped, generation, altitude, 'Cache major', trace, viewportBounds
       )) return;
       renderedSomething = true;
     } else {
       // Fetch major roads first (smaller payload, faster response)
+      setPhase('fetching roads', 10);
       _activeFetchAbort = new AbortController();
       console.log(`[Data:Traffic] Fast fetch major roads [${cacheKey}]`);
       const majorData = await fetchRoads(
@@ -2107,16 +2283,21 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
       // Discard stale response if a newer load was triggered while waiting
       if (generation !== _loadGeneration) return;
       cache.major = _parseRoads(majorData, trace);
+      setPhase('rendering roads', 45);
       if (!await applyFlowThenRender(
-        cache.major, clamped, generation, altitude, 'Loaded major', trace
+        cache.major, clamped, generation, altitude, 'Loaded major', trace, viewportBounds
       )) return;
       renderedSomething = true;
     }
 
     // At higher altitude, major roads provide sufficient motion density
-    if (altitude > FAST_FETCH_ALTITUDE) return;
+    if (altitude > FAST_FETCH_ALTITUDE) {
+      loadSucceeded = true;
+      return;
+    }
 
     // Detailed pass: fetch the full road graph (tertiary, residential, etc.)
+    setPhase('fetching local roads', 60);
     _activeFetchAbort = new AbortController();
     console.log(`[Data:Traffic] Full fetch local roads [${cacheKey}]`);
     const fullData = await fetchRoads(
@@ -2127,10 +2308,12 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
     if (generation !== _loadGeneration) return;
 
     cache.full = _parseRoads(fullData, trace);
+    setPhase('rendering local roads', 85);
     if (!await applyFlowThenRender(
-      cache.full, clamped, generation, altitude, 'Loaded full', trace
+      cache.full, clamped, generation, altitude, 'Loaded full', trace, viewportBounds
     )) return;
     renderedSomething = true;
+    loadSucceeded = true;
 
   } catch (e) {
     if (e?.name === 'AbortError') return;
@@ -2138,6 +2321,8 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
   } finally {
     if (generation === _loadGeneration) {
       _fetching = false;
+      // Multi-phase progress: settled (100) on success, cleared on failure.
+      setPhase('', loadSucceeded ? 100 : 0);
       // Roll back the bounds commit if this load rendered nothing (e.g. the
       // Overpass fetch failed). Leaving them committed would make the overlap
       // gate skip the retry while the user sits still. Guarded on generation so
@@ -2146,8 +2331,82 @@ async function loadRoadsForBounds(bounds, altitude, trace = null) {
         _lastBounds = prevBounds;
         _lastViewCenter = prevViewCenter;
       }
+      // After the main load commits, warm the neighbor ring for subsequent
+      // pans (P0.3). Fire-and-forget: failures are logged, never surfaced.
+      // Runs on every success path (cache hit, major-only, full fetch) so a
+      // repeat visit to a cached center tile still re-warms evicted neighbors.
+      if (prefetchRing && loadSucceeded) {
+        prefetchNeighborRing(clamped, altitude);
+      }
     }
     _activeFetchAbort = null;
+  }
+}
+
+// ─── Neighbor Prefetch Ring (P0.3) ─────────────────────────
+
+/**
+ * Warm the tile cache for the ring of tiles around the just-loaded viewport.
+ *
+ * After a jump-to-city the user's next action is usually a pan or zoom into a
+ * neighboring tile. Fetching those tiles serially on demand is what made dense
+ * cores feel late. This prefetches the ring's MAJOR roads only (small payload,
+ * bounded Overpass load) so a pan into a neighbor renders instantly from cache
+ * and only the full-graph pass re-fetches. Full-graph prefetch for all 8
+ * neighbors would multiply Overpass load ~8x on every jump — not acceptable on
+ * the free tier (documented tradeoff).
+ *
+ * Fire-and-forget: failures are logged, never surfaced. Superseded prefetches
+ * are discarded by the generation guard in the caller.
+ *
+ * @param {{south:number, west:number, north:number, east:number}} clamped
+ *   Center tile (already clamped).
+ * @param {number} altitude - Camera altitude in meters (reserved for future
+ *   full-graph prefetch decisions; major-only today).
+ */
+async function prefetchNeighborRing(clamped, altitude) {
+  const neighbors = neighborTileBounds(clamped, PREFETCH_RING);
+  for (const neighbor of neighbors) {
+    const key = `${neighbor.south.toFixed(4)},${neighbor.west.toFixed(4)},${neighbor.north.toFixed(4)},${neighbor.east.toFixed(4)}`;
+    if (_tileCache.has(key)) continue;
+    prefetchTile(neighbor, key);
+  }
+}
+
+/**
+ * Fetch one neighbor tile's major roads into the tile cache.
+ *
+ * Uses its own AbortController (tracked in `_prefetchControllers` so disable()
+ * can cancel in-flight prefetches) and never touches `_activeFetchAbort`,
+ * which belongs to the main load. The generation guard is intentionally NOT
+ * applied: a cached tile is always a valid road set for that tile, and the
+ * only cost of a superseded prefetch is bounded bandwidth.
+ *
+ * @param {{south:number, west:number, north:number, east:number}} bounds
+ * @param {string} key - Tile cache key.
+ */
+async function prefetchTile(bounds, key) {
+  const controller = new AbortController();
+  _prefetchControllers.add(controller);
+  try {
+    const data = await fetchRoads(
+      bounds.south, bounds.west, bounds.north, bounds.east,
+      { majorOnly: true, timeoutSec: 12, signal: controller.signal },
+    );
+    if (!_tileCache.has(key)) {
+      if (_tileCache.size >= TILE_CACHE_MAX_ENTRIES) {
+        const oldest = _tileCache.keys().next().value;
+        _tileCache.delete(oldest);
+      }
+      _tileCache.set(key, { major: null, full: null });
+    }
+    const cache = _tileCache.get(key);
+    cache.major = _parseRoads(data, null);
+  } catch (e) {
+    if (e?.name === 'AbortError') return;
+    console.warn('[Data:Traffic] Neighbor prefetch failed:', e?.message || e);
+  } finally {
+    _prefetchControllers.delete(controller);
   }
 }
 
@@ -2297,12 +2556,17 @@ const trafficLayer = {
     clearInterval(_enableKickTimer);
     _enableKickTimer = null;
     cancelActiveFetch();
+    // Cancel any in-flight neighbor prefetches (P0.3).
+    for (const controller of _prefetchControllers) controller.abort();
+    _prefetchControllers.clear();
     _loadGeneration++;
     clearDots();
     _lastViewCenter = null;
     // A stale outage from the last session would misreport a fresh enable —
     // the next load re-derives feed health from real evidence.
     _flowError = null;
+    // Multi-phase progress resets with the layer.
+    setPhase('', 0);
 
     if (_preRenderRemover) {
       _preRenderRemover();
@@ -2504,6 +2768,15 @@ const trafficLayer = {
       // SIMULATED mode is surfaced, and it must never imply a live feed the
       // layer does not have.
       loadingLabel: feed.loadingLabel,
+      // Multi-phase sync-chip progress (P0.3): the chip reducer renders a
+      // phase label + percentage while a load is in flight (fetch → render →
+      // fetch local → render local → done). Empty label + 100 = settled.
+      phaseLabel: _phaseLabel,
+      phaseProgressPct: _phaseProgressPct,
+      // Adaptive dot cap diagnostics (additive): the effective cap for the
+      // current render and the frame-time EMA that drove it.
+      dotCap: _activeDotCap,
+      frameTimeEMA: _frameTimeEMA,
     };
   },
 };
