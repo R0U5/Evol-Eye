@@ -178,7 +178,11 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   box-sizing: border-box;
   border: 0.8px solid rgba(151, 218, 232, 0.095);
   border-radius: 50%;
-  will-change: width, height;
+  /* No will-change: width/height here — those are LAYOUT properties, and
+     promoting them permanently tells the browser to keep this element in a
+     "may reflow" state. The outline's size is written only when the camera
+     distance or viewport changes (celestialRing.js _renderEffectLayers keys
+     the write), so there is no per-frame layout cost to optimize away. */
 }
 
 .celestial-marker {
@@ -528,12 +532,6 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   display: block;
   width: 100%;
   height: 100%;
-}
-
-#title-bar .title-accent,
-.loader-content .title-accent {
-  color: var(--accent);
-  font-weight: 300;
 }
 
 #title-bar .subtitle {
@@ -933,12 +931,10 @@ body.cockpit-mode #cockpit-cloud-effects.active {
 }
 
 /* Spinner overlaid on the search-wrap, between the toggle button and input */
-.location-search-wrap.is-searching .search-toggle-btn .spinner-icon,
 .location-search-wrap.is-searching .location-search-spinner {
   display: flex;
 }
 
-.location-search-wrap:not(.is-searching) .search-toggle-btn .spinner-icon,
 .location-search-wrap:not(.is-searching) .location-search-spinner {
   display: none;
 }
@@ -2720,27 +2716,6 @@ body.cockpit-mode:has(#left-panel-stack > .panel-collapsible:not(.collapsed)) .c
   font-size: 7px;
   letter-spacing: 0.16em;
 }
-.cockpit-mode-chip {
-  margin-top: 2px;
-  padding: 7px 11px;
-  border: 1px solid color-mix(in srgb, var(--cockpit-accent) 45%, transparent);
-  border-radius: 20px;
-  background: rgba(0, 7, 12, 0.62);
-  color: var(--cockpit-accent);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-}
-.cockpit-live-dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin-right: 6px;
-  border-radius: 50%;
-  background: var(--cockpit-accent);
-  box-shadow: 0 0 8px var(--cockpit-accent);
-  animation: cockpit-live 1.6s ease-in-out infinite;
-}
 @keyframes cockpit-live { 50% { opacity: 0.35; } }
 .cockpit-readout {
   position: relative;
@@ -4043,7 +4018,6 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
     width: 100%;
   }
   .cockpit-topline { grid-template-columns: 1fr auto; }
-  .cockpit-mode-chip { display: none; }
   .cockpit-readout { min-width: 76px; padding: 4px 6px 5px; }
   .cockpit-readout strong { font-size: clamp(24px, 8vw, 34px); }
   .cockpit-readout-label { font-size: 7px; letter-spacing: 0.12em; }
@@ -5159,10 +5133,6 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 .mission-replay-rocket-port {
   fill: #ff3c3c;
   stroke: none;
-}
-
-.mission-replay-rocket-flame {
-  display: none;
 }
 
 .mission-replay-thrust {
