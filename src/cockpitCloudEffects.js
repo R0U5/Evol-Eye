@@ -179,6 +179,7 @@ export class CockpitCloudEffectsController {
     this.refreshTimer = null;
     this.startupTimer = null;
     this.lastFrameMs = 0;
+    this.lastTickMs = 0;
     this.lastRefreshCheckMs = 0;
     this.fetchedAt = 0;
     this.anchor = null;
@@ -319,7 +320,11 @@ export class CockpitCloudEffectsController {
     if (!this.gl) return;
     this.canvas.dataset.cockpit = 'true';
     this.lastFrameMs = 0;
-    this.frame = requestAnimationFrame((time) => this.tick(time));
+    this.lastTickMs = 0;
+    this.frame = window.setTimeout(() => {
+      this.frame = null;
+      this.tick(performance.now());
+    }, 0);
     if (this.startupTimer !== null) window.clearTimeout(this.startupTimer);
     this.startupTimer = window.setTimeout(() => {
       this.startupTimer = null;
@@ -328,7 +333,7 @@ export class CockpitCloudEffectsController {
   }
 
   stop() {
-    if (this.frame !== null) cancelAnimationFrame(this.frame);
+    if (this.frame !== null) clearTimeout(this.frame);
     this.frame = null;
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
@@ -420,9 +425,9 @@ export class CockpitCloudEffectsController {
       this.stop();
       return;
     }
-    // Suspended (document hidden): halt every scheduling chain — rAF AND the
-    // reduced-motion timeout chain — without tearing weather state down.
-    // setSuspended(false) restarts exactly one chain. (perf wave 2 fix)
+    // Suspended (document hidden): halt every scheduling chain — the tick
+    // timeout AND the reduced-motion timeout chain — without tearing weather
+    // state down. setSuspended(false) restarts exactly one chain. (perf wave 2 fix)
     if (this.suspended) {
       this.frame = null;
       if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
@@ -442,14 +447,21 @@ export class CockpitCloudEffectsController {
       })) void this.refresh();
     }
 
-    const blend = this.reducedMotion ? 1 : 0.08;
+    // dt-scaled blend: the tick now runs at the 12fps render cadence instead
+    // of every rAF, so a fixed 0.08-per-tick factor would converge 5x slower.
+    // 1 - (1-0.08)^(dt*60) reproduces the old 60fps-per-tick rate exactly.
+    // (perf wave 3: the independent cloud loop must not wake the compositor
+    // 60x/sec while the Cesium scene is idle and the render governor released.)
+    const dtSec = Math.max(0, Math.min(1, (timeMs - this.lastTickMs) / 1000));
+    this.lastTickMs = timeMs;
+    const blend = this.reducedMotion ? 1 : 1 - Math.pow(1 - 0.08, dtSec * 60);
     this.strength += (this.targetStrength - this.strength) * blend;
     const visible = this.strength > 0.035;
     this.canvas.classList.toggle('active', visible);
-    if (visible && (this.reducedMotion || timeMs - this.lastFrameMs >= CLOUD_FRAME_MS)) {
+    if (visible) {
       this.lastFrameMs = timeMs;
       this.render(timeMs / 1000);
-    } else if (!visible) {
+    } else {
       this.clear();
     }
 
@@ -461,7 +473,15 @@ export class CockpitCloudEffectsController {
       }, 1000);
       return;
     }
-    this.frame = requestAnimationFrame((time) => this.tick(time));
+    // Schedule the next tick at the render cadence (12fps) rather than every
+    // rAF. The render gate above is kept as a safety net against timer
+    // coalescing; the shader time already advanced in CLOUD_FRAME_MS steps
+    // because render() was gated to 12fps, so this is not a visual change.
+    const delay = Math.max(0, CLOUD_FRAME_MS - (performance.now() - timeMs));
+    this.frame = window.setTimeout(() => {
+      this.frame = null;
+      this.tick(performance.now());
+    }, delay);
   }
 
   render(timeSec) {
@@ -501,7 +521,7 @@ export class CockpitCloudEffectsController {
   setSuspended(suspended) {
     this.suspended = Boolean(suspended);
     if (this.suspended) {
-      if (this.frame !== null) cancelAnimationFrame(this.frame);
+      if (this.frame !== null) clearTimeout(this.frame);
       this.frame = null;
       // The reduced-motion path schedules via timeout, not rAF — clear it
       // too, plus the startup refresh timer; refresh() is suspend-guarded.
