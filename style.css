@@ -4626,11 +4626,12 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
    the 16:9 feed reads clearly. */
 #right-context-rail #cctv-panel:not(.collapsed) {
   --cctv-panel-expanded-width: 560px;
-  width: var(--cctv-panel-expanded-width);
+  width: calc(var(--cctv-panel-expanded-width) * var(--cctv-enhance-scale, 1));
 }
 @media (max-width: 800px) {
   #right-context-rail #cctv-panel:not(.collapsed) {
-    --cctv-panel-expanded-width: min(560px, calc(100vw - 24px));
+    /* Clamp AFTER scaling so an enhanced panel still fits the viewport. */
+    width: min(calc(560px * var(--cctv-enhance-scale, 1)), calc(100vw - 24px));
   }
 }
 #right-context-rail #cctv-panel.collapsed {
@@ -6110,8 +6111,55 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   right: auto;
   bottom: auto;
   z-index: 100;
-  width: var(--panel-expanded-width);
+  width: calc(var(--panel-expanded-width) * var(--cctv-enhance-scale, 1));
   max-height: calc(100vh - 24px);
+}
+
+/* ENHANCE toggle — "enhance, enhance!" scales the panel and the 16:9 feed
+   stage to 130%. The video is width:100% + fixed aspect-ratio, so widening
+   the panel scales the frame with it; the wrap's min-height floor below
+   scales too so the stage never pinches. */
+#cctv-panel.enhanced {
+  --cctv-enhance-scale: 1.3;
+}
+
+/* Header ENHANCE button: compact header-chrome sizing, cyan-tinted like the
+   source badge so it reads as part of the spy-console toolbar. */
+.cctv-enhance-btn {
+  flex: 0 0 auto;
+  min-width: 72px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 212, 255, 0.32);
+  background: rgba(0, 212, 255, 0.09);
+  color: #9defff;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1.2px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.cctv-enhance-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(0, 212, 255, 0.14);
+}
+
+.cctv-enhance-btn[aria-pressed='true'] {
+  border-color: rgba(0, 212, 255, 0.6);
+  color: #c9f6ff;
+  background: rgba(0, 212, 255, 0.16);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.35);
+}
+
+/* The ENHANCE control is expanded-panel chrome; a collapsed stub has no feed
+   to enhance, so don't leave an inert button in the 50px header. */
+#cctv-panel.collapsed .cctv-enhance-btn {
+  display: none;
 }
 
 #cctv-panel .panel-glow {
@@ -6330,7 +6378,7 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
   background:
     radial-gradient(circle at 20% 20%, rgba(0, 244, 255, 0.09), transparent 44%),
     linear-gradient(180deg, rgba(8, 14, 19, 0.88), rgba(4, 7, 11, 0.96));
-  min-height: 180px;
+  min-height: calc(180px * var(--cctv-enhance-scale, 1));
   /* .cctv-panel-inner is a scrolling column flex container, so the default
      flex-shrink:1 squeezed this wrap down to its 150px floor while the 16:9
      image inside is taller — and the wrap is overflow:hidden, which clipped

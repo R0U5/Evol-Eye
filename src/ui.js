@@ -6286,6 +6286,17 @@ export class StyleManager {
   _initCctvPanel() {
     if (!this._cctvPanel) return;
 
+    // ENHANCE — "enhance, enhance!" toggles the panel + feed to 130% and back.
+    // Session-only: the class is dropped on reload, no persistence.
+    const enhanceBtn = document.getElementById('cctv-enhance-btn');
+    if (enhanceBtn) {
+      enhanceBtn.addEventListener('click', () => {
+        const enhanced = this._cctvPanel.classList.toggle('enhanced');
+        enhanceBtn.setAttribute('aria-pressed', String(enhanced));
+        enhanceBtn.textContent = enhanced ? 'ENHANCED' : 'ENHANCE';
+      });
+    }
+
     this._cctvEnableBtn?.addEventListener('click', async () => {
       await this._toggleCctvEnabled();
     });
