@@ -26,6 +26,8 @@ import cctvLayer, {
   _extractPickedCameraIdForTest,
   _updateCctvProjectionPlaneForTest,
   _setCctvCoverageStateForTest,
+  _setCctvHealthForTest,
+  _getCctvProjectionEntitiesForTest,
   _pushAmbientCardEntriesForTest,
   _setAmbientCardStateForTest,
   _setCctvOverlayHostForTest,
@@ -2219,4 +2221,217 @@ test('mediaUrlFor: stable URL with optional resolution passthrough, no cache-bus
   assert.equal(withRes, '/api/cctv/media/axis-insecam-1?resolution=960x540');
   // The URL is stable across calls (same camera, same resolution).
   assert.equal(mediaUrlFor(camera, '960x540'), withRes);
+});
+
+test('image-mode runtime upgrades to live-jpeg in ONE pass when health reports MJPEG (no 60Hz churn, no entity leak)', () => {
+  // QA regression: createProjectionRuntime derived mode ONLY from
+  // record.camera.feedType, so when the catalog says 'image' but health
+  // reports sourceKind 'mjpeg', the ensureProjectionRuntime upgrade branch
+  // destroyed and recreated ANOTHER image-mode runtime every RAF tick
+  // (~60Hz destroy/recreate churn) and leaked one runtime per frame into
+  // _projectionEntities. Health-aware createProjectionRuntime must converge
+  // to a live-jpeg <img> in one pass, and destroyProjectionRuntime must drop
+  // the old runtime from _projectionEntities by identity.
+  const originalDocument = globalThis.document;
+  const originalImage = globalThis.Image;
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalCaf = globalThis.cancelAnimationFrame;
+
+  function makeCanvas() {
+    return {
+      width: 0,
+      height: 0,
+      getContext: () => ({
+        clearRect() {},
+        drawImage() {},
+        createLinearGradient: () => ({ addColorStop() {} }),
+        fillRect() {},
+        fillText() {},
+        strokeRect() {},
+        arc() {},
+        beginPath() {},
+        moveTo() {},
+        lineTo() {},
+        stroke() {},
+        fill() {},
+        measureText: (text) => ({ width: String(text).length * 10 }),
+        getImageData: () => ({ data: new Uint8ClampedArray(64 * 36 * 4) }),
+        imageSmoothing: true,
+      }),
+    };
+  }
+  function makeVideo() {
+    const listeners = {};
+    return {
+      muted: false, loop: false, autoplay: false, playsInline: false,
+      crossOrigin: null, preload: '', src: '',
+      readyState: 0, videoWidth: 0, videoHeight: 0,
+      addEventListener: (type, fn) => { listeners[type] = fn; },
+      _listeners: listeners,
+      play: () => Promise.resolve(),
+      pause() {}, removeAttribute() {}, load() {},
+    };
+  }
+  globalThis.document = {
+    createElement: (tag) => (
+      tag === 'canvas' ? makeCanvas() : tag === 'video' ? makeVideo() : { tag }
+    ),
+    hidden: false,
+    addEventListener() {},
+    removeEventListener() {},
+    body: { classList: { contains: () => false } },
+  };
+  globalThis.Image = class {
+    constructor() { this.decoding = 'async'; this.crossOrigin = 'anonymous'; this._src = ''; }
+    set src(v) { this._src = v; }
+    get src() { return this._src; }
+    removeAttribute() {}
+  };
+  // No-op rAF: the projection loop must not tick during the test — every
+  // ensure pass is driven explicitly so assertions are deterministic.
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+
+  const viewer = {
+    entities: new Cesium.EntityCollection(),
+    isDestroyed: () => false,
+    trackedEntity: null,
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 4000),
+      positionCartographic: Cesium.Cartographic.fromDegrees(-97.7431, 30.2672, 4000),
+      heading: 0.4, pitch: -0.7, roll: 0.1,
+      transform: Cesium.Matrix4.clone(Cesium.Matrix4.IDENTITY),
+      flyTo() {},
+      moveEnd: { addEventListener() {}, removeEventListener() {} },
+      moveStart: { addEventListener() {}, removeEventListener() {} },
+    },
+    scene: {
+      canvas: { clientWidth: 1200, clientHeight: 800 },
+      cartesianToCanvasCoordinates: () => undefined,
+      primitives: { add: (p) => p, remove: () => true },
+      requestRender() {},
+      pickFromRay: () => null,
+      globe: { show: true },
+    },
+  };
+
+  function makeRecord(id, feedType) {
+    return {
+      camera: {
+        id,
+        name: `Cam ${id}`,
+        city: 'Austin',
+        lat: 30.2672,
+        lon: -97.7431,
+        headingDeg: 41,
+        fovDeg: 60,
+        pitchDeg: -10,
+        rangeM: 500,
+        mountHeightM: 10,
+        groundElevationM: 150,
+        feedType,
+        provider: 'axis',
+        sourceKind: 'discovered',
+        feedConfigured: true,
+        calibration: { rangeScale: 1 },
+      },
+      position: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 160),
+      coverageEntities: [],
+      projection: null,
+      activationDone: false,
+      probeClampRangeM: null,
+      groundPrior: { ellipsoid: 150 },
+      groundResolved: {},
+      groundSamples: {},
+      frustumGeometry: null,
+      frustumPositions: null,
+    };
+  }
+
+  try {
+    _setCctvOverlayHostForTest({
+      setEntries() {}, setVisible() {}, clearSource() {}, hitTest: () => null,
+    });
+    _setCctvHealthForTest(new Map());
+
+    // Plane teardown is the observable destroy signal (destroyProjectionRuntime
+    // removes the plane entity; recreate adds a fresh one).
+    let planeRemovals = 0;
+    const originalRemove = viewer.entities.remove.bind(viewer.entities);
+    viewer.entities.remove = (entity) => {
+      planeRemovals += 1;
+      return originalRemove(entity);
+    };
+
+    const record = makeRecord('axis-mislabeled-mjpeg', 'jpeg');
+    _setCctvCoverageStateForTest({
+      viewer,
+      records: [record],
+      activeCameraId: record.camera.id,
+      enabled: true,
+      coverageMode: 'off',
+      showProjection: true,
+    });
+    refreshCoverageStyles();
+
+    // Phase 1 — no health yet: catalog feedType wins → image-mode runtime.
+    assert.equal(record.projection.mode, 'image', 'no health: catalog feedType drives image mode');
+    assert.equal(_getCctvProjectionEntitiesForTest().length, 1, 'one tracked runtime after first create');
+    const imageRuntime = record.projection;
+
+    // Phase 2 — health sync reports the Axis source is actually MJPG.
+    const connectionsBeforeUpgrade = _getCctvLiveConnectionStateForTest().count;
+    _setCctvHealthForTest(new Map([[record.camera.id, { status: 'online', sourceKind: 'mjpeg' }]]));
+    refreshCoverageStyles();
+
+    const upgraded = record.projection;
+    assert.ok(upgraded !== imageRuntime, 'upgrade replaces the image runtime with a fresh one');
+    assert.equal(upgraded.mode, 'live-jpeg', 'health mjpeg + catalog image converges to live-jpeg in ONE pass');
+    assert.ok(upgraded.image, 'live-jpeg runtime binds an <img>');
+    assert.ok(
+      upgraded.image.src.startsWith('/api/cctv/media/axis-mislabeled-mjpeg'),
+      'the bound <img> points at the long-lived /media stream',
+    );
+    assert.equal(upgraded.liveConnected, true, 'live MJPEG connection opens on the recreated runtime');
+    assert.equal(planeRemovals, 1, 'exactly one destroy for the upgrade (no churn during it)');
+    assert.equal(
+      _getCctvProjectionEntitiesForTest().length,
+      1,
+      'old runtime removed from _projectionEntities by identity (no leak)',
+    );
+    assert.equal(
+      _getCctvLiveConnectionStateForTest().count,
+      connectionsBeforeUpgrade + 1,
+      'upgrade opens exactly one new live connection',
+    );
+
+    // Phase 3 — repeated RAF-style ticks must NOT churn: same runtime
+    // identity, zero further destroys, tracked length stable, one connection.
+    planeRemovals = 0;
+    for (let tick = 0; tick < 8; tick += 1) {
+      refreshCoverageStyles();
+      assert.equal(
+        record.projection,
+        upgraded,
+        `tick ${tick}: repeated ensure must reuse the same runtime (no destroy/recreate churn)`,
+      );
+      assert.equal(
+        _getCctvProjectionEntitiesForTest().length,
+        1,
+        `tick ${tick}: tracked runtime count stays stable`,
+      );
+    }
+    assert.equal(planeRemovals, 0, 'no plane destroy/recreate across repeated ticks');
+    assert.equal(
+      _getCctvLiveConnectionStateForTest().count,
+      connectionsBeforeUpgrade + 1,
+      'no additional live connections opened across repeated ticks',
+    );
+  } finally {
+    cctvLayer.disable();
+    globalThis.document = originalDocument;
+    globalThis.Image = originalImage;
+    globalThis.requestAnimationFrame = originalRaf;
+    globalThis.cancelAnimationFrame = originalCaf;
+  }
 });
