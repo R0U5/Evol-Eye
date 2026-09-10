@@ -2483,9 +2483,12 @@ export function drawProjectionFrame(record) {
   if (runtime.mode === 'video' && runtime.video) {
     const video = runtime.video;
     if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
-      runtime.ctx.drawImage(video, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
-      runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
-      paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
+      // Video feeds bind the native HTMLVideoElement directly as the plane
+      // material (createProjectionRuntime), so the 1920x1080 canvas blit and
+      // chrome paint below are pure waste — refreshProjectionTextures skips
+      // video mode entirely and the canvas is never read. Only the first-frame
+      // grant (which makes the plane visible) and the stalled-feed placeholder
+      // matter here. (perf wave 3)
       grantPlaneFirstFrame(runtime, record);
       return;
     }
