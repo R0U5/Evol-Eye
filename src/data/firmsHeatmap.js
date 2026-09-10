@@ -246,12 +246,12 @@ export function createFirmsHeatmapLayer({
       removeLodWatcher();
     },
 
-    async update() {
+    async update({ signal = null } = {}) {
       if (_destroyed || !_enabled || _loading) return;
       // Scheduled 10-minute poll (and the manager's immediate first update):
       // refetch live fires through the proxy and re-render. Viewport-driven
       // re-renders between polls are handled by the LOD watcher.
-      await loadHeatmap();
+      await loadHeatmap(signal);
     },
 
     destroy(viewer) {
@@ -416,12 +416,12 @@ export function createFirmsHeatmapLayer({
    * beats a wiped map). A click-selected fire survives the swap when the
    * same detection (lat/lon/acqMs) is still present.
    */
-  async function loadHeatmap() {
+  async function loadHeatmap(signal = null) {
     if (!_dataSource) return;
     _loading = true;
 
     try {
-      const response = await fetch(FIRMS_API_URL, { cache: 'no-store' });
+      const response = await fetch(FIRMS_API_URL, { cache: 'no-store', signal });
       if (!response.ok) {
         let payload = null;
         try {

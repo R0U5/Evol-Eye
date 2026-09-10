@@ -162,9 +162,9 @@ export function createEarthquakesLayer({ overlayHost = DEFAULT_OVERLAY_HOST } = 
     overlayHost.setVisible(EARTHQUAKE_OVERLAY_SOURCE_ID, false);
   },
 
-  async update(viewer) {
+  async update(viewer, { signal = null } = {}) {
     try {
-      const response = await fetch(API_URL);
+      const response = await fetch(API_URL, { signal });
       if (!response.ok) {
         _lastError = `USGS HTTP ${response.status}`;
         console.warn(`[Data:Earthquakes] API returned ${response.status}`);

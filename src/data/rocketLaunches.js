@@ -3339,10 +3339,10 @@ async function restoreSatelliteDependency() {
   }
 }
 
-async function performMissionUpdate(token) {
+async function performMissionUpdate(token, signal = null) {
   try {
     ensureActiveTleLookup(token);
-    const response = await fetch(API_URL);
+    const response = await fetch(API_URL, { signal });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const launches = normalizeRocketLaunches(await response.json());
     if (!_enabled || token !== _lifecycleToken || !_dataSource) return;
@@ -3380,7 +3380,7 @@ async function performMissionUpdate(token) {
   }
 }
 
-function requestMissionUpdate() {
+function requestMissionUpdate(signal = null) {
   if (!_enabled) return Promise.resolve();
   const token = _lifecycleToken;
   _updateDirty = true;
@@ -3389,7 +3389,7 @@ function requestMissionUpdate() {
   request = (async () => {
     while (_enabled && token === _lifecycleToken && _updateDirty) {
       _updateDirty = false;
-      await performMissionUpdate(token);
+      await performMissionUpdate(token, signal);
     }
   })().finally(() => {
     if (_updatePromise === request) {
@@ -3497,8 +3497,8 @@ const rocketLaunchesLayer = {
     renderMissionPanel();
   },
 
-  update() {
-    return requestMissionUpdate();
+  update({ signal = null } = {}) {
+    return requestMissionUpdate(signal);
   },
 
   /** Release only Space Mission camera ownership, preserving layer and selection state. */
