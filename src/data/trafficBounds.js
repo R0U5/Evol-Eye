@@ -136,3 +136,73 @@ export function clampBoundsAroundCenter(bounds, center, maxSpanDeg = 0.05) {
     east: center.lon + lonSpan / 2,
   };
 }
+
+/**
+ * Check whether a [lon, lat] point lies inside a bounds rectangle.
+ *
+ * @param {number} lon - Longitude (degrees).
+ * @param {number} lat - Latitude (degrees).
+ * @param {{south:number, west:number, north:number, east:number}} bounds
+ * @returns {boolean} True when the point is inside (inclusive edges).
+ */
+export function pointInBounds(lon, lat, bounds) {
+  return lat >= bounds.south
+    && lat <= bounds.north
+    && lon >= bounds.west
+    && lon <= bounds.east;
+}
+
+/**
+ * Whether a road has any vertex inside the given bounds.
+ *
+ * Roads are treated as visible when ANY sub-sampled vertex is on-screen. The
+ * fetch tile is clamped to ~5.5 km, so a road that touches the viewport is
+ * overwhelmingly visible along a meaningful fraction of its length; the
+ * any-vertex check is deliberately more generous than a first-vertex check so
+ * a road that starts just off-screen but crosses into view is still
+ * prioritized (P0.3 viewport-first ordering).
+ *
+ * @param {{coords:number[][]}} road - Parsed road object ([lon, lat] pairs).
+ * @param {{south:number, west:number, north:number, east:number}} bounds
+ * @returns {boolean} True when any road vertex is inside the bounds.
+ */
+export function roadVisibleInBounds(road, bounds) {
+  const coords = road?.coords;
+  if (!coords || coords.length === 0) return false;
+  for (const [lon, lat] of coords) {
+    if (pointInBounds(lon, lat, bounds)) return true;
+  }
+  return false;
+}
+
+/**
+ * Compute the ring of neighboring tiles around a clamped fetch tile.
+ *
+ * Each neighbor is the same span as the center tile, offset by one tile span
+ * in each compass direction (ring 1 = 8 neighbors). Used to warm the tile
+ * cache after jump-to-city so subsequent pans hit the cache instead of
+ * re-fetching serially (P0.3 neighbor prefetch ring).
+ *
+ * @param {{south:number, west:number, north:number, east:number}} bounds
+ *   Center tile (already clamped).
+ * @param {number} [ring=1] - Ring depth (1 = immediate neighbors only).
+ * @returns {Array<{south:number, west:number, north:number, east:number}>}
+ *   Neighbor tiles, center excluded, in row-major order.
+ */
+export function neighborTileBounds(bounds, ring = 1) {
+  const latSpan = bounds.north - bounds.south;
+  const lonSpan = bounds.east - bounds.west;
+  const neighbors = [];
+  for (let dLat = -ring; dLat <= ring; dLat++) {
+    for (let dLon = -ring; dLon <= ring; dLon++) {
+      if (dLat === 0 && dLon === 0) continue;
+      neighbors.push({
+        south: bounds.south + dLat * latSpan,
+        north: bounds.north + dLat * latSpan,
+        west: bounds.west + dLon * lonSpan,
+        east: bounds.east + dLon * lonSpan,
+      });
+    }
+  }
+  return neighbors;
+}
