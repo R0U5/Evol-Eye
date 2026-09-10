@@ -37,6 +37,15 @@ const DECODE_CACHE_MAX_ENTRIES = 64;
  * @type {Map<string, {at:number, segments:Array}>}
  */
 const _decodeCache = new Map();
+/**
+ * In-flight tile fetch promises keyed by "z/x/y". Concurrent callers for the
+ * same tile share one proxy request instead of duplicating it — the traffic
+ * layer's warm-up prefetch runs concurrently with the main load on a cold
+ * cache, and without this every covering tile was requested twice on first
+ * load. (perf wave 3)
+ * @type {Map<string, Promise<Array>>}
+ */
+const _inflight = new Map();
 /** @type {number} Session count of tile requests issued to the proxy (decode-cache misses). */
 let _tilesFetched = 0;
 
@@ -131,12 +140,27 @@ export async function fetchFlowForBounds(bounds, { signal, zoom = 12 } = {}) {
     const cached = _decodeCache.get(key);
     if (cached && now - cached.at < DECODE_CACHE_TTL_MS) return cached.segments;
 
-    _tilesFetched += 1;
-    const res = await fetch(`/api/tomtom/flow/${z}/${x}/${y}.pbf`, { signal });
-    if (!res.ok) throw new Error(`flow tile ${key}: HTTP ${res.status}`);
-    const segments = decodeFlowTile(await res.arrayBuffer(), z, x, y);
-    cacheSet(key, { at: Date.now(), segments });
-    return segments;
+    // Dedup concurrent fetches for the same tile. The in-flight promise is
+    // shared by every caller until it settles; the decode cache then governs
+    // reuse. The first caller's signal drives the shared fetch — acceptable
+    // because concurrent callers are always the same viewport's warm-up and
+    // main load, and a camera move aborts both anyway.
+    let inflight = _inflight.get(key);
+    if (!inflight) {
+      inflight = (async () => {
+        _tilesFetched += 1;
+        const res = await fetch(`/api/tomtom/flow/${z}/${x}/${y}.pbf`, { signal });
+        if (!res.ok) throw new Error(`flow tile ${key}: HTTP ${res.status}`);
+        const segments = decodeFlowTile(await res.arrayBuffer(), z, x, y);
+        cacheSet(key, { at: Date.now(), segments });
+        return segments;
+      })();
+      _inflight.set(key, inflight);
+      inflight.finally(() => {
+        if (_inflight.get(key) === inflight) _inflight.delete(key);
+      }).catch(() => { /* rejection handled by allSettled below */ });
+    }
+    return inflight;
   }));
 
   const fulfilled = results.filter((r) => r.status === 'fulfilled');
@@ -158,4 +182,5 @@ export function getFlowSessionStats() {
 /** Clear the decode cache (tests + layer teardown). Session stats persist. */
 export function resetFlowTileCache() {
   _decodeCache.clear();
+  _inflight.clear();
 }
