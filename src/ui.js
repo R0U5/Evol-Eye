@@ -3248,7 +3248,9 @@ export class StyleManager {
     });
     // Reconcile when the overlay's async init completes / a retry exhausts —
     // otherwise the button can sit stuck in "pending" after the layer is ready.
-    window.addEventListener('gev:radar-state-changed', () => this._updateRadarButtonState());
+    // Named handler so dispose() can detach it (leak hygiene, perf wave 3).
+    this._radarStateHandler = () => this._updateRadarButtonState();
+    window.addEventListener('gev:radar-state-changed', this._radarStateHandler);
     this._updateRadarButtonState();
   }
 
@@ -10549,6 +10551,10 @@ export class StyleManager {
     if (this._windowResizeHandler) {
       window.removeEventListener('resize', this._windowResizeHandler);
       this._windowResizeHandler = null;
+    }
+    if (this._radarStateHandler) {
+      window.removeEventListener('gev:radar-state-changed', this._radarStateHandler);
+      this._radarStateHandler = null;
     }
     if (this._loadingVisibilityHandler) {
       document.removeEventListener('visibilitychange', this._loadingVisibilityHandler);
