@@ -246,6 +246,34 @@ const reverseGeocodeCache = new Map();
 const reverseGeocodeInFlight = new Map();
 const nearbyPlacesCache = new Map();
 const nearbyPlacesInFlight = new Map();
+/** LRU cap for the reverse-geocode cache — entries are ~1-2 KB place objects. */
+const REVERSE_GEOCODE_CACHE_MAX = 512;
+/** LRU cap for the nearby-places cache — entries are larger response slices. */
+const NEARBY_PLACES_CACHE_MAX = 256;
+
+/**
+ * Bounded cache write: evicts the oldest inserted entry past the cap (Map
+ * iteration order = insertion order). Same pattern as terrainHeights.js and
+ * the vite proxy rate limiter — a long session panning the globe at 4dp
+ * granularity must not grow these Maps without limit.
+ */
+function cacheSetBounded(map, key, value, maxEntries) {
+  map.set(key, value);
+  if (map.size > maxEntries) {
+    const oldest = map.keys().next().value;
+    map.delete(oldest);
+  }
+}
+
+/** Cache read that promotes the entry to most-recently-used. */
+function cacheGetPromote(map, key) {
+  const entry = map.get(key);
+  if (entry !== undefined) {
+    map.delete(key);
+    map.set(key, entry);
+  }
+  return entry;
+}
 const VISIBLE_ENTITY_SHORTLIST = 64;
 const BASEMAP_CONTEXT_WAIT_MS = 1500;
 const viewTargetCache = new WeakMap();
@@ -2661,11 +2689,11 @@ async function getBasemapContext(viewer, viewTarget = null) {
   const knownLandmarks = nearbyKnownLandmarks(latitude, longitude, cameraHeightM);
   const fallbackPlace = coarseBasemapPlace(viewScale, latitude, longitude, inferredCountry);
   const cachedPlace = shouldReverseGeocode(cameraHeightM)
-    ? reverseGeocodeCache.get(reverseGeocodeKey(latitude, longitude)) || null
+    ? cacheGetPromote(reverseGeocodeCache, reverseGeocodeKey(latitude, longitude)) || null
     : null;
   const nearbyCacheKey = nearbyPlacesCacheKey(latitude, longitude, cameraHeightM);
-  const cachedNearbyPlaces = shouldFetchNearbyPlaces(cameraHeightM) && nearbyPlacesCache.has(nearbyCacheKey)
-    ? nearbyPlacesCache.get(nearbyCacheKey)
+  const cachedNearbyPlaces = shouldFetchNearbyPlaces(cameraHeightM)
+    ? cacheGetPromote(nearbyPlacesCache, nearbyCacheKey) || null
     : null;
   const placePromise = shouldReverseGeocode(cameraHeightM) && !cachedPlace
     ? reverseGeocode(latitude, longitude)
@@ -2944,7 +2972,8 @@ async function reverseGeocode(latitude, longitude) {
   const apiKey = window.__GOOGLE_MAPS_API_KEY__;
   if (!apiKey || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
   const key = reverseGeocodeKey(latitude, longitude);
-  if (reverseGeocodeCache.has(key)) return reverseGeocodeCache.get(key);
+  const cached = cacheGetPromote(reverseGeocodeCache, key);
+  if (cached !== undefined) return cached;
   if (reverseGeocodeInFlight.has(key)) return reverseGeocodeInFlight.get(key);
 
   const request = (async () => {
@@ -2953,7 +2982,7 @@ async function reverseGeocode(latitude, longitude) {
       const response = await fetchWithTimeout(url, {}, 5000);
       const data = await response.json();
       if (data.status !== 'OK' || !data.results?.length) {
-        reverseGeocodeCache.set(key, null);
+        cacheSetBounded(reverseGeocodeCache, key, null, REVERSE_GEOCODE_CACHE_MAX);
         return null;
       }
 
@@ -2977,7 +3006,7 @@ async function reverseGeocode(latitude, longitude) {
         labels,
         streetLabels,
       };
-      reverseGeocodeCache.set(key, place);
+      cacheSetBounded(reverseGeocodeCache, key, place, REVERSE_GEOCODE_CACHE_MAX);
       return place;
     } catch {
       return null;
@@ -3016,7 +3045,7 @@ async function reverseGeocodeViewportSamples(samples, cameraHeightM) {
 function viewportPlacesFromCache(samples, cameraHeightM) {
   if (!shouldReverseGeocodeViewport(cameraHeightM) || cameraHeightM <= 10000 || !samples.length) return null;
   const places = [samples[0], samples[1], samples[2]].filter(Boolean).flatMap((sample) => {
-    const place = reverseGeocodeCache.get(reverseGeocodeKey(sample.latitude, sample.longitude));
+    const place = cacheGetPromote(reverseGeocodeCache, reverseGeocodeKey(sample.latitude, sample.longitude));
     if (!place) return [];
     return [{
       latitude: sample.latitude,
@@ -3048,7 +3077,8 @@ function summarizeViewportPlaces(places) {
 async function fetchNearbyPlaces(latitude, longitude, cameraHeightM) {
   const radiusM = nearbyPlacesRadiusM(cameraHeightM);
   const cacheKey = nearbyPlacesCacheKey(latitude, longitude, cameraHeightM);
-  if (nearbyPlacesCache.has(cacheKey)) return nearbyPlacesCache.get(cacheKey);
+  const cached = cacheGetPromote(nearbyPlacesCache, cacheKey);
+  if (cached !== undefined) return cached;
   if (nearbyPlacesInFlight.has(cacheKey)) return nearbyPlacesInFlight.get(cacheKey);
 
   const request = (async () => {
@@ -3063,7 +3093,7 @@ async function fetchNearbyPlaces(latitude, longitude, cameraHeightM) {
       const places = response.ok && Array.isArray(data?.places)
       ? data.places.filter((place) => place?.name).slice(0, 12)
         : [];
-      nearbyPlacesCache.set(cacheKey, places);
+      cacheSetBounded(nearbyPlacesCache, cacheKey, places, NEARBY_PLACES_CACHE_MAX);
       return places;
     } catch {
       return [];
