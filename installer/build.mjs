@@ -63,7 +63,7 @@ function parseArgs(argv) {
 
 async function exec(command, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { windowsHide: true, ...opts }, (err, so, se) => {
+    execFile(command, args, { windowsHide: true, maxBuffer: 128 * 1024 * 1024, ...opts }, (err, so, se) => {
       if (err) {
         err.output = (se || so || '').toString().trim();
         reject(err);
