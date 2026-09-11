@@ -54,6 +54,9 @@ import cctvLayer, {
   createGeometryProgressNotifier,
   normalizeCoverageMode,
   frameSignatureFromPixels,
+  frameSignatureDistance,
+  frameSignaturesSimilar,
+  refreshProjectionTextures,
   focusCctvRecord,
   hideCctvRecordVisuals,
   materializeCctvActiveCoverageEntities,
@@ -1448,33 +1451,35 @@ function rgba(triples) {
   return out;
 }
 
-test('frameSignatureFromPixels: identical pixels hash identically', () => {
+test('frameSignatureFromPixels: identical pixels produce identical signatures', () => {
   const a = rgba([[1, 2, 3], [250, 128, 7], [0, 0, 0]]);
   const b = rgba([[1, 2, 3], [250, 128, 7], [0, 0, 0]]);
-  assert.equal(frameSignatureFromPixels(a), frameSignatureFromPixels(b));
+  assert.deepEqual(frameSignatureFromPixels(a, 3, 1), frameSignatureFromPixels(b, 3, 1));
 });
 
-test('frameSignatureFromPixels: a single changed channel changes the hash', () => {
+test('frameSignatureFromPixels: a large channel change changes the signature', () => {
   const base = rgba([[10, 20, 30], [40, 50, 60]]);
-  const tweak = rgba([[10, 20, 31], [40, 50, 60]]);
-  assert.notEqual(frameSignatureFromPixels(base), frameSignatureFromPixels(tweak));
+  const tweak = rgba([[10, 20, 200], [40, 50, 60]]);
+  assert.notDeepEqual(frameSignatureFromPixels(base, 2, 1), frameSignatureFromPixels(tweak, 2, 1));
 });
 
 test('frameSignatureFromPixels: order matters (a swap is not a collision)', () => {
-  const ab = rgba([[1, 2, 3], [9, 8, 7]]);
-  const ba = rgba([[9, 8, 7], [1, 2, 3]]);
-  assert.notEqual(frameSignatureFromPixels(ab), frameSignatureFromPixels(ba));
+  const ab = rgba([[1, 2, 3], [200, 180, 160]]);
+  const ba = rgba([[200, 180, 160], [1, 2, 3]]);
+  assert.notDeepEqual(frameSignatureFromPixels(ab, 2, 1), frameSignatureFromPixels(ba, 2, 1));
 });
 
 test('frameSignatureFromPixels: alpha is deliberately ignored', () => {
   const opaque = new Uint8ClampedArray([5, 6, 7, 255]);
   const clear = new Uint8ClampedArray([5, 6, 7, 0]);
-  assert.equal(frameSignatureFromPixels(opaque), frameSignatureFromPixels(clear));
+  assert.deepEqual(frameSignatureFromPixels(opaque, 1, 1), frameSignatureFromPixels(clear, 1, 1));
 });
 
-test('frameSignatureFromPixels: returns an unsigned 32-bit value', () => {
-  const sig = frameSignatureFromPixels(rgba([[255, 255, 255], [0, 0, 0]]));
-  assert.ok(Number.isInteger(sig) && sig >= 0 && sig <= 0xffffffff, `got ${sig}`);
+test('frameSignatureFromPixels: returns one byte per block channel', () => {
+  // 2x1 grid -> 2 blocks x 3 channels = 6 bytes.
+  const sig = frameSignatureFromPixels(rgba([[255, 255, 255], [0, 0, 0]]), 2, 1);
+  assert.ok(sig instanceof Uint8Array, 'signature is a Uint8Array of block averages');
+  assert.equal(sig.length, 6);
 });
 
 test('frameSignatureFromPixels: empty or junk input yields null (always redraw)', () => {
@@ -1482,6 +1487,96 @@ test('frameSignatureFromPixels: empty or junk input yields null (always redraw)'
   assert.equal(frameSignatureFromPixels(null), null);
   assert.equal(frameSignatureFromPixels(undefined), null);
   assert.equal(frameSignatureFromPixels({}), null);
+});
+
+test('frameSignatureDistance: identical signatures are distance 0', () => {
+  const a = frameSignatureFromPixels(rgba([[10, 20, 30], [40, 50, 60]]), 2, 1);
+  assert.equal(frameSignatureDistance(a, a), 0);
+});
+
+test('frameSignatureDistance: incomparable inputs are maximally distant', () => {
+  const a = frameSignatureFromPixels(rgba([[10, 20, 30], [40, 50, 60]]), 2, 1);
+  assert.equal(frameSignatureDistance(null, a), Number.MAX_SAFE_INTEGER);
+  assert.equal(frameSignatureDistance(a, undefined), Number.MAX_SAFE_INTEGER);
+  assert.equal(frameSignatureDistance(a, new Uint8Array(1)), Number.MAX_SAFE_INTEGER);
+});
+
+test('frameSignaturesSimilar: identical frames are similar', () => {
+  const a = frameSignatureFromPixels(rgba([[10, 20, 30], [40, 50, 60]]), 2, 1);
+  assert.equal(frameSignaturesSimilar(a, a), true);
+});
+
+test('frameSignaturesSimilar: null signatures always count as changed', () => {
+  const a = frameSignatureFromPixels(rgba([[10, 20, 30], [40, 50, 60]]), 2, 1);
+  assert.equal(frameSignaturesSimilar(null, a), false);
+  assert.equal(frameSignaturesSimilar(a, null), false);
+  assert.equal(frameSignaturesSimilar(null, null), false);
+});
+
+test('frameSignaturesSimilar: JPEG-style noise on a static scene stays similar', () => {
+  // 64x36 grid, 8x6 blocks: a scene with +/-5 per-pixel source noise must
+  // stay well under the 1.0 MAD tolerance (the 2026-09-11 flashing root
+  // cause). Block averaging over 8x8 grid cells (each ~30px wide) reduces
+  // the noise by ~24x, so the block-average shift is tiny.
+  const W = 64, H = 36;
+  const base = new Uint8ClampedArray(W * H * 4);
+  const noisy = new Uint8ClampedArray(W * H * 4);
+  let seed = 12345;
+  const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < W * H; i++) {
+    const r = 90 + Math.floor(rand() * 60);
+    const g = 120 + Math.floor(rand() * 60);
+    const b = 150 + Math.floor(rand() * 60);
+    base[i * 4] = r; base[i * 4 + 1] = g; base[i * 4 + 2] = b; base[i * 4 + 3] = 255;
+    noisy[i * 4] = Math.max(0, Math.min(255, r + Math.floor(rand() * 11) - 5));
+    noisy[i * 4 + 1] = Math.max(0, Math.min(255, g + Math.floor(rand() * 11) - 5));
+    noisy[i * 4 + 2] = Math.max(0, Math.min(255, b + Math.floor(rand() * 11) - 5));
+    noisy[i * 4 + 3] = 255;
+  }
+  const baseSig = frameSignatureFromPixels(base, W, H);
+  const noisySig = frameSignatureFromPixels(noisy, W, H);
+  assert.ok(baseSig && noisySig, 'both signatures computed');
+  const distance = frameSignatureDistance(baseSig, noisySig);
+  assert.ok(distance <= 1.0, `noise MAD ${distance.toFixed(4)} must stay within tolerance`);
+  assert.equal(frameSignaturesSimilar(baseSig, noisySig), true);
+});
+
+test('frameSignaturesSimilar: a scene sitting on a quantization boundary does not churn', () => {
+  // Regression for the 4-bit quantizer design: a uniform scene whose average
+  // sits EXACTLY on a 16-level boundary (B=160) flipped 19 of 48 blocks under
+  // +/-5 noise, which would have resurrected the "constantly being refreshed"
+  // flashing. The MAD comparison has no hard boundaries, so the same scene
+  // must stay similar.
+  const W = 64, H = 36;
+  const base = new Uint8ClampedArray(W * H * 4).fill(0);
+  const noisy = new Uint8ClampedArray(W * H * 4).fill(0);
+  let seed = 424242;
+  const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < W * H; i++) {
+    base[i * 4] = 100; base[i * 4 + 1] = 130; base[i * 4 + 2] = 160; base[i * 4 + 3] = 255;
+    noisy[i * 4] = 100 + Math.floor(rand() * 11) - 5;
+    noisy[i * 4 + 1] = 130 + Math.floor(rand() * 11) - 5;
+    noisy[i * 4 + 2] = 160 + Math.floor(rand() * 11) - 5;
+    noisy[i * 4 + 3] = 255;
+  }
+  const baseSig = frameSignatureFromPixels(base, W, H);
+  const noisySig = frameSignatureFromPixels(noisy, W, H);
+  assert.ok(baseSig && noisySig, 'both signatures computed');
+  const distance = frameSignatureDistance(baseSig, noisySig);
+  assert.ok(distance <= 1.0, `boundary-scene noise MAD ${distance.toFixed(4)} must stay within tolerance`);
+  assert.equal(frameSignaturesSimilar(baseSig, noisySig), true);
+});
+
+test('frameSignaturesSimilar: a genuinely different frame is not similar', () => {
+  const W = 64, H = 36;
+  const dark = new Uint8ClampedArray(W * H * 4).fill(20);
+  const bright = new Uint8ClampedArray(W * H * 4).fill(220);
+  const darkSig = frameSignatureFromPixels(dark, W, H);
+  const brightSig = frameSignatureFromPixels(bright, W, H);
+  assert.ok(darkSig && brightSig);
+  const distance = frameSignatureDistance(darkSig, brightSig);
+  assert.ok(distance > 1.0, `different frames must exceed tolerance (MAD ${distance.toFixed(4)})`);
+  assert.equal(frameSignaturesSimilar(darkSig, brightSig), false);
 });
 
 // ── SWEEP (random camera) + frame-only admission ─────────────────────────────
@@ -2350,6 +2445,65 @@ test('live-jpeg projection redraws only when the frame signature changes (RAF ch
     globalThis.Image = originalImage;
     globalThis.requestAnimationFrame = originalRaf;
     globalThis.cancelAnimationFrame = originalCaf;
+  }
+});
+
+test('refreshProjectionTextures: live-jpeg swaps are throttled to the live-jpeg interval', () => {
+  // Regression for the 2026-09-11 flashing: the live-jpeg branch used to swap
+  // the 1080p texture at RAF cadence whenever the frame signature churned.
+  // The swap must be bounded by PROJECTION_LIVE_JPEG_SWAP_MS (80ms), and an
+  // unchanged canvas must never swap at all.
+  const originalNow = Date.now;
+  const originalDocument = globalThis.document;
+  let nowMs = 1000;
+  Date.now = () => nowMs;
+
+  const bufferCtx = { clearRect() {}, drawImage() {} };
+  const buffer = { width: 1920, height: 1080, getContext: () => bufferCtx };
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? buffer : { tag }),
+    hidden: false,
+    addEventListener() {}, removeEventListener() {},
+    body: { classList: { contains: () => false } },
+  };
+
+  const runtime = {
+    mode: 'live-jpeg',
+    canvas: { width: 1920, height: 1080 },
+    canvasStamp: 0,
+    lastTextureSwapAt: 0,
+    lastSwappedCanvasStamp: -1,
+    planeEntity: { show: true },
+    planeMaterial: { image: null },
+  };
+  const record = { projection: runtime };
+
+  try {
+    // First call: canvas changed -> swap immediately.
+    refreshProjectionTextures(record);
+    assert.equal(runtime.planeMaterial.image, buffer, 'changed canvas swaps immediately');
+    assert.equal(runtime.lastSwappedCanvasStamp, 0, 'stamp recorded after first swap');
+    assert.equal(runtime.lastTextureSwapAt, 1000, 'swap time recorded');
+
+    // Same stamp, 40ms later: no swap (canvas unchanged).
+    nowMs += 40;
+    refreshProjectionTextures(record);
+    assert.equal(runtime.planeMaterial.image, buffer, 'unchanged canvas never swaps');
+
+    // New stamp but only 40ms after the last swap: throttled (80ms window).
+    runtime.canvasStamp = 1;
+    nowMs += 40; // 1080 total, 80ms after the first swap
+    refreshProjectionTextures(record);
+    assert.equal(runtime.planeMaterial.image, buffer, 'swap throttled to the 80ms live-jpeg interval');
+
+    // 1ms later (81ms after the first swap): swap allowed.
+    nowMs += 1;
+    refreshProjectionTextures(record);
+    assert.equal(runtime.planeMaterial.image, buffer, 'swap allowed after the 80ms interval');
+    assert.equal(runtime.lastSwappedCanvasStamp, 1, 'new stamp recorded after throttled swap');
+  } finally {
+    Date.now = originalNow;
+    globalThis.document = originalDocument;
   }
 });
 

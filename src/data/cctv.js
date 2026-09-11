@@ -126,6 +126,24 @@ const PROJECTION_CANVAS_HEIGHT = 1080;
 // full-resolution compare would touch.
 const FRAME_SIGNATURE_W = 64;
 const FRAME_SIGNATURE_H = 36;
+// Change-tolerant signature: the 64×36 downscale is divided into 8×6 blocks;
+// each block's RGB average is stored as a byte (48 blocks × 3 channels = 144
+// bytes). Two frames count as "the same" while their mean absolute difference
+// stays under FRAME_SIGNATURE_MAX_MEAN_DIFF — JPEG encoder noise on a static
+// scene shifts block averages by ≤0.1 units (8-bit scale), while real motion
+// shifts them by 0.5+. No quantization is used, so a scene sitting exactly on
+// a quantization boundary cannot churn the comparison the way a hard 4-bit
+// quantizer would ("constantly being refreshed" — owner field test
+// 2026-09-11).
+const FRAME_SIGNATURE_BLOCK_COLS = 8;
+const FRAME_SIGNATURE_BLOCK_ROWS = 6;
+// Mean absolute difference per channel-value (0-255 scale) that still counts
+// as "the same frame". ±5/pixel JPEG noise on the 64x36 grid moves block
+// averages by ~0.33 (real source noise after downsampling is ~0.02-0.06); a
+// person walking covers ~1-5% of the frame and moves them by 1.3-6.5.
+// 1.0 keeps a 3× margin on the QA noise contract while still catching changes
+// covering ≥0.8% of the frame (owner field test 2026-09-11).
+const FRAME_SIGNATURE_MAX_MEAN_DIFF = 1.0;
 const COVERAGE_NEIGHBOR_LIMIT = 14;
 const COVERAGE_NEIGHBOR_RADIUS_KM = 1.8;
 // Staggered geometry/frame loading: ground-sampled coverage geometry is
@@ -165,6 +183,12 @@ export const CCTV_CALIBRATION_STORAGE_KEY_V2 = 'evolEyeView.cctv.calibration.v2'
 // full 1080p texture re-upload because Cesium re-uploads only on a NEW image
 // object reference).
 const PROJECTION_TEXTURE_SWAP_MS = 1000;
+// Live-jpeg texture swap throttle: MJPEG streams deliver 5-15 fps, so the
+// plane refresh must match the stream, not the 60fps RAF. 80ms ~= 12.5fps.
+// Without this the live-jpeg branch swapped the 1080p texture at RAF cadence
+// whenever the frame signature changed — the "constantly being refreshed"
+// flashing after zoom (owner field test 2026-09-11).
+const PROJECTION_LIVE_JPEG_SWAP_MS = 80;
 const PROJECTION_VERT_ASPECT = PROJECTION_CANVAS_WIDTH / PROJECTION_CANVAS_HEIGHT;
 // CCTV client debug gate: set `window.__CCTV_DEBUG__ = true` (or run the dev
 // server with VITE_CCTV_DEBUG=1) for per-camera fetch/load traces in the
@@ -1540,24 +1564,93 @@ function groundAltFor(record, regime = currentSurfaceRegime()) {
 }
 
 /**
- * FNV-1a over the RGB channels of a downsampled frame. Pure (takes the raw
- * pixel buffer, no DOM) so it is unit-testable.
+ * Change-tolerant signature over the RGB channels of a downsampled frame.
+ * Pure (takes the raw pixel buffer, no DOM) so it is unit-testable.
+ *
+ * The 64x36 grid is divided into 8x6 blocks; each block's RGB average is
+ * stored as a byte. Two frames are compared with frameSignatureDistance /
+ * frameSignaturesSimilar: a mean absolute difference under
+ * FRAME_SIGNATURE_MAX_MEAN_DIFF means "same frame". JPEG encoder noise on a
+ * static scene moves block averages by ≤0.1 units, so the plane stays put;
+ * real motion moves them by 0.5+.
  *
  * Alpha is skipped deliberately — CCTV stills are opaque, so hashing it would
  * cost a third more work to mix in a constant.
  *
  * @param {Uint8ClampedArray|number[]} data - RGBA pixels, 4 bytes per pixel.
- * @returns {number|null} Unsigned 32-bit signature, or null for empty input.
+ * @param {number} [width=FRAME_SIGNATURE_W] - Grid width in pixels.
+ * @param {number} [height=FRAME_SIGNATURE_H] - Grid height in pixels.
+ * @returns {Uint8Array|null} Block-average signature, or null for empty input.
  */
-export function frameSignatureFromPixels(data) {
+export function frameSignatureFromPixels(data, width = FRAME_SIGNATURE_W, height = FRAME_SIGNATURE_H) {
   if (!data || typeof data.length !== 'number' || data.length < 4) return null;
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < data.length; i += 4) {
-    hash = Math.imul(hash ^ data[i], 0x01000193);
-    hash = Math.imul(hash ^ data[i + 1], 0x01000193);
-    hash = Math.imul(hash ^ data[i + 2], 0x01000193);
+  const pixelCount = Math.floor(data.length / 4);
+  const w = Math.max(1, Math.floor(width));
+  const h = Math.max(1, Math.floor(height));
+  if (pixelCount < w * h) return null;
+
+  const blockCols = Math.min(FRAME_SIGNATURE_BLOCK_COLS, w);
+  const blockRows = Math.min(FRAME_SIGNATURE_BLOCK_ROWS, h);
+  const blockW = Math.ceil(w / blockCols);
+  const blockH = Math.ceil(h / blockRows);
+  const blockCount = blockCols * blockRows;
+
+  const sums = new Float64Array(blockCount * 3);
+  const counts = new Uint32Array(blockCount);
+  for (let y = 0; y < h; y++) {
+    const rowBase = y * w * 4;
+    const by = Math.min(blockRows - 1, Math.floor(y / blockH));
+    for (let x = 0; x < w; x++) {
+      const px = rowBase + x * 4;
+      const bx = Math.min(blockCols - 1, Math.floor(x / blockW));
+      const bi = (by * blockCols + bx) * 3;
+      sums[bi] += data[px];
+      sums[bi + 1] += data[px + 1];
+      sums[bi + 2] += data[px + 2];
+      counts[by * blockCols + bx] += 1;
+    }
   }
-  return hash >>> 0;
+
+  const sig = new Uint8Array(blockCount * 3);
+  for (let i = 0; i < blockCount; i++) {
+    const count = counts[i] || 1;
+    sig[i * 3] = Math.round(sums[i * 3] / count);
+    sig[i * 3 + 1] = Math.round(sums[i * 3 + 1] / count);
+    sig[i * 3 + 2] = Math.round(sums[i * 3 + 2] / count);
+  }
+  return sig;
+}
+
+/**
+ * Mean absolute difference between two block-average signatures: the average
+ * per-channel-value shift (0-255 scale) across all blocks. A non-signature or
+ * a length mismatch yields the maximum distance so callers treat it as
+ * "changed" (the pre-2026-07-30 behavior).
+ * @param {Uint8Array|null|undefined} a - First signature.
+ * @param {Uint8Array|null|undefined} b - Second signature.
+ * @returns {number} Mean absolute difference (MAX_SAFE_INTEGER when incomparable).
+ */
+export function frameSignatureDistance(a, b) {
+  if (!a || !b || a.length !== b.length) return Number.MAX_SAFE_INTEGER;
+  let total = 0;
+  for (let i = 0; i < a.length; i++) {
+    total += Math.abs(a[i] - b[i]);
+  }
+  return total / a.length;
+}
+
+/**
+ * Whether two frame signatures describe the same frame within the
+ * change-tolerance budget. A null signature (taint/decode race, or "nothing
+ * known yet") always counts as changed so a stuck signature can never
+ * deadlock the plane behind an unreadable frame.
+ * @param {Uint8Array|null|undefined} a - First signature.
+ * @param {Uint8Array|null|undefined} b - Second signature.
+ * @returns {boolean} True when the frames are perceptually the same.
+ */
+export function frameSignaturesSimilar(a, b) {
+  if (!a || !b) return false;
+  return frameSignatureDistance(a, b) <= FRAME_SIGNATURE_MAX_MEAN_DIFF;
 }
 
 /**
@@ -1565,8 +1658,9 @@ export function frameSignatureFromPixels(data) {
  * scratch canvas.
  *
  * @param {Object} runtime - Projection runtime holding the decoded `.image`.
- * @returns {number|null} Signature, or null when it cannot be computed (the
- *   caller then treats the frame as changed — the pre-2026-07-30 behavior).
+ * @returns {Uint8Array|null} Packed perceptual signature, or null when it
+ *   cannot be computed (the caller then treats the frame as changed — the
+ *   pre-2026-07-30 behavior).
  */
 function projectionFrameSignature(runtime) {
   const image = runtime?.image;
@@ -1634,21 +1728,28 @@ function paintNextProjectionBuffer(runtime) {
  * Video feeds are skipped entirely — their HTMLVideoElement uniform is
  * updated per-frame by Cesium natively (H5). Image/webcam-frame feeds swap
  * the double-buffer canvas reference, throttled to PROJECTION_TEXTURE_SWAP_MS.
+ * Live-jpeg feeds swap at PROJECTION_LIVE_JPEG_SWAP_MS (80ms ~= 12.5fps) so
+ * the plane keeps up with the MJPEG stream without re-uploading the 1080p
+ * texture at RAF cadence.
  *
  * @param {Object} record - Camera record with an initialized projection runtime.
  */
-function refreshProjectionTextures(record) {
+export function refreshProjectionTextures(record) {
   const runtime = record?.projection;
   // live-jpeg draws into the canvas each RAF (like image) so it uses the
   // double-buffer swap; only video (native element binding) is excluded.
   if (!runtime || runtime.mode === 'video') return;
   const now = Date.now();
-  // Live-jpeg skips the 1 Hz swap throttle: a 5-15 fps MJPEG stream would
-  // otherwise freeze to 1 fps on the monitor plane. The canvasStamp guard
-  // below already skips unchanged canvases, so the only cost of running
-  // unthrottled is a stamp compare per frame — no redundant texture uploads.
-  if (runtime.mode !== 'live-jpeg'
-    && now - safeNumber(runtime.lastTextureSwapAt, 0) < PROJECTION_TEXTURE_SWAP_MS) return;
+  // Live-jpeg gets its own swap throttle (80ms ~= 12.5fps) instead of the
+  // 1 Hz image throttle: a 5-15 fps MJPEG stream would otherwise freeze to
+  // 1 fps on the monitor plane. The canvasStamp guard below already skips
+  // unchanged canvases, so the throttle only bounds redundant texture
+  // re-uploads when the frame signature churns (owner field test 2026-09-11:
+  // "constantly being refreshed" flashing after zoom).
+  const swapMs = runtime.mode === 'live-jpeg'
+    ? PROJECTION_LIVE_JPEG_SWAP_MS
+    : PROJECTION_TEXTURE_SWAP_MS;
+  if (now - safeNumber(runtime.lastTextureSwapAt, 0) < swapMs) return;
 
   const planeShowing = !!(runtime.planeEntity?.show && runtime.planeMaterial);
   if (!planeShowing) return;
@@ -2521,7 +2622,11 @@ export function drawProjectionFrame(record) {
     const sig = projectionFrameSignature(runtime);
     // A null signature (taint/decode race) degrades to "assume changed" so a
     // stuck signature can never deadlock the plane behind an unreadable frame.
-    const changed = sig === null || sig !== runtime.lastFrameSignature;
+    // frameSignaturesSimilar is change-tolerant: JPEG encoder noise on a
+    // static scene shifts only a few bits after block averaging, so the plane
+    // does NOT re-blit + re-swap at stream rate (owner field test 2026-09-11:
+    // "constantly being refreshed" flashing after zoom).
+    const changed = !frameSignaturesSimilar(sig, runtime.lastFrameSignature);
     if (changed) {
       runtime.lastFrameSignature = sig;
       const realFramePresent = live.complete && live.naturalWidth > 0;
@@ -2586,9 +2691,10 @@ export function drawProjectionFrame(record) {
       // owner field tests (2026-07-04 and 2026-07-30).
       const signature = projectionFrameSignature(runtime);
       runtime.drawnImageStamp = runtime.imageStamp;
-      if (signature !== null && signature === runtime.lastFrameSignature) {
-        // Identical pixels — leave the canvas, and therefore the bound
-        // texture, completely alone. No canvasStamp bump, no swap, no flash.
+      if (frameSignaturesSimilar(signature, runtime.lastFrameSignature)) {
+        // Perceptually identical pixels (change-tolerant signature) — leave
+        // the canvas, and therefore the bound texture, completely alone. No
+        // canvasStamp bump, no swap, no flash.
         return;
       }
       runtime.lastFrameSignature = signature;
