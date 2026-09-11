@@ -1750,40 +1750,59 @@ function paintProjectionPlaceholder(ctx, camera, health = null, state = 'no-feed
   const g = ctx.createLinearGradient(0, 0, w, h);
   g.addColorStop(0, '#05111a');
   g.addColorStop(1, '#01070c');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, w, h);
 
   const label = String(camera?.name || 'CCTV');
   const city = String(camera?.city || 'GLOBAL');
   const isLoading = state === 'loading';
   const isError = state === 'error';
+  // Live feeds (MJPEG/video) that have not yet landed a first frame render a
+  // full black plane with red "ATTEMPTING TO CONNECT…" — the surveillance
+  // "link is being established" state (issue 2026-09-10 #2). Snapshot (image)
+  // first-fetch keeps the cyan acquiring look; only the connecting state gets
+  // the black+red treatment.
+  const isConnecting = isLoading && (feedMode === 'live-jpeg' || feedMode === 'video');
   const status = String(
-    isLoading
-      ? 'SIGNAL ACQUIRING'
-      : isError
-        ? (health?.message || 'NO SIGNAL')
-        : (health?.message || health?.status || (feedMode === 'live-jpeg' ? 'LIVE' : feedMode === 'image' ? 'SNAPSHOT' : camera?.feedType) || 'NO FEED')
+    isConnecting
+      ? 'ATTEMPTING TO CONNECT'
+      : isLoading
+        ? 'SIGNAL ACQUIRING'
+        : isError
+          ? (health?.message || 'NO SIGNAL')
+          : (health?.message || health?.status || (feedMode === 'live-jpeg' ? 'LIVE' : feedMode === 'image' ? 'SNAPSHOT' : camera?.feedType) || 'NO FEED')
   ).toUpperCase();
 
-  // Tactical cyan (#3ee0ff) / red (#ff3c3c) accent, matching the app theme.
-  const accent = isError ? '255, 60, 60' : '62, 224, 255';
+  // Tactical cyan (#3ee0ff) / red (#ff2d2d-ish) accent, matching the app theme.
+  const accent = (isError || isConnecting) ? '255, 45, 45' : '62, 224, 255';
+  // Connecting renders a full black plane (no gradient tint) — dead-black
+  // backdrop so the red status reads as the only signal on the monitor.
+  ctx.fillStyle = isConnecting ? '#000000' : g;
+  ctx.fillRect(0, 0, w, h);
+
   ctx.strokeStyle = `rgba(${accent}, 0.24)`;
   ctx.lineWidth = 2;
   ctx.strokeRect(18, 18, w - 36, h - 36);
   ctx.strokeRect(36, 36, w - 72, h - 72);
 
-  ctx.fillStyle = 'rgba(170, 242, 255, 0.95)';
+  ctx.fillStyle = isConnecting ? 'rgba(255, 45, 45, 0.95)' : 'rgba(170, 242, 255, 0.95)';
   ctx.font = '600 32px "JetBrains Mono", monospace';
   ctx.fillText(label.slice(0, 42), 46, 74);
-  ctx.fillStyle = 'rgba(127, 216, 231, 0.8)';
+  ctx.fillStyle = isConnecting ? 'rgba(255, 45, 45, 0.8)' : 'rgba(127, 216, 231, 0.8)';
   ctx.font = '500 24px "JetBrains Mono", monospace';
   ctx.fillText(city.toUpperCase(), 46, 112);
   ctx.font = '500 21px "JetBrains Mono", monospace';
-  ctx.fillText(status.slice(0, 58), 46, h - 42);
+  if (isConnecting) {
+    // Animated ellipsis (· · ·) so the link reads as "in progress", not dead.
+    const dots = Math.floor(nowMs / 400) % 4;
+    ctx.fillStyle = 'rgba(255, 45, 45, 0.95)';
+    ctx.fillText(`${'ATTEMPTING TO CONNECT'}${'.'.repeat(dots)}`, 46, h - 42);
+  } else {
+    ctx.fillText(status.slice(0, 58), 46, h - 42);
+  }
 
   // Spy-feed flavor per state: a scanline sweep + targeting reticle while
-  // acquiring, glitch interference bars on a hard failure.
-  if (isLoading) {
+  // acquiring, glitch interference bars on a hard failure. The black+red
+  // connecting state stays clean (no cyan scanline clashing with the red).
+  if (isLoading && !isConnecting) {
     paintScanlineSweep(ctx, w, h, nowMs);
     paintCornerReticle(ctx, w, h, nowMs, accent);
   } else if (isError) {
@@ -2490,20 +2509,39 @@ export function drawProjectionFrame(record) {
 
   if (runtime.mode === 'live-jpeg' && runtime.image) {
     const live = runtime.image;
-    if (live.complete && live.naturalWidth > 0 && runtime.liveFrameCount > runtime.lastDrawnLiveFrame) {
-      // A fresh MJPEG frame landed since the last draw — blit the current
-      // pixels onto the projection canvas. The live <img> advances itself.
-      // No clearRect: the frame fills the canvas, so clearing to transparent
-      // between frames is a flash opportunity if the swap ever reads mid-draw.
-      runtime.lastDrawnLiveFrame = runtime.liveFrameCount;
-      runtime.lastGoodFrameAt = Date.now();
-      runtime.feedError = null;
-      runtime.ctx.drawImage(live, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
-      runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
-      runtime.lastPlaceholderPaintAt = 0;
-      paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
-      grantPlaneFirstFrame(runtime, record);
-      return;
+    // Chrome fires <img>.onload exactly ONCE for a multipart/x-mixed-replace
+    // MJPEG stream (2026-09-10 probe: 14 frames served -> load: 1), so the
+    // old liveFrameCount gate could never advance the monitor plane past the
+    // first frame. Instead the projection rAF compares the pixels currently
+    // decoded into the live <img> against the last frame drawn: when the
+    // 64x36 signature CHANGES the fresh frame is blitted onto the canvas.
+    // Unchanged signatures leave the canvas (and its bound texture) alone —
+    // no canvasStamp bump, no buffer swap, no white flash (owner field tests
+    // 2026-07-04/30 behavior preserved).
+    const sig = projectionFrameSignature(runtime);
+    // A null signature (taint/decode race) degrades to "assume changed" so a
+    // stuck signature can never deadlock the plane behind an unreadable frame.
+    const changed = sig === null || sig !== runtime.lastFrameSignature;
+    if (changed) {
+      runtime.lastFrameSignature = sig;
+      const realFramePresent = live.complete && live.naturalWidth > 0;
+      if (realFramePresent) {
+        // The live <img> advanced to a fresh frame — blit the current pixels
+        // onto the projection canvas. The live <img> advances itself.
+        // No clearRect: the frame fills the canvas, so clearing to transparent
+        // between frames is a flash opportunity if the swap ever reads mid-draw.
+        runtime.lastDrawnLiveFrame = runtime.liveFrameCount;
+        runtime.lastGoodFrameAt = Date.now();
+        runtime.feedError = null;
+        runtime.ctx.drawImage(live, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
+        runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
+        runtime.lastPlaceholderPaintAt = 0;
+        paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
+        grantPlaneFirstFrame(runtime, record);
+      }
+      // No real frame yet (connecting/stalled): the signature is recorded so
+      // the constant blank-before-load does not re-enter this branch, and we
+      // fall through to the throttled placeholder below (which animates).
     }
     // No fresh frame has landed (or the stream is stalled/reconnecting). Once
     // ANY frame has ever been drawn for this runtime, keep the last good

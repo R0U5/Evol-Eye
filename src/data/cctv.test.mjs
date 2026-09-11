@@ -2210,6 +2210,149 @@ test('camera switch: stale first-frame events cannot resurrect an inactive plane
   }
 });
 
+test('live-jpeg projection redraws only when the frame signature changes (RAF change detection)', () => {
+  // Regression for the 2026-09-10 root cause: Chrome fires <img>.onload once
+  // for a multipart MJPEG stream, so the projection can no longer gate draws
+  // on load events. Instead drawProjectionFrame compares the decoded pixels'
+  // 64x36 signature each RAF: a CHANGED signature blits + bumps canvasStamp,
+  // an UNCHANGED one leaves the canvas (no swap, no white flash). A blank
+  // pre-load <img> must NOT grant visibility.
+  const originalDocument = globalThis.document;
+  const originalImage = globalThis.Image;
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalCaf = globalThis.cancelAnimationFrame;
+
+  const SIG_W = 64, SIG_H = 36;
+  const frameBuffer = new Uint8ClampedArray(SIG_W * SIG_H * 4);
+  const zeroFill = () => frameBuffer.fill(0);
+
+  function makeCtx() {
+    return {
+      clearRect() { zeroFill(); },
+      drawImage(img) {
+        // Mirror the live <img>'s decoded pixels into the shared buffer that
+        // getImageData returns, so the signature reflects the current frame.
+        if (img && img.frameData) {
+          frameBuffer.set(img.frameData);
+        } else {
+          zeroFill();
+        }
+      },
+      createLinearGradient: () => ({ addColorStop() {} }),
+      fillRect() {}, fillText() {}, strokeRect() {}, arc() {}, beginPath() {},
+      moveTo() {}, lineTo() {}, stroke() {}, fill() {},
+      measureText: (text) => ({ width: String(text).length * 10 }),
+      getImageData: () => ({ data: frameBuffer }),
+      imageSmoothing: true,
+    };
+  }
+  function makeCanvas() { return { width: 0, height: 0, getContext: () => makeCtx() }; }
+
+  globalThis.document = {
+    createElement: (tag) => (tag === 'canvas' ? makeCanvas() : { tag }),
+    hidden: false,
+    addEventListener() {}, removeEventListener() {},
+    body: { classList: { contains: () => false } },
+  };
+  globalThis.Image = class {
+    constructor() { this.decoding = 'async'; this.crossOrigin = 'anonymous'; this._src = ''; }
+    set src(v) { this._src = v; }
+    get src() { return this._src; }
+    removeAttribute() {}
+  };
+  globalThis.requestAnimationFrame = () => 1;
+  globalThis.cancelAnimationFrame = () => {};
+
+  const viewer = {
+    entities: new Cesium.EntityCollection(),
+    isDestroyed: () => false,
+    trackedEntity: null,
+    camera: {
+      positionWC: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 4000),
+      positionCartographic: Cesium.Cartographic.fromDegrees(-97.7431, 30.2672, 4000),
+      heading: 0.4, pitch: -0.7, roll: 0.1,
+      transform: Cesium.Matrix4.clone(Cesium.Matrix4.IDENTITY),
+      flyTo() {},
+      moveEnd: { addEventListener() {}, removeEventListener() {} },
+      moveStart: { addEventListener() {}, removeEventListener() {} },
+    },
+    scene: {
+      canvas: { clientWidth: 1200, clientHeight: 800 },
+      cartesianToCanvasCoordinates: () => undefined,
+      primitives: { add: (p) => p, remove: () => true },
+      requestRender() {}, pickFromRay: () => null,
+      globe: { show: true },
+    },
+  };
+
+  const record = {
+    camera: {
+      id: 'axis-live-sig', name: 'Cam Live Sig', city: 'Austin',
+      lat: 30.2672, lon: -97.7431, headingDeg: 41, fovDeg: 60, pitchDeg: -10,
+      rangeM: 500, mountHeightM: 10, groundElevationM: 150, feedType: 'mjpeg',
+      provider: 'axis', sourceKind: 'discovered', feedConfigured: true,
+      calibration: { rangeScale: 1 },
+    },
+    position: Cesium.Cartesian3.fromDegrees(-97.7431, 30.2672, 160),
+    coverageEntities: [], projection: null, activationDone: false,
+    probeClampRangeM: null, groundPrior: { ellipsoid: 150 }, groundResolved: {},
+    groundSamples: {}, frustumGeometry: null, frustumPositions: null,
+  };
+
+  try {
+    _setCctvOverlayHostForTest({
+      setEntries() {}, setVisible() {}, clearSource() {}, hitTest: () => null,
+    });
+    _setCctvCoverageStateForTest({
+      viewer, records: [record], activeCameraId: record.camera.id,
+      enabled: true, coverageMode: 'off', showProjection: true,
+    });
+    refreshCoverageStyles();
+
+    const runtime = record.projection;
+    assert.ok(runtime, 'live-jpeg runtime must exist');
+    assert.equal(runtime.mode, 'live-jpeg');
+    const live = runtime.image;
+
+    // Phase 1 — blank pre-load <img>: no real frame, must NOT grant visibility.
+    drawProjectionFrame(record);
+    assert.equal(runtime._visibilityGranted, false, 'blank pre-load must not grant visibility');
+    assert.equal(runtime.lastGoodFrameAt, 0, 'no good frame yet');
+
+    // Phase 2 — first real frame A: signature changed -> draw + grant.
+    live.complete = true; live.naturalWidth = 640; live.naturalHeight = 480;
+    live.frameData = new Uint8ClampedArray(SIG_W * SIG_H * 4).fill(120);
+    live.onload();
+    const stampA = runtime.canvasStamp;
+    drawProjectionFrame(record);
+    assert.equal(runtime._visibilityGranted, true, 'first real frame must grant visibility');
+    assert.equal(runtime.planeEntity.show, true, 'plane must be visible after first frame');
+    assert.ok(runtime.canvasStamp > stampA, 'first frame must bump canvasStamp (redraw)');
+    assert.equal(runtime.lastDrawnLiveFrame, runtime.liveFrameCount, 'lastDrawnLiveFrame tracks liveFrameCount');
+    assert.ok(runtime.lastGoodFrameAt > 0, 'lastGoodFrameAt set on draw');
+
+    // Phase 3 — same frame A again: signature unchanged -> no redraw, no swap.
+    const stampAfterA = runtime.canvasStamp;
+    live.onload(); // a spurious reload of the SAME pixels must not redraw
+    drawProjectionFrame(record);
+    assert.equal(runtime.canvasStamp, stampAfterA, 'unchanged signature must NOT bump canvasStamp (no flash)');
+
+    // Phase 4 — frame B: signature changed again -> redraw + canvasStamp bump.
+    live.frameData = new Uint8ClampedArray(SIG_W * SIG_H * 4).fill(200);
+    live.onload();
+    const stampB = runtime.canvasStamp;
+    drawProjectionFrame(record);
+    assert.ok(runtime.canvasStamp > stampB, 'changed signature must bump canvasStamp again');
+    assert.equal(runtime.lastDrawnLiveFrame, runtime.liveFrameCount, 'lastDrawnLiveFrame advances with liveFrameCount');
+  } finally {
+    cctvLayer.disable();
+    globalThis.document = originalDocument;
+    globalThis.Image = originalImage;
+    globalThis.requestAnimationFrame = originalRaf;
+    globalThis.cancelAnimationFrame = originalCaf;
+  }
+});
+
 test('mediaUrlFor: stable URL with optional resolution passthrough, no cache-buster', () => {
   const camera = { id: 'axis-insecam-1' };
   const base = mediaUrlFor(camera);
