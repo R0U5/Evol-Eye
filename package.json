@@ -41,7 +41,10 @@
     "test": "node scripts/run-unit-tests.mjs",
     "test:track": "node scripts/track-regression.mjs",
     "installer:test": "node --test installer/zipcode.test.mjs installer/core.test.mjs installer/runner.test.mjs installer/server.test.mjs",
-    "installer:build": "node scripts/installer/build.mjs",
+    "installer:build": "node installer/build.mjs",
+    "installer:exe": "node installer/build.mjs",
+    "installer:exe:selftest": "node installer/build.mjs --selftest-only",
+    "installer:build:legacy": "node scripts/installer/build.mjs",
     "installer:dev": "node installer/server.mjs",
     "qa:map-source-tray": "node scripts/qa-map-source-tray.mjs"
   },

@@ -17,3 +17,8 @@ pinokio/.installed
 # Legacy pre-rebrand runtime dirs (kept for backward compat; new runs use .evol-*)
 .gev-cache/
 .gev-logs/
+
+# Go + WebView2 exe build staging (copied from dist/ before go build; embed
+# patterns are relative to the package dir and cannot reach ../dist)
+installer/app/
+installer/selftest/app/
