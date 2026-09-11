@@ -2137,7 +2137,17 @@ function createProjectionRuntime(record) {
   // upscale shows hard pixelation (the reported "degraded when I look").
   ctx.imageSmoothing = true;
 
-  const feedType = normalizeFeedType(record.camera.feedType);
+  // Health-aware feed-type resolution (Axis mislabeled-source fix): the
+  // catalog may say 'image' while health reports the source is a live MJPG
+  // stream. Prefer health's sourceKind when it matches mjpeg/mjpg so the
+  // destroy+recreate upgrade in ensureProjectionRuntime converges to a
+  // live-jpeg <img> in ONE pass — without this, the recreated runtime was
+  // ALSO image mode and the upgrade branch churned destroy/recreate at 60Hz.
+  // Non-health cameras keep the normalizeFeedType fallback unchanged;
+  // video/image cameras are unaffected when health says nothing about MJPG.
+  const health = _healthById.get(record.camera.id);
+  const healthIndicatesMjpeg = !!(health && /mjpeg?|mjpg/.test(health.sourceKind || ''));
+  const feedType = healthIndicatesMjpeg ? 'mjpeg' : normalizeFeedType(record.camera.feedType);
   // MJPG is a live stream browsers decode natively in an <img> (as
   // multipart/x-mixed-replace) — NOT in <video>. Give it its own mode so the
   // projection loop draws the advancing <img> each RAF instead of treating it
@@ -2327,15 +2337,33 @@ function closeLiveJpegConnection(runtime) {
  * @returns {Object|null} The record's projection runtime.
  */
 function ensureProjectionRuntime(record) {
+  // Guard against null/undefined record early.
   if (!record) return null;
+
+  // After confirming we have a record, fetch health info.
+  const health = _healthById.get(record?.camera?.id);
+  const healthIndicatesLive = health && /mjpeg?|mjpg/.test(health.sourceKind || '');
+
+  // If a projection already exists, handle possible upgrade from image → live‑jpeg.
   if (record.projection) {
-    // Re-activation after a camera switch: the runtime survives (geometry
-    // reuse) but its live connection was closed on deactivation — reopen it.
+    // When the runtime is still in 'image' mode but health now indicates a live MJPEG source,
+    // we must destroy the old runtime and recreate it to get a proper <img> element.
+    if (record.projection.mode !== 'live-jpeg' && healthIndicatesLive) {
+      destroyProjectionRuntime(record.projection);
+      // Remove the old runtime reference; recreation will push a new entity.
+      record.projection = null;
+      // Recurse to create a fresh runtime with the correct mode and connection.
+      return ensureProjectionRuntime(record);
+    }
+    // If we already have a live‑jpeg runtime but the live connection is not established,
+    // (e.g., after a camera switch) reopen it.
     if (record.projection.mode === 'live-jpeg' && !record.projection.liveConnected) {
       openLiveJpegConnection(record.projection, record.camera);
     }
     return record.projection;
   }
+
+  // No existing projection – create a new one.
   const runtime = createProjectionRuntime(record);
   record.projection = runtime;
   if (runtime) {
@@ -2351,6 +2379,14 @@ function ensureProjectionRuntime(record) {
  */
 function destroyProjectionRuntime(runtime) {
   if (!runtime) return;
+  // Drop the runtime from the live projection set by identity. Every create
+  // path pushes into _projectionEntities; without the matching removal the
+  // image→live-jpeg upgrade churn leaked one runtime per frame at 60Hz and
+  // the draw loops / obstruction probe iterated an unbounded array.
+  const runtimeIndex = _projectionEntities.indexOf(runtime);
+  if (runtimeIndex !== -1) {
+    _projectionEntities.splice(runtimeIndex, 1);
+  }
   if (runtime.video) {
     runtime.video.pause();
     runtime.video.removeAttribute('src');
@@ -4699,7 +4735,10 @@ function destroyCoverageEntities() {
     destroyViewshedVolume(record);
   }
 
-  for (const runtime of _projectionEntities) {
+  // Snapshot before destroying: destroyProjectionRuntime now removes each
+  // runtime from _projectionEntities by identity, so iterating the live array
+  // while destroying would skip every other runtime.
+  for (const runtime of [..._projectionEntities]) {
     destroyProjectionRuntime(runtime);
   }
   _projectionEntities = [];
@@ -4730,6 +4769,29 @@ function clearRuntimeState() {
   // Task 5: the applied-regime tracker is record-set-scoped — a fresh init
   // recomputes it against the then-current scene.
   _lastAppliedRegime = null;
+}
+
+/**
+ * Test seam: seeds the per-camera health map consulted by
+ * createProjectionRuntime's health-aware feed-type resolution (the
+ * image→live-jpeg Axis upgrade path). Pass a Map keyed by camera id with
+ * { status, sourceKind } rows mirroring syncHealthState's shape.
+ * @param {Map<string, {status?: string, sourceKind?: string}>} [healthById=new Map()]
+ * @returns {void}
+ */
+export function _setCctvHealthForTest(healthById = new Map()) {
+  _healthById = healthById instanceof Map ? healthById : new Map();
+}
+
+/**
+ * Test seam: snapshot of the currently tracked projection runtimes. Every
+ * create path pushes into _projectionEntities and destroyProjectionRuntime
+ * removes by identity, so tests can assert the upgrade path neither leaks
+ * runtimes nor churns (identity-stable, length-stable) across ticks.
+ * @returns {Array<Object>}
+ */
+export function _getCctvProjectionEntitiesForTest() {
+  return [..._projectionEntities];
 }
 
 /**
