@@ -36,6 +36,21 @@ type EvolEyeInfo struct {
 	Platform string
 }
 
+// securityHeader wraps any handler with the security headers the app
+// expects: a locked-down CSP (assets only from the loopback origin, plus
+// outbound https for the live data feeds WebView2 reaches directly),
+// MIME-sniffing protection, no referrer leakage, and clickjacking defense.
+func securityHeader(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		hdr := rw.Header()
+		hdr.Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' https:; img-src 'self' https: data:; script-src 'self'; style-src 'self' 'unsafe-inline';")
+		hdr.Set("X-Content-Type-Options", "nosniff")
+		hdr.Set("Referrer-Policy", "no-referrer")
+		hdr.Set("X-Frame-Options", "DENY")
+		h.ServeHTTP(rw, r)
+	})
+}
+
 // serveApp binds a loopback listener on an OS-chosen port and serves the
 // embedded bundle on it. It returns the base URL, or an error.
 func serveApp() (url string, err error) {
@@ -45,7 +60,8 @@ func serveApp() (url string, err error) {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServer(http.FS(webRoot)))
+	// M-2: serve the embedded bundle with CSP + hardening headers.
+	mux.Handle("/", securityHeader(http.FileServer(http.FS(webRoot))))
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

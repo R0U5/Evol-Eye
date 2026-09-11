@@ -128,9 +128,18 @@ async function buildSelftestWin(bin) {
 
 async function buildExe(exe) {
   const args = ['build', '-mod=vendor', '-buildvcs=false'];
+  const ldflags = [];
   if (GOOS !== hostGoOS()) {
-    args.push('-ldflags=-extldflags=-Wl,--subsystem,windows');
+    ldflags.push('-extldflags=-Wl,--subsystem,windows');
   }
+  // M-5: strip debug symbols (-s -w) and trim absolute build paths
+  // (-trimpath) from the shipped exe — saves ~7 MB and keeps the
+  // build machine's paths out of the binary. Must share the single
+  // -ldflags value: a second -ldflags would clobber the first (Go
+  // last-wins), dropping the GUI subsystem flag.
+  ldflags.push('-s', '-w');
+  args.push('-ldflags=' + ldflags.join(' '));
+  args.push('-trimpath');
   args.push('-o', exe, '.');
   await exec(CLIENT.GO, args, { cwd: here, env: buildEnv() });
 }

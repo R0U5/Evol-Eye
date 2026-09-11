@@ -12,11 +12,18 @@
 #                           GOARCH=amd64, CGO via Zig) and the Windows selftest
 #   3. win-smoke (windows-latest) — runs the cross-compiled selftest.exe on a
 #                           real Windows runner (no toolchain needed)
-#   4. release (tags)     — attaches the exe + SHA256SUMS.txt to a GitHub
-#                           Release
+#   4. release (tags)     — attaches the exe + selftest + SHA256SUMS.txt to a
+#                           GitHub Release
 #
 # Triggers: pushes to feat/exe-installer and tag pushes (exe-v* /
 # installer-exe-v*, matching the rest of the repo's installer tagging).
+#
+# Supply-chain hardening:
+#   - L-4: every mutable @v4 action is pinned to an immutable commit SHA.
+#   - M-4: every toolchain tarball (Go, Zig, Node) is verified with
+#     `sha256sum -c` against the expected digest in env: before use.
+#   - setup-node is intentionally not used here: M-4 requires verifying the
+#     actual downloaded Node artifact, which setup-node offers no hook for.
 
 name: EXE Installer (Go + WebView2)
 
@@ -37,6 +44,10 @@ env:
   GO_VERSION: '1.27.1'
   ZIG_VERSION: '0.16.0'
   NODE_VERSION: '24.14.0'
+  # M-4: expected SHA-256 digests of the toolchain tarballs downloaded below.
+  GO_SHA256: '63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445'
+  ZIG_SHA256: '70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'
+  NODE_SHA256: 'dbf5b8665dec15e59e6359a517fefb47b23fdb9152d8def975b9bca3dfc6d355'
 
 jobs:
   selftest:
@@ -45,15 +56,23 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
 
-      - name: Use Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+      - name: Install Node.js (checksum-verified)
+        run: |
+          curl -fsSL --retry 3 -o /tmp/node.tar.gz \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
+          echo "${NODE_SHA256}  /tmp/node.tar.gz" | sha256sum -c -
+          sudo tar -C /usr/local -xzf /tmp/node.tar.gz
+          sudo ln -sf /usr/local/node-v${NODE_VERSION}-linux-x64/bin/node \
+            /usr/local/node-v${NODE_VERSION}-linux-x64/bin/npm \
+            /usr/local/node-v${NODE_VERSION}-linux-x64/bin/npx \
+            /usr/local/bin/
+          node --version
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: '1'
 
       - name: Install locked dependencies
         run: npm ci
@@ -61,12 +80,13 @@ jobs:
       - name: Build production bundle
         run: npm run build
 
-      - name: Install Go toolchain
+      - name: Install Go toolchain (checksum-verified)
         run: |
           curl -fsSL --retry 3 -o /tmp/go.tgz \
             "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c -
           sudo tar -C /usr/local -xzf /tmp/go.tgz
-          go version
+          /usr/local/go/bin/go version
 
       - name: Build and run selftest
         run: |
@@ -81,15 +101,23 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
 
-      - name: Use Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+      - name: Install Node.js (checksum-verified)
+        run: |
+          curl -fsSL --retry 3 -o /tmp/node.tar.gz \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
+          echo "${NODE_SHA256}  /tmp/node.tar.gz" | sha256sum -c -
+          sudo tar -C /usr/local -xzf /tmp/node.tar.gz
+          sudo ln -sf /usr/local/node-v${NODE_VERSION}-linux-x64/bin/node \
+            /usr/local/node-v${NODE_VERSION}-linux-x64/bin/npm \
+            /usr/local/node-v${NODE_VERSION}-linux-x64/bin/npx \
+            /usr/local/bin/
+          node --version
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: '1'
 
       - name: Install locked dependencies
         run: npm ci
@@ -97,20 +125,22 @@ jobs:
       - name: Build production bundle
         run: npm run build
 
-      - name: Install Go toolchain
+      - name: Install Go toolchain (checksum-verified)
         run: |
           curl -fsSL --retry 3 -o /tmp/go.tgz \
             "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "${GO_SHA256}  /tmp/go.tgz" | sha256sum -c -
           sudo tar -C /usr/local -xzf /tmp/go.tgz
-          go version
+          /usr/local/go/bin/go version
 
-      - name: Install Zig toolchain (Windows-targeted C/C++ for CGo)
+      - name: Install Zig toolchain (checksum-verified, Windows-targeted C/C++ for CGo)
         run: |
           curl -fsSL --retry 3 -o /tmp/zig.tar.xz \
             "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -
           sudo tar -C /usr/local -xf /tmp/zig.tar.xz
           sudo mv /usr/local/zig-x86_64-linux-${ZIG_VERSION} /usr/local/zig
-          zig version
+          /usr/local/zig/zig version
 
       - name: Cross-compile exe + selftest (GOOS=windows GOARCH=amd64)
         id: build
@@ -131,15 +161,17 @@ jobs:
           sha256sum -c dist-installer/SHA256SUMS.txt
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: evol-eye-installer
-          path: dist-installer/Evol-Eye-Installer.exe
+          path: |
+            dist-installer/Evol-Eye-Installer.exe
+            dist-installer/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
 
       - name: Upload selftest (Windows)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: evol-eye-selftest-windows
           path: dist-installer/Evol-Eye-Selftest.exe
@@ -153,7 +185,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Download Windows selftest
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: evol-eye-selftest-windows
           path: selftest-win/
@@ -171,16 +203,22 @@ jobs:
       contents: write
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: evol-eye-installer
           path: dist-installer/
+
+      - name: Download Windows selftest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: evol-eye-selftest-windows
+          path: selftest-win/
 
       - name: Generate release notes
         run: |
@@ -198,3 +236,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist-installer/Evol-Eye-Installer.exe
+            dist-installer/SHA256SUMS.txt
+            selftest-win/Evol-Eye-Selftest.exe
