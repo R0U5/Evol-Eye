@@ -158,7 +158,10 @@ jobs:
           file dist-installer/Evol-Eye-Installer.exe
           test -s dist-installer/Evol-Eye-Selftest.exe
           test -s dist-installer/SHA256SUMS.txt
-          sha256sum -c dist-installer/SHA256SUMS.txt
+          # SHA256SUMS.txt contains bare filenames (no dist-installer/ prefix),
+          # so the check must run from inside the directory or sha256sum looks
+          # for the files in the repo root and fails with 'No such file'.
+          (cd dist-installer && sha256sum -c SHA256SUMS.txt)
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
