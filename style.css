@@ -1909,6 +1909,9 @@ body.ui-clean-view #scene-runtime.active {
 
 /* ── Location Search ─────────────────────────── */
 .location-search-wrap {
+  /* Relative so the absolutely-positioned .location-search-spinner anchors to
+     the input's right edge instead of a distant ancestor (issue 2026-09-10 #4). */
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0;
