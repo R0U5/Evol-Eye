@@ -930,7 +930,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   opacity: 1;
 }
 
-/* Spinner overlaid on the search-wrap, between the toggle button and input */
+/* Spinner shown as a flex child to the left of the input while resolving */
 .location-search-wrap.is-searching .location-search-spinner {
   display: flex;
 }
@@ -939,26 +939,16 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   display: none;
 }
 
-/* Inline spinner that appears inside the input on the right when resolving */
 .location-search-spinner {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
   width: 14px;
   height: 14px;
+  margin-right: 6px;
   border: 2px solid rgba(255, 255, 255, 0.2);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   pointer-events: none;
   flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-}
-
-.location-search-wrap.is-searching #location-search {
-  padding-right: 28px;
 }
 
 /* ── Post-Processing Toggles ─────────────────── */
@@ -1909,9 +1899,6 @@ body.ui-clean-view #scene-runtime.active {
 
 /* ── Location Search ─────────────────────────── */
 .location-search-wrap {
-  /* Relative so the absolutely-positioned .location-search-spinner anchors to
-     the input's right edge instead of a distant ancestor (issue 2026-09-10 #4). */
-  position: relative;
   display: flex;
   align-items: center;
   gap: 0;
