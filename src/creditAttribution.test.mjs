@@ -411,7 +411,12 @@ test('the model refuses every cascade construct it cannot resolve', () => {
         // (proven inapplicable at <=720px by the mobile-mode test).
         const railOwn = part === '#right-context-rail' && decl.prop === 'max-height';
         const railFocus = part === '#right-context-rail.layout-focus';
-        if (!railOwn && !railFocus) complaints.push(`${decl.prop}: ${decl.value} on "${part}"`);
+        // The location tray height cap caps the tray's TOP edge (the tray
+        // grows upward from its bottom anchor). The credit clearance is decided
+        // by the tray's BOTTOM edge — `bottom: calc(100% + …)` — which the cap
+        // never moves, so this exemption is earned by the test below.
+        const locationTrayCap = part === '#command-dock #location-bar .dock-popover-content' && decl.prop === 'max-height';
+        if (!railOwn && !railFocus && !locationTrayCap) complaints.push(`${decl.prop}: ${decl.value} on "${part}"`);
       }
       if (decl.prop === 'transform' && /translateY|translate3d|matrix|scale\(/.test(decl.value)) {
         const identity = decl.value === 'translateY(0) scale(1)';
@@ -484,6 +489,26 @@ test('the full-width rail cannot inherit a height that overrides its floor', () 
   const mobileBranch = ui.slice(gate, ui.indexOf("layoutMode = 'mobile'", gate) + 40);
   assert.match(mobileBranch, /stack\.classList\.remove\('layout-focus'\)/);
   assert.match(mobileBranch, /stack\.style\.removeProperty\('--right-stack-max-height'\)/);
+});
+
+test('the location tray height cap cannot push the tray into the credit band', () => {
+  // The location popover's max-height caps the tray's TOP edge (the tray grows
+  // upward from its bottom anchor). The credit clearance is decided by the
+  // tray's BOTTOM edge — `bottom: calc(100% + …)` — which the cap never moves,
+  // so the exemption above is earned. Pin the cap's shape and scope.
+  const caps = RULES.filter((rule) => rule.parts.includes('#command-dock #location-bar .dock-popover-content')
+    && rule.decls.some((decl) => decl.prop === 'max-height'));
+  assert.equal(caps.length, 1, 'exactly one location-tray height cap');
+  assert.equal(caps[0].decls.find((decl) => decl.prop === 'max-height').value, 'min(60dvh, 34rem)');
+  // The presets tray must not inherit the cap — it has its own overflow.
+  const presetsCaps = RULES.filter((rule) => rule.parts.includes('#command-dock #control-panel .dock-popover-content')
+    && rule.decls.some((decl) => decl.prop === 'max-height'));
+  assert.equal(presetsCaps.length, 0, 'the presets tray must not inherit the cap');
+  // The bottom anchor that decides credit clearance is untouched by the cap.
+  for (const width of WIDTHS) {
+    const bottom = resolve(TRAY_ORDINARY, 'bottom', width, 'location tray');
+    assert.ok(bottom.decl.value, `location tray bottom resolves at ${width}px`);
+  }
 });
 
 // ── Clearance ───────────────────────────────────────────────────────────────

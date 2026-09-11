@@ -8463,6 +8463,51 @@ body:not(.ui-clean-view):not(.recording-mode):has(#intel-hud[data-variant='minim
 
 #command-dock #location-bar .dock-popover-content {
   left: -0.75rem;
+  max-height: min(60dvh, 34rem);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(123, 189, 211, 0.4) transparent;
+}
+#command-dock #location-bar .dock-popover-content::-webkit-scrollbar {
+  width: 8px;
+}
+#command-dock #location-bar .dock-popover-content::-webkit-scrollbar-thumb {
+  background: rgba(123, 189, 211, 0.35);
+  border-radius: 4px;
+}
+#command-dock #location-bar .dock-popover-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* Visible horizontal scrollbar on the pills row inside the location popover
+   (overrides the global hidden-scrollbar rule for #command-dock .location-pills). */
+#command-dock #location-bar .dock-popover-content .location-pills {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(123, 189, 211, 0.4) transparent;
+}
+#command-dock #location-bar .dock-popover-content .location-pills::-webkit-scrollbar {
+  display: block;
+  height: 6px;
+}
+#command-dock #location-bar .dock-popover-content .location-pills::-webkit-scrollbar-thumb {
+  background: rgba(123, 189, 211, 0.35);
+  border-radius: 3px;
+}
+#command-dock #location-bar .dock-popover-content .location-pills::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* The pin button floats on the popover's top-right corner (absolute,
+   top:-1rem/right:-1rem). The location popover is now a scroll container
+   (max-height + overflow-y), and overflow clips absolutely-positioned
+   descendants at the padding box — the floating part would be cut off. Make
+   the button sticky INSIDE the scroll area so it stays clickable while the
+   tray content scrolls beneath it. */
+#command-dock #location-bar .dock-popover-content .dock-pin-btn {
+  position: sticky;
+  top: 0;
+  right: 0;
+  z-index: 3;
+  align-self: flex-end;
+  margin: 0;
 }
 
 #command-dock #control-panel .dock-popover-content {
