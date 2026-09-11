@@ -2490,20 +2490,39 @@ export function drawProjectionFrame(record) {
 
   if (runtime.mode === 'live-jpeg' && runtime.image) {
     const live = runtime.image;
-    if (live.complete && live.naturalWidth > 0 && runtime.liveFrameCount > runtime.lastDrawnLiveFrame) {
-      // A fresh MJPEG frame landed since the last draw — blit the current
-      // pixels onto the projection canvas. The live <img> advances itself.
-      // No clearRect: the frame fills the canvas, so clearing to transparent
-      // between frames is a flash opportunity if the swap ever reads mid-draw.
-      runtime.lastDrawnLiveFrame = runtime.liveFrameCount;
-      runtime.lastGoodFrameAt = Date.now();
-      runtime.feedError = null;
-      runtime.ctx.drawImage(live, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
-      runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
-      runtime.lastPlaceholderPaintAt = 0;
-      paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
-      grantPlaneFirstFrame(runtime, record);
-      return;
+    // Chrome fires <img>.onload exactly ONCE for a multipart/x-mixed-replace
+    // MJPEG stream (2026-09-10 probe: 14 frames served -> load: 1), so the
+    // old liveFrameCount gate could never advance the monitor plane past the
+    // first frame. Instead the projection rAF compares the pixels currently
+    // decoded into the live <img> against the last frame drawn: when the
+    // 64x36 signature CHANGES the fresh frame is blitted onto the canvas.
+    // Unchanged signatures leave the canvas (and its bound texture) alone —
+    // no canvasStamp bump, no buffer swap, no white flash (owner field tests
+    // 2026-07-04/30 behavior preserved).
+    const sig = projectionFrameSignature(runtime);
+    // A null signature (taint/decode race) degrades to "assume changed" so a
+    // stuck signature can never deadlock the plane behind an unreadable frame.
+    const changed = sig === null || sig !== runtime.lastFrameSignature;
+    if (changed) {
+      runtime.lastFrameSignature = sig;
+      const realFramePresent = live.complete && live.naturalWidth > 0;
+      if (realFramePresent) {
+        // The live <img> advanced to a fresh frame — blit the current pixels
+        // onto the projection canvas. The live <img> advances itself.
+        // No clearRect: the frame fills the canvas, so clearing to transparent
+        // between frames is a flash opportunity if the swap ever reads mid-draw.
+        runtime.lastDrawnLiveFrame = runtime.liveFrameCount;
+        runtime.lastGoodFrameAt = Date.now();
+        runtime.feedError = null;
+        runtime.ctx.drawImage(live, 0, 0, PROJECTION_CANVAS_WIDTH, PROJECTION_CANVAS_HEIGHT);
+        runtime.canvasStamp = (runtime.canvasStamp || 0) + 1;
+        runtime.lastPlaceholderPaintAt = 0;
+        paintProjectionChrome(runtime.ctx, record.camera, health, Date.now());
+        grantPlaneFirstFrame(runtime, record);
+      }
+      // No real frame yet (connecting/stalled): the signature is recorded so
+      // the constant blank-before-load does not re-enter this branch, and we
+      // fall through to the throttled placeholder below (which animates).
     }
     // No fresh frame has landed (or the stream is stalled/reconnecting). Once
     // ANY frame has ever been drawn for this runtime, keep the last good
