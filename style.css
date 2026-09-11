@@ -6086,11 +6086,13 @@ body.cockpit-mode #intel-hud .hud-right-edge { right: 22px; }
 }
 
 /* ENHANCE toggle — "enhance, enhance!" scales the panel and the 16:9 feed
-   stage to 130%. The video is width:100% + fixed aspect-ratio, so widening
+   stage to 200%. The video is width:100% + fixed aspect-ratio, so widening
    the panel scales the frame with it; the wrap's min-height floor below
-   scales too so the stage never pinches. */
+   scales too so the stage never pinches. The ≤800px width clamp (above)
+   keeps an enhanced panel inside the viewport, and max-height 100vh-24px
+   keeps it usable at 2x on 1080p. */
 #cctv-panel.enhanced {
-  --cctv-enhance-scale: 1.3;
+  --cctv-enhance-scale: 2.0;
 }
 
 /* Header ENHANCE button: compact header-chrome sizing, cyan-tinted like the
