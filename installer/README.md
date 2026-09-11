@@ -49,7 +49,7 @@ browser.
 
 ## Building the release bundle
 
-`npm run installer:build` writes `dist-installer/Evol-Eye-Setup-<version>.zip`
+`npm run installer:build:legacy` writes `dist-installer/Evol-Eye-Setup-<version>.zip`
 plus `SHA256SUMS.txt` and `installer.json`. The same archive is published
 automatically to GitHub Releases by `.github/workflows/installer.yml` on a
 `installer-v*` tag (or manual dispatch).
@@ -62,3 +62,44 @@ automatically to GitHub Releases by `.github/workflows/installer.yml` on a
 - Security: the server binds to loopback, rejects non-loopback peers,
   cross-origin requests, and unknown `Host` headers, and never echoes the
   token. Only `localhost`, `127.0.0.1`, and `[::1]` are accepted clients.
+## The single-file .exe (Go + WebView2)
+
+`npm run installer:exe` builds **`dist-installer/Evol-Eye-Installer.exe`** — a
+single Windows executable (no Node, no browser install):
+
+1. The production web bundle (`dist/`) is staged into the Go module and
+   **embedded in the binary** (`//go:embed app/*`).
+2. At startup the wrapper starts a loopback HTTP server on an OS-chosen port
+   and opens the bundle in a **WebView2** window (the Microsoft Edge engine,
+   built into the binary via `webview_go` — no DLLs to ship). Win11 has the
+   WebView2 runtime; Win10 installs it automatically when the app first runs.
+3. `EVOL_EYE_DEBUG=1` enables the WebView2 developer tools. JS can query
+   `await window.evolEyeInfo()` to detect the desktop wrapper.
+
+Headless selftest: `npm run installer:exe:selftest` builds and runs
+`Evol-Eye-Selftest` (pure Go) against the embedded bundle — it inventories the
+embedded files, serves them over loopback HTTP and probes the page's own
+asset references, exiting 0 only if everything returns 200 with the right
+content types. The same binary is cross-built for Windows so CI can run it on
+a real Windows runner.
+
+The Go module (`installer/go.mod`) pins `github.com/webview/webview_go 0.10.0`,
+**vendored under `installer/vendor/`** with a small patch that restores the
+`EventToken.h` header the upstream module forgot to ship (issue #21) — the
+build is fully hermetic and needs only Go 1.23+ and (for cross-compiles) Zig.
+
+Cross-compile from Linux/macOS:
+
+```sh
+npm run installer:exe -- --zig /path/to/zig
+```
+
+Requires network access for live data feeds (OpenSky, FIRMS, Cesium assets…);
+the vite dev-proxy APIs (`/api/*`) are not replicated by the wrapper yet.
+
+CI (`.github/workflows/installer-exe.yml`) builds the exe on every push to
+`feat/exe-installer`, runs the selftest on Linux **and** on a Windows runner,
+and attaches the exe to a GitHub Release on `exe-v*` / `installer-exe-v*` tags.
+
+---
+

@@ -63,7 +63,7 @@ jobs:
         run: npm ci
 
       - name: Build release bundle
-        run: npm run installer:build
+        run: npm run installer:build:legacy
 
       - name: Verify bundle integrity
         run: node scripts/installer/verify.mjs

@@ -1,0 +1,200 @@
+# EVOL Eye — single-file Windows .exe (Go + WebView2 wrapper)
+#
+# Builds dist/ (Vite), stages it into the Go module, cross-compiles the
+# portable wrapper (embedded HTTP server + WebView2 window) to a Windows
+# executable with Zig, runs the headless selftest, and publishes the exe as
+# a CI artifact and (on tags) as a GitHub Release asset.
+#
+# Pipeline:
+#   1. selftest (ubuntu)  — builds+runs the pure-Go selftest binary against
+#                           the real embedded bundle (exit 0 = PASS)
+#   2. build (ubuntu)     — cross-compiles Evol-Eye-Installer.exe (GOOS=windows
+#                           GOARCH=amd64, CGO via Zig) and the Windows selftest
+#   3. win-smoke (windows-latest) — runs the cross-compiled selftest.exe on a
+#                           real Windows runner (no toolchain needed)
+#   4. release (tags)     — attaches the exe + SHA256SUMS.txt to a GitHub
+#                           Release
+#
+# Triggers: pushes to feat/exe-installer and tag pushes (exe-v* /
+# installer-exe-v*, matching the rest of the repo's installer tagging).
+
+name: EXE Installer (Go + WebView2)
+
+on:
+  push:
+    branches: [feat/exe-installer]
+    tags: ['exe-v*', 'installer-exe-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-exe-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.27.1'
+  ZIG_VERSION: '0.16.0'
+  NODE_VERSION: '24.14.0'
+
+jobs:
+  selftest:
+    name: Headless selftest (embedded bundle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Install Go toolchain
+        run: |
+          curl -fsSL --retry 3 -o /tmp/go.tgz \
+            "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          sudo tar -C /usr/local -xzf /tmp/go.tgz
+          go version
+
+      - name: Build and run selftest
+        run: |
+          npm run installer:exe:selftest -- --go /usr/local/go/bin/go
+        env:
+          GO: /usr/local/go/bin/go
+
+  build:
+    name: Cross-compile Windows .exe
+    needs: selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Install Go toolchain
+        run: |
+          curl -fsSL --retry 3 -o /tmp/go.tgz \
+            "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          sudo tar -C /usr/local -xzf /tmp/go.tgz
+          go version
+
+      - name: Install Zig toolchain (Windows-targeted C/C++ for CGo)
+        run: |
+          curl -fsSL --retry 3 -o /tmp/zig.tar.xz \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          sudo tar -C /usr/local -xf /tmp/zig.tar.xz
+          sudo mv /usr/local/zig-x86_64-linux-${ZIG_VERSION} /usr/local/zig
+          zig version
+
+      - name: Cross-compile exe + selftest (GOOS=windows GOARCH=amd64)
+        id: build
+        run: |
+          npm run installer:exe -- \
+            --go /usr/local/go/bin/go \
+            --zig /usr/local/zig/zig
+          ls -la dist-installer/
+        env:
+          GO: /usr/local/go/bin/go
+          ZIG: /usr/local/zig/zig
+
+      - name: Verify artifacts
+        run: |
+          file dist-installer/Evol-Eye-Installer.exe
+          test -s dist-installer/Evol-Eye-Selftest.exe
+          test -s dist-installer/SHA256SUMS.txt
+          sha256sum -c dist-installer/SHA256SUMS.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: evol-eye-installer
+          path: dist-installer/Evol-Eye-Installer.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload selftest (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: evol-eye-selftest-windows
+          path: dist-installer/Evol-Eye-Selftest.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  win-smoke:
+    name: Windows selftest smoke
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download Windows selftest
+        uses: actions/download-artifact@v4
+        with:
+          name: evol-eye-selftest-windows
+          path: selftest-win/
+
+      - name: Run cross-compiled selftest on Windows
+        shell: bash
+        run: ./selftest-win/Evol-Eye-Selftest.exe
+
+  release:
+    name: Publish GitHub Release
+    needs: [build, win-smoke]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: evol-eye-installer
+          path: dist-installer/
+
+      - name: Generate release notes
+        run: |
+          git log --oneline --no-merges "$(git tag --sort=-version:refname | head -n 2 | tail -n 1)..HEAD" 2>/dev/null > release-notes.txt || true
+
+      - name: Create or update release
+        # SHA-pinned (was @v2) — the tag moved on 2026-09-07; resolve with:
+        # gh api repos/softprops/action-gh-release/git/ref/tags/v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: EVOL Eye Installer ${{ github.ref_name }}
+          prerelease: false
+          body_path: release-notes.txt
+          fail_on_unmatched_files: true
+          files: |
+            dist-installer/Evol-Eye-Installer.exe
