@@ -930,7 +930,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   opacity: 1;
 }
 
-/* Spinner overlaid on the search-wrap, between the toggle button and input */
+/* Spinner shown as a flex child to the left of the input while resolving */
 .location-search-wrap.is-searching .location-search-spinner {
   display: flex;
 }
@@ -939,26 +939,16 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   display: none;
 }
 
-/* Inline spinner that appears inside the input on the right when resolving */
 .location-search-spinner {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
   width: 14px;
   height: 14px;
+  margin-right: 6px;
   border: 2px solid rgba(255, 255, 255, 0.2);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   pointer-events: none;
   flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-}
-
-.location-search-wrap.is-searching #location-search {
-  padding-right: 28px;
 }
 
 /* ── Post-Processing Toggles ─────────────────── */
@@ -1909,9 +1899,6 @@ body.ui-clean-view #scene-runtime.active {
 
 /* ── Location Search ─────────────────────────── */
 .location-search-wrap {
-  /* Relative so the absolutely-positioned .location-search-spinner anchors to
-     the input's right edge instead of a distant ancestor (issue 2026-09-10 #4). */
-  position: relative;
   display: flex;
   align-items: center;
   gap: 0;
@@ -8476,6 +8463,51 @@ body:not(.ui-clean-view):not(.recording-mode):has(#intel-hud[data-variant='minim
 
 #command-dock #location-bar .dock-popover-content {
   left: -0.75rem;
+  max-height: min(60dvh, 34rem);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(123, 189, 211, 0.4) transparent;
+}
+#command-dock #location-bar .dock-popover-content::-webkit-scrollbar {
+  width: 8px;
+}
+#command-dock #location-bar .dock-popover-content::-webkit-scrollbar-thumb {
+  background: rgba(123, 189, 211, 0.35);
+  border-radius: 4px;
+}
+#command-dock #location-bar .dock-popover-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* Visible horizontal scrollbar on the pills row inside the location popover
+   (overrides the global hidden-scrollbar rule for #command-dock .location-pills). */
+#command-dock #location-bar .dock-popover-content .location-pills {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(123, 189, 211, 0.4) transparent;
+}
+#command-dock #location-bar .dock-popover-content .location-pills::-webkit-scrollbar {
+  display: block;
+  height: 6px;
+}
+#command-dock #location-bar .dock-popover-content .location-pills::-webkit-scrollbar-thumb {
+  background: rgba(123, 189, 211, 0.35);
+  border-radius: 3px;
+}
+#command-dock #location-bar .dock-popover-content .location-pills::-webkit-scrollbar-track {
+  background: transparent;
+}
+/* The pin button floats on the popover's top-right corner (absolute,
+   top:-1rem/right:-1rem). The location popover is now a scroll container
+   (max-height + overflow-y), and overflow clips absolutely-positioned
+   descendants at the padding box — the floating part would be cut off. Make
+   the button sticky INSIDE the scroll area so it stays clickable while the
+   tray content scrolls beneath it. */
+#command-dock #location-bar .dock-popover-content .dock-pin-btn {
+  position: sticky;
+  top: 0;
+  right: 0;
+  z-index: 3;
+  align-self: flex-end;
+  margin: 0;
 }
 
 #command-dock #control-panel .dock-popover-content {
