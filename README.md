@@ -32,9 +32,10 @@
 | **Seismic / USGS** | ✅ OPERATIONAL | Real-time earthquake feed, intensity rings |
 | **Fire / FIRMS** | ✅ OPERATIONAL | MODIS/VIIRS hotspots, perimeter polygons |
 | **Radio / SDR** | ✅ OPERATIONAL | RadioReference + custom scanners, frequency DB |
-| **Public CCTV / Axis** | ✅ OPERATIONAL | ~400 discovered cameras, MJPG extraction, sweep pool |
+| **Public CCTV / Axis** | ✅ OPERATIONAL | ~400 discovered cameras, live MJPEG projection, ENHANCE 2.0x, sweep pool |
 | **Precipitation Radar** | ✅ OPERATIONAL | RainViewer layer, Cesium EPSG:3857 tiling, no key |
 | **Voice Control** | ✅ OPERATIONAL | Hands-free, Web Speech API + local hotword |
+| **Windows EXE Installer** | ✅ OPERATIONAL | Single-file .exe (Go + WebView2), no Node needed, Release asset on `exe-v*` tags |
 
 ---
 
@@ -79,10 +80,12 @@
 - Proxy now: (1) probes Axis still endpoints (`/mjpg/1/image.jpg`, `/axis-cgi/jpg/image.cgi`), then (2) buffers stream just long enough to extract **first complete JPEG frame**
 - Remaining unreachable cameras → **red NO SIGNAL** state (visible degradation, not silent failure)
 
-### **6. STILL FRAMES, NOT LIVE VIDEO — BY DESIGN**
-- CCTV renders as **paced static snapshots** (~10s active, ~60s idle/ambient), not persistent MJPG streams
-- Public Axis/CCTV over plain HTTP are fragile; relaying full streams burns bandwidth/CPU for little gain
-- 10s still refresh = ~90% "live" feel at fraction of cost; single JPEG open, not a stream
+### **6. LIVE AXIS MJPEG PROJECTION — HEALTH-AWARE UPGRADE**
+- Projection runtime is **health-aware**: when a discovered Axis camera serves a real `multipart/x-mixed-replace` MJPG stream, the frozen snapshot plane **auto-upgrades to live-jpeg**
+- Live redraw via **RAF change-tolerant frame signature** — no flashing on refresh
+- **"ATTEMPTING TO CONNECT"** overlay while a live feed loads; **ENHANCE toggle 2.0x** scales panel + feed
+- Scrollable location popover; spinner anchored to its own flex slot
+- Unhealthy / plain-HTTP cameras stay on paced snapshots — live relaying only when the source is healthy
 
 ### **7. VISIBLE FEED STATES — SITUATIONAL AWARENESS**
 - **Awaiting first frame** → cyan **LOADING…** placeholder
@@ -131,6 +134,16 @@ npm test
 
 **Requires Node 22+**. Cesium ion token or Google Maps Platform key optional (enables photoreal 3D Tiles stack). RainViewer radar, CCTV, OpenSky, AISHub, USGS, FIRMS — all keyless by default.
 
+### **WINDOWS ONE-CLICK INSTALL — SINGLE-FILE EXE**
+
+No Node, no browser install, no source clone. Grab **`Evol-Eye-Installer.exe`** from the [Releases page](https://github.com/R0U5/Evol-Eye/releases):
+
+- **Single-file Windows executable** — Go + WebView2 wrapper; production bundle embedded in the binary
+- **No Node needed** — WebView2 runtime ships with Win11; Win10 installs it automatically on first run
+- **CI-built & checksummed** — cross-compiled with Zig, headless selftest on Linux + Windows runner, `SHA256SUMS.txt` attached on `exe-v*` tags
+- **Supply-chain hardened** — toolchain tarballs checksum-verified, actions SHA-pinned, stripped exe
+- Legacy cross-platform installer (Win/macOS/Linux) still available via `npm run build:installer`
+
 ---
 
 ## 🗂 **REPO STRUCTURE (CLASSIFIED OVERVIEW)**
@@ -143,9 +156,12 @@ Evol-Eye/
 │   ├── voice/              # Hands-free voice control pipeline
 │   ├── ui.js               # Main UI controller, radar toggle, visual presets
 │   └── main.js             # App bootstrap
-├── installer/              # Cross-platform installer (Win/macOS/Linux)
+├── installer/              # Installers: legacy cross-platform + single-file Windows exe
 │   ├── core.mjs            # Manifest, download, auth
 │   ├── runner.mjs          # Install orchestration
+│   ├── main.go             # Single-file Windows exe (Go + WebView2 wrapper)
+│   ├── go.mod              # Pins webview_go 0.10.0 (vendored)
+│   ├── vendor/             # Hermetic Go deps (patched EventToken.h)
 │   └── manifest.json       # Repo metadata (private: true)
 ├── config/
 │   └── cctv_sources_axis.json    # ~400 Axis camera catalog
@@ -181,7 +197,7 @@ Evol-Eye/
 ## 🔬 **TESTING & VERIFICATION**
 
 ```bash
-# Full test suite (2770+ tests)
+# Full test suite (2807 tests)
 npm test
 
 # Installer-specific tests (47 cases)
@@ -195,6 +211,25 @@ npm run lint
 ```
 
 **CI:** GitHub Actions — Node 24/26, Installer tests (macOS/Ubuntu/Windows), Windows onboarding. All must pass.
+
+---
+
+## ⚙️ **PERFORMANCE & RELIABILITY — OPTIMIZATION PASS**
+
+A dedicated optimization pass (merged Sep 10) cut wasted work across the render, data, and bundle paths:
+
+- **Traffic render-hold release + viewport culling** — animation loop no longer held by stale dot sets; off-screen work culled
+- **Terrain height cache LRU cap** — in-memory height cache bounded (10k entries)
+- **Flow-tile in-flight dedup** — concurrent identical tile fetches collapse to one
+- **CCTV canvas blit skip** — video projection feeds skip wasted canvas redraws
+- **Abort-on-disable** — earthquakes / FIRMS / missions poll fetches honor manager abort signal
+- **Radar listener detach** — StyleManager dispose no longer leaks state listeners
+- **Cloud loop 12fps throttle** — independent cloud render cadence capped
+- **Chunked vendor build** — satellite.js / mgrs / pbf / vector-tile split into cache-stable chunk
+- **CSS dead-selector purge** — dropped layout-promoting `will-change` on ring outline
+- **Voice geocode/nearby LRU bounding** — reverse-geocode + nearby-places caches bounded
+
+**Test gate:** 2806 pass / 0 fail / 1 skip (was 2795).
 
 ---
 
