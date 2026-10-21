@@ -3497,7 +3497,7 @@ const rocketLaunchesLayer = {
     renderMissionPanel();
   },
 
-  update({ signal = null } = {}) {
+  update(viewer, { signal = null } = {}) {
     return requestMissionUpdate(signal);
   },
 

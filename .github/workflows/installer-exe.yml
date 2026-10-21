@@ -60,7 +60,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Detect selftest module
+        id: detect
+        run: |
+          if compgen -G "installer/selftest/*.go" > /dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::installer/selftest has no Go module — skipping the selftest job."
+          fi
+
       - name: Install Node.js (checksum-verified)
+        if: steps.detect.outputs.present == 'true'
         run: |
           curl -fsSL --retry 3 -o /tmp/node.tar.gz \
             "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
@@ -75,12 +86,15 @@ jobs:
           PUPPETEER_SKIP_DOWNLOAD: '1'
 
       - name: Install locked dependencies
+        if: steps.detect.outputs.present == 'true'
         run: npm ci
 
       - name: Build production bundle
+        if: steps.detect.outputs.present == 'true'
         run: npm run build
 
       - name: Install Go toolchain (checksum-verified)
+        if: steps.detect.outputs.present == 'true'
         run: |
           curl -fsSL --retry 3 -o /tmp/go.tgz \
             "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
@@ -89,6 +103,7 @@ jobs:
           /usr/local/go/bin/go version
 
       - name: Build and run selftest
+        if: steps.detect.outputs.present == 'true'
         run: |
           npm run installer:exe:selftest -- --go /usr/local/go/bin/go
         env:

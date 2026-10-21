@@ -321,11 +321,20 @@ export class IntelHUD {
       bottomEl.textContent = `MGRS: ${mgrsLabel}  LAT: ${latDMS}  LON: ${lonDMS}`;
     }
 
-    // GSD (Ground Sample Distance): approximate resolution in meters per pixel
-    // derived from camera altitude. NIIRS (National Imagery Interpretability
-    // Rating Scale): 0-9 quality rating computed via the General Image Quality
-    // Equation (GIQE) simplified form: NIIRS = 10.25 - 3.32 * log10(GSD_inches).
-    const gsd = Math.max(0.01, altM * 0.000375);
+    // GSD (Ground Sample Distance): resolution in metres per pixel at the
+    // target plane. The camera's vertical frustum spans 2*altM*tan(fovy/2)
+    // metres, sampled by the viewport's pixel height — so the frustum FOV and
+    // canvas height are honoured rather than a fixed guess. NIIRS (National
+    // Imagery Interpretability Rating Scale): 0-9 quality rating computed via
+    // the General Image Quality Equation (GIQE) simplified form:
+    // NIIRS = 10.25 - 3.32 * log10(GSD_inches).
+    const frustum = camera.frustum;
+    const fovy = Number.isFinite(frustum?.fovy) ? frustum.fovy : null;
+    const sceneCanvas = this.viewer.scene?.canvas;
+    const canvasHeightPx = sceneCanvas?.clientHeight || sceneCanvas?.height || 0;
+    const gsd = fovy && canvasHeightPx > 0
+      ? Math.max(0.01, (altM * 2 * Math.tan(fovy / 2)) / canvasHeightPx)
+      : Math.max(0.01, altM * 0.000375);
     const gsdInches = gsd * 39.37;
     const niirs = Math.max(0, Math.min(9, 10.25 - 3.32 * Math.log10(gsdInches)));
     const gsdEl = document.getElementById('hud-gsd');
@@ -422,17 +431,21 @@ export class IntelHUD {
    */
   _toDMS(decimal, type) {
     const abs = Math.abs(decimal);
-    const deg = Math.floor(abs);
+    let deg = Math.floor(abs);
     const minFloat = (abs - deg) * 60;
-    const min = Math.floor(minFloat);
-    const sec = ((minFloat - min) * 60).toFixed(2);
+    let min = Math.floor(minFloat);
+    // Round to the displayed precision FIRST, then carry: 38.89999999 must not
+    // print as 38°53'60.00".
+    let sec = Math.round((minFloat - min) * 60 * 100) / 100;
+    if (sec >= 60) { sec -= 60; min += 1; }
+    if (min >= 60) { min -= 60; deg += 1; }
 
     let dir;
     if (type === 'lat') dir = decimal >= 0 ? 'N' : 'S';
     else dir = decimal >= 0 ? 'E' : 'W';
 
     const degStr = type === 'lon' ? String(deg).padStart(3, '0') : String(deg).padStart(2, '0');
-    return `${degStr}°${String(min).padStart(2, '0')}'${String(sec).padStart(5, '0')}"${dir}`;
+    return `${degStr}°${String(min).padStart(2, '0')}'${String(sec.toFixed(2)).padStart(5, '0')}"${dir}`;
   }
 
   /**

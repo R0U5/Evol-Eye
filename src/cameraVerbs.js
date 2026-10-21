@@ -901,13 +901,17 @@ function onTick() {
   const cam = _viewer.camera;
   const m = _active;
 
-  // `once` motions ease out and self-stop on budget exhaustion.
+  // `once` motions ease out and self-stop on budget exhaustion. Completion is
+  // deferred until AFTER the branches apply the final pose: interrupting here
+  // cleared the lookAt frame and then the orbit branch re-installed it with
+  // _active already null, leaving a stale target-anchored reference frame.
   let scale = 1;
+  let onceComplete = false;
   if (m.mode === 'once') {
     m.elapsed = (m.elapsed || 0) + dt;
     const t = Math.min(1, m.elapsed / ONCE.durationS);
     scale = 1 - (1 - t) * (1 - t); // ease-out progress share
-    if (t >= 1) { interruptCameraMotion('once-complete'); }
+    onceComplete = t >= 1;
   }
 
   try {
@@ -982,6 +986,9 @@ function onTick() {
       cam.setView({ destination: frame.eye, orientation: { direction: frame.direction, up: frame.up } });
       if (frame.finished) { interruptCameraMotion('route-complete'); return; }
     }
+    // Pose applied above (the orbit lookAt included) — now stop and clear the
+    // lookAt frame exactly once so the next drag/flyTo is world-anchored.
+    if (onceComplete) interruptCameraMotion('once-complete');
   } catch {
     interruptCameraMotion('tick-error');
   }

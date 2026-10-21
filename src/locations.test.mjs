@@ -135,7 +135,7 @@ test('existing modes unchanged: admin, city, neighborhood, precise POI', () => {
 // house/building check.
 
 test('nominatimGoogleTypes: house address maps to premise', () => {
-  // The reported bug: "[address redacted]"
+  // The reported bug: "1600 Example avenue, Sacramento, California"
   const house = {
     class: 'place', type: 'house', addresstype: 'place',
     address: {
@@ -757,42 +757,51 @@ test('searchAndFlyTo resolves through Nominatim even when no Google key is confi
 
 // ── Address-qualified detection & normalization (2026-09-08 camera-fence fix) ─
 // The camera-fence bug: Nominatim's viewbox + bounded=1 HARD-restricts results to
-// the camera box, so "[address redacted]" returned "no address
-// found" whenever the camera wasn't already over Sacramento. A fully-qualified
-// address must NOT be geofenced. These fixtures are the contract.
+// the camera box, so a fully-qualified address returned "no address found"
+// whenever the camera wasn't already over Sacramento. A fully-qualified address
+// must NOT be geofenced. These fixtures are the contract.
 
 test('normalizeAddressQuery: canonical input is a no-op (exact form)', () => {
   assert.equal(
-    normalizeAddressQuery('[address redacted]'),
-    '[address redacted]',
+    normalizeAddressQuery('1600 Example avenue, Sacramento, California'),
+    '1600 Example avenue, Sacramento, California',
   );
 });
 
 test('normalizeAddressQuery: expands sac/cal abbreviations, preserves avenue suffix', () => {
-  const normalized = normalizeAddressQuery('[address redacted]');
+  const normalized = normalizeAddressQuery('1600 Example avenue, Sac, Cal');
   assert.ok(normalized.includes('sacramento'), `expected sacramento, got ${normalized}`);
   assert.ok(normalized.includes('california'), `expected california, got ${normalized}`);
   assert.ok(normalized.includes('avenue'), `avenue suffix must be preserved, got ${normalized}`);
 });
 
 test('normalizeAddressQuery: fixes a malformed ordinal (5rd → 5th)', () => {
-  assert.equal(normalizeAddressQuery('[address redacted]'), '[address redacted]');
+  assert.equal(
+    normalizeAddressQuery('5rd Example avenue, Sac, Cal'),
+    '5th Example avenue, sacramento, california',
+  );
 });
 
 test('normalizeAddressQuery: keeps a correct ordinal (53rd stays 53rd)', () => {
-  assert.equal(normalizeAddressQuery('[address redacted]'), '[address redacted]');
+  assert.equal(
+    normalizeAddressQuery('53rd Example avenue, Sac, Cal'),
+    '53rd Example avenue, sacramento, california',
+  );
 });
 
 test('normalizeAddressQuery: does not expand "cal" inside "california"', () => {
   // "cal" in "california" is protected by \b — only a standalone token expands.
-  assert.equal(normalizeAddressQuery('[address redacted]'), '[address redacted]');
+  assert.equal(
+    normalizeAddressQuery('1600 Example avenue, Sacramento, California'),
+    '1600 Example avenue, Sacramento, California',
+  );
 });
 
 test('isAddressQualified: fully-qualified addresses qualify', () => {
-  assert.equal(isAddressQualified('[address redacted]'), true);
-  assert.equal(isAddressQualified('[address redacted]'), true);
-  assert.equal(isAddressQualified('[address redacted], ca'), true);
-  assert.equal(isAddressQualified('[address redacted]'), true);
+  assert.equal(isAddressQualified('1600 Example avenue, Sacramento, California'), true);
+  assert.equal(isAddressQualified('1600 Example avenue, California'), true);
+  assert.equal(isAddressQualified('1600 Example avenue, ca'), true);
+  assert.equal(isAddressQualified('1600 Example avenue, Sacramento, CA 95814'), true);
 });
 
 test('isAddressQualified: place and street names do NOT qualify', () => {
@@ -802,8 +811,8 @@ test('isAddressQualified: place and street names do NOT qualify', () => {
 });
 
 test('isAddressQualified: a street number alone (no location token) does not qualify', () => {
-  // "[address redacted]" has a street number but no city/state/postal token.
-  assert.equal(isAddressQualified('[address redacted]'), false);
+  // "1600 Example avenue" has a street number but no city/state/postal token.
+  assert.equal(isAddressQualified('1600 Example avenue'), false);
 });
 
 test('Nominatim: address-qualified query sends NO viewbox param', async () => {
@@ -825,7 +834,7 @@ test('Nominatim: address-qualified query sends NO viewbox param', async () => {
         results: [{
           lat: '38.5035669',
           lon: '-121.4404964',
-          display_name: '[address redacted]',
+          display_name: '1600 Example avenue, Sacramento, California, United States',
           class: 'place',
           type: 'house',
           boundingbox: ['38.50', '38.51', '-121.45', '-121.44'],
@@ -834,7 +843,7 @@ test('Nominatim: address-qualified query sends NO viewbox param', async () => {
     };
   };
   try {
-    await searchAndFlyTo(viewer, '[address redacted]', {});
+    await searchAndFlyTo(viewer, '1600 Example avenue, Sacramento, California', {});
     const nominatimUrl = requested.find((u) => u.startsWith('/api/geocode/nominatim?'));
     assert.ok(nominatimUrl, 'expected a Nominatim call');
     assert.ok(!nominatimUrl.includes('viewbox='), `address-qualified must NOT send viewbox, got ${nominatimUrl}`);
@@ -909,7 +918,7 @@ test('validation: a Chicago result for a Sacramento query is treated as not-foun
     throw new Error(`unexpected fetch: ${url}`);
   };
   try {
-    const plan = await searchAndFlyTo(viewer, '[address redacted]', {});
+    const plan = await searchAndFlyTo(viewer, '1600 Example avenue, Sacramento, California', {});
     assert.equal(plan, null, 'a Chicago result for a Sacramento query must be treated as not-found');
   } finally {
     globalThis.fetch = priorFetch;
@@ -936,7 +945,7 @@ test('validation: a matching Sacramento/CA result passes validation', async () =
           results: [{
             lat: '38.5035669',
             lon: '-121.4404964',
-            display_name: '[address redacted]',
+            display_name: '1600 Example avenue, Sacramento, California, United States',
             class: 'place',
             type: 'house',
             boundingbox: ['38.50', '38.51', '-121.45', '-121.44'],
@@ -947,7 +956,7 @@ test('validation: a matching Sacramento/CA result passes validation', async () =
     throw new Error(`unexpected fetch: ${url}`);
   };
   try {
-    const plan = await searchAndFlyTo(viewer, '[address redacted]', {});
+    const plan = await searchAndFlyTo(viewer, '1600 Example avenue, Sacramento, California', {});
     assert.ok(plan, 'a matching Sacramento result must pass validation');
     assert.equal(plan.navigationMode, 'precise-place');
   } finally {

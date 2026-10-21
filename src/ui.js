@@ -2352,11 +2352,15 @@ export class StyleManager {
     this._cctvFramePreloader = null;
     this._cctvFrameWatchdog = null;
     this._cctvLiveRetryTimer = null;
+    this._cctvFrameErrorHandler = null;
     // Live MJPEG feeds assign src directly (no preloader), so the element's
     // own error event is the only signal a stream dropped. Mark the badge
     // NO SIGNAL and auto-reconnect after a short backoff (mirrors the
     // projection runtime's LIVE_RETRY_BACKOFF_MS behavior).
-    this._cctvFrame?.addEventListener('error', () => {
+    // Stored (not inline) so dispose() can remove it; without that an
+    // HMR/dispose→init cycle stacks listeners and leaves stale retries
+    // firing into the new instance.
+    this._cctvFrameErrorHandler = () => {
       if (!this._cctvFrame?.dataset.currentSrc) return;
       this._cctvFrame.dataset.error = 'true';
       this._syncCctvSourceBadge(
@@ -2364,15 +2368,21 @@ export class StyleManager {
         !!this._cctvState?.enabled && !!this._dataManager?.isEnabled('cctv')
       );
       clearTimeout(this._cctvLiveRetryTimer);
+      // Capture the failing src + request token: if a camera switch lands
+      // within the backoff window, the stale retry must not clobber the
+      // newly committed feed (mirrors the watchdog's token guard).
+      const src = this._cctvFrame?.dataset.currentSrc;
+      const token = this._cctvFrameRequestToken;
       this._cctvLiveRetryTimer = setTimeout(() => {
-        const src = this._cctvFrame?.dataset.currentSrc;
-        if (src && this._cctvState?.activeCamera?.feedMode === 'live') {
-          this._cctvFrame.dataset.error = '';
-          this._cctvFrame.removeAttribute('src');
-          this._cctvFrame.src = src;
-        }
+        if (token !== this._cctvFrameRequestToken) return;
+        if (!src || this._cctvFrame?.dataset.currentSrc !== src) return;
+        if (this._cctvState?.activeCamera?.feedMode !== 'live') return;
+        this._cctvFrame.dataset.error = '';
+        this._cctvFrame.removeAttribute('src');
+        this._cctvFrame.src = src;
       }, 3000);
-    });
+    };
+    this._cctvFrame?.addEventListener('error', this._cctvFrameErrorHandler);
     this._cctvSourceBadge = document.getElementById('cctv-source-badge');
     this._cctvMeta = document.getElementById('cctv-meta');
     this._cctvSummary = document.getElementById('cctv-summary');
@@ -6300,68 +6310,96 @@ export class StyleManager {
     }
 
     this._cctvEnableBtn?.addEventListener('click', async () => {
-      await this._toggleCctvEnabled();
+      try {
+        await this._toggleCctvEnabled();
+      } catch (error) {
+        console.error('CCTV enable toggle failed', error);
+      }
     });
 
     this._cctvNearestBtn?.addEventListener('click', async () => {
-      if (!await this._toggleCctvEnabled(true)) return;
-      this._runExplicitCctvFocus(
-        () => cctvLayer.focusNearest({ focus: false }),
-        (cameraId) => cctvLayer.focusCamera(cameraId, 1.8),
-      );
+      try {
+        if (!await this._toggleCctvEnabled(true)) return;
+        this._runExplicitCctvFocus(
+          () => cctvLayer.focusNearest({ focus: false }),
+          (cameraId) => cctvLayer.focusCamera(cameraId, 1.8),
+        );
+      } catch (error) {
+        console.error('CCTV nearest-camera failed', error);
+      }
     });
 
     this._cctvPrevBtn?.addEventListener('click', async () => {
-      if (!await this._toggleCctvEnabled(true)) return;
-      this._runExplicitCctvFocus(
-        () => cctvLayer.cycleCamera(-1),
-        (cameraId) => cctvLayer.focusCamera(cameraId, 1.4),
-      );
+      try {
+        if (!await this._toggleCctvEnabled(true)) return;
+        this._runExplicitCctvFocus(
+          () => cctvLayer.cycleCamera(-1),
+          (cameraId) => cctvLayer.focusCamera(cameraId, 1.4),
+        );
+      } catch (error) {
+        console.error('CCTV previous-camera failed', error);
+      }
     });
 
     this._cctvNextBtn?.addEventListener('click', async () => {
-      if (!await this._toggleCctvEnabled(true)) return;
-      this._runExplicitCctvFocus(
-        () => cctvLayer.cycleCamera(1),
-        (cameraId) => cctvLayer.focusCamera(cameraId, 1.4),
-      );
+      try {
+        if (!await this._toggleCctvEnabled(true)) return;
+        this._runExplicitCctvFocus(
+          () => cctvLayer.cycleCamera(1),
+          (cameraId) => cctvLayer.focusCamera(cameraId, 1.4),
+        );
+      } catch (error) {
+        console.error('CCTV next-camera failed', error);
+      }
     });
 
     // SWEEP — jump to a random camera. Shift-click = Axis-only pool.
     // Uses the same focus path as NEXT/PREV; the layer skips fly-to for
     // unlocated (frame-only) cameras so the globe doesn't chase a NaN pin.
     this._cctvSweepBtn?.addEventListener('click', async (event) => {
-      if (!await this._toggleCctvEnabled(true)) return;
-      const axisOnly = event.shiftKey === true;
-      this._runExplicitCctvFocus(
-        () => cctvLayer.sweepCamera({ axisOnly }),
-        (cameraId) => cctvLayer.focusCamera(cameraId, 1.4),
-      );
+      try {
+        if (!await this._toggleCctvEnabled(true)) return;
+        const axisOnly = event.shiftKey === true;
+        this._runExplicitCctvFocus(
+          () => cctvLayer.sweepCamera({ axisOnly }),
+          (cameraId) => cctvLayer.focusCamera(cameraId, 1.4),
+        );
+      } catch (error) {
+        console.error('CCTV sweep failed', error);
+      }
     });
 
     this._cctvSelect?.addEventListener('change', async () => {
-      const cameraId = this._cctvSelect.value;
-      if (!cameraId) return;
-      if (!await this._toggleCctvEnabled(true)) return;
-      // Picking a camera from the dropdown flies to it. The catalog spans
-      // three metros, so a bare selection used to leave the view in the old
-      // city with a camera active thousands of km away.
-      this._runExplicitCctvFocus(
-        () => (cctvLayer.selectCamera(cameraId) ? cameraId : null),
-        (selectedId) => cctvLayer.focusCamera(selectedId, 2.2),
-      );
-      this._dataManager?.setLayerParams('cctv', { selectedCameraId: cameraId }, { origin: 'user' });
+      try {
+        const cameraId = this._cctvSelect.value;
+        if (!cameraId) return;
+        if (!await this._toggleCctvEnabled(true)) return;
+        // Picking a camera from the dropdown flies to it. The catalog spans
+        // three metros, so a bare selection used to leave the view in the old
+        // city with a camera active thousands of km away.
+        this._runExplicitCctvFocus(
+          () => (cctvLayer.selectCamera(cameraId) ? cameraId : null),
+          (selectedId) => cctvLayer.focusCamera(selectedId, 2.2),
+        );
+        this._dataManager?.setLayerParams('cctv', { selectedCameraId: cameraId }, { origin: 'user' });
+      } catch (error) {
+        console.error('CCTV camera selection failed', error);
+      }
     });
 
     this._cctvFocusBtn?.addEventListener('click', async () => {
-      const selected = this._cctvState?.activeCameraId || this._cctvSelect?.value;
-      if (!selected) return;
-      if (!await this._toggleCctvEnabled(true)) return;
-      this._runExplicitCctvFocus(
-        () => selected,
-        (cameraId) => cctvLayer.focusCamera(cameraId, 1.9),
-      );
-      this._dataManager?.setLayerParams('cctv', { selectedCameraId: selected }, { origin: 'user' });
+      try {
+        const selected = this._cctvState?.activeCameraId || this._cctvSelect?.value;
+        if (!selected) return;
+        if (!await this._toggleCctvEnabled(true)) return;
+        this._runExplicitCctvFocus(
+          () => selected,
+          (cameraId) => cctvLayer.focusCamera(cameraId, 1.9),
+        );
+        this._dataManager?.setLayerParams('cctv', { selectedCameraId: selected }, { origin: 'user' });
+      } catch (error) {
+        console.error('CCTV focus failed', error);
+      }
     });
 
     this._cctvCoverageBtn?.addEventListener('click', () => {
@@ -6785,7 +6823,13 @@ export class StyleManager {
 
     if (this._cctvSelect) {
       const shouldRebuild = this._cctvSelect.options.length !== cameras.length
-        || cameras.some((cam, idx) => this._cctvSelect.options[idx]?.value !== cam.id);
+        || cameras.some((cam, idx) => {
+          const option = this._cctvSelect.options[idx];
+          // Compare the label too: CCTV names/cities are externally sourced,
+          // so a rename under a stable id would otherwise leave stale text.
+          return option?.value !== cam.id
+            || option?.textContent !== `${cam.city} · ${cam.name}`;
+        });
       if (shouldRebuild) {
         this._cctvSelect.innerHTML = '';
         for (const camera of cameras) {
@@ -9554,6 +9598,9 @@ export class StyleManager {
     const QWERTY_KEYS = ['Q', 'W', 'E', 'R', 'T'];
 
     // Render city pills (no submenu wrappers — POI row is separate)
+    // Clear first: a dispose→init cycle would otherwise duplicate pills and
+    // stack a second listener on each.
+    this._locationPills.innerHTML = '';
     for (const [cityId, city] of Object.entries(CITY_POIS)) {
       const pill = document.createElement('button');
       pill.className = 'location-pill';
@@ -9774,7 +9821,16 @@ export class StyleManager {
       const pill = document.createElement('button');
       pill.className = 'poi-pill';
       pill.dataset.poiIndex = idx;
-      pill.innerHTML = `<span class="poi-pill-key">${QWERTY_KEYS[idx] || idx + 1}</span><span class="poi-pill-name">${poi.name}</span>`;
+      // DOM construction (textContent) rather than innerHTML: poi.name is a
+      // safe app constant today, but this keeps the sink inert if POI data
+      // ever becomes remote.
+      const keySpan = document.createElement('span');
+      keySpan.className = 'poi-pill-key';
+      keySpan.textContent = String(QWERTY_KEYS[idx] || idx + 1);
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'poi-pill-name';
+      nameSpan.textContent = String(poi.name ?? '');
+      pill.append(keySpan, nameSpan);
       pill.addEventListener('click', () => this._onPoiClick(cityId, idx));
       this._poiRow.appendChild(pill);
     });
@@ -10661,6 +10717,12 @@ export class StyleManager {
     this._trafficTransitionTimer = null;
     clearTimeout(this._cctvFrameWatchdog);
     this._cctvFrameWatchdog = null;
+    if (this._cctvFrameErrorHandler) {
+      this._cctvFrame?.removeEventListener('error', this._cctvFrameErrorHandler);
+      this._cctvFrameErrorHandler = null;
+    }
+    clearTimeout(this._cctvLiveRetryTimer);
+    this._cctvLiveRetryTimer = null;
     // Clear transitions
     this.transitions.clear();
   }

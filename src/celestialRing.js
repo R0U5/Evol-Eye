@@ -351,9 +351,14 @@ export class CelestialRing {
     this._debug = null;
     this._nextDrawAt = 0;
     this._renderScale = 1;
-    this._sunRenderKey = '';
-    this._moonRenderKey = '';
-    this._outlineRenderKey = '';
+    // Cached geometry keys as numeric components (no per-frame template
+    // strings) plus one mutable JulianDate reused in place while dirty.
+    this._outlineCx = NaN;
+    this._outlineCy = NaN;
+    this._outlineRadius = NaN;
+    this._sunInnerRadius = NaN;
+    this._geometryChanged = false;
+    this._time = new Cesium.JulianDate();
 
     this._sunInertial = new Cesium.Cartesian3();
     this._moonInertial = new Cesium.Cartesian3();
@@ -504,9 +509,10 @@ export class CelestialRing {
       if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
     this._ringOutline?.style.setProperty('display', 'none');
-    this._sunRenderKey = '';
-    this._moonRenderKey = '';
-    this._outlineRenderKey = '';
+    this._outlineCx = NaN;
+    this._outlineCy = NaN;
+    this._outlineRadius = NaN;
+    this._sunInnerRadius = NaN;
   }
 
   /** Resize the canvas backing store while drawing in CSS pixels. */
@@ -584,29 +590,33 @@ export class CelestialRing {
 
   /** Update the cached effect geometry only when camera distance or viewport changes. */
   _renderEffectLayers(cx, cy, radius, rayInnerRadius) {
-    const outlineKey = `${cx}:${cy}:${radius}`;
-    if (outlineKey !== this._outlineRenderKey) {
+    const inset = Math.round(rayInnerRadius);
+    const outlineChanged = cx !== this._outlineCx
+      || cy !== this._outlineCy
+      || radius !== this._outlineRadius;
+    this._geometryChanged = outlineChanged;
+    if (outlineChanged) {
       this._ringOutline.style.display = '';
       this._ringOutline.style.left = `${cx - radius}px`;
       this._ringOutline.style.top = `${cy - radius}px`;
       this._ringOutline.style.width = `${radius * 2}px`;
       this._ringOutline.style.height = `${radius * 2}px`;
-      this._outlineRenderKey = outlineKey;
+      this._outlineCx = cx;
+      this._outlineCy = cy;
+      this._outlineRadius = radius;
     }
 
-    const sunKey = `${outlineKey}:${Math.round(rayInnerRadius)}`;
-    if (sunKey !== this._sunRenderKey) {
+    if (outlineChanged || inset !== this._sunInnerRadius) {
       this._sunCtx.clearRect(0, 0, this._sunCanvas.width, this._sunCanvas.height);
       drawSunRays(this._sunCtx, cx, cy, radius, rayInnerRadius, 0);
       drawTaperedArc(this._sunCtx, cx, cy, radius, 0, '222, 190, 89', 0.56);
-      this._sunRenderKey = sunKey;
+      this._sunInnerRadius = inset;
     }
 
-    if (outlineKey !== this._moonRenderKey) {
+    if (outlineChanged) {
       this._moonCtx.clearRect(0, 0, this._moonCanvas.width, this._moonCanvas.height);
       drawMoonHaze(this._moonCtx, cx, cy, radius, 0);
       drawTaperedArc(this._moonCtx, cx, cy, radius, 0, '48, 201, 229', 0.42);
-      this._moonRenderKey = outlineKey;
     }
   }
 
@@ -638,8 +648,12 @@ export class CelestialRing {
 
     if (!wasVisible) this._ephemerisDirty = true;
 
-    const time = Cesium.JulianDate.now();
-    if (!this._updateEphemeris(time)) return;
+    // Recompute the planetary model only on the dirty edge; reuse the single
+    // mutable JulianDate in place to avoid a per-frame allocation.
+    if (this._ephemerisDirty) {
+      Cesium.JulianDate.now(this._time);
+      if (!this._updateEphemeris(this._time)) return;
+    }
     this._root.dataset.ephemerisUpdates = String(this._ephemerisUpdateCount);
     const camera = this.viewer.camera;
     const sunProjection = celestialScreenAngle(
@@ -682,18 +696,29 @@ export class CelestialRing {
       this._moonAngle,
       this._moonOpacity
     );
-    this._debug = {
-      enabled: true,
-      visible: true,
-      sunAngle: this._sunAngle,
-      moonAngle: this._moonAngle,
-      sunOpacity: this._sunOpacity,
-      moonOpacity: this._moonOpacity,
-      markersCollide,
-      ephemerisUpdates: this._ephemerisUpdateCount,
-      renderScale: this._renderScale,
-      disc: { ...disc },
-    };
+    this._debug = this._geometryChanged || !this._debug
+      ? {
+        enabled: true,
+        visible: true,
+        sunAngle: this._sunAngle,
+        moonAngle: this._moonAngle,
+        sunOpacity: this._sunOpacity,
+        moonOpacity: this._moonOpacity,
+        markersCollide,
+        ephemerisUpdates: this._ephemerisUpdateCount,
+        renderScale: this._renderScale,
+        disc: { ...disc },
+      }
+      : Object.assign(this._debug, {
+        visible: true,
+        sunAngle: this._sunAngle,
+        moonAngle: this._moonAngle,
+        sunOpacity: this._sunOpacity,
+        moonOpacity: this._moonOpacity,
+        markersCollide,
+        ephemerisUpdates: this._ephemerisUpdateCount,
+        renderScale: this._renderScale,
+      });
   }
 
   /** Read-only geometry snapshot for browser QA. */

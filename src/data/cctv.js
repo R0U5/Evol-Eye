@@ -333,6 +333,10 @@ let _viewer = null;
 let _billboards = null;
 let _records = [];
 let _recordById = new Map();
+/** Last successfully-loaded raw backend source list — reused when a later load hits a transport failure. */
+let _lastGoodSources = null;
+/** True when the most recent source load failed outright and the catalog fell back to cached/seed data. */
+let _sourcesDegraded = false;
 let _coverageEntities = [];
 let _projectionEntities = [];
 let _enabled = false;
@@ -1259,17 +1263,19 @@ function cityIdByName(cityName) {
 
 /**
  * Fetches configured camera sources from the backend.
- * @returns {Promise<Object[]>} Array of raw source objects, or empty on failure.
+ * @returns {Promise<Object[]|null>} Array of raw source objects, an empty
+ *   array when the backend reports no sources, or `null` on a transport
+ *   failure (outage) so the caller can distinguish the two.
  */
 async function loadCameraSources() {
   try {
     const resp = await fetch(SOURCE_ENDPOINT, { cache: 'no-store' });
-    if (!resp.ok) return [];
+    if (!resp.ok) return null;
     const data = await resp.json();
     if (!Array.isArray(data?.sources)) return [];
     return data.sources;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -5176,7 +5182,24 @@ const cctvLayer = {
     _viewer.scene.primitives.add(_billboards);
     registerSpriteCollection('cctv', _billboards);
 
-    const sources = await loadCameraSources();
+    const sourcesRaw = await loadCameraSources();
+    // A transport failure returns null. That is NOT the same as a backend with
+    // an intentionally empty source list: silently substituting the seed catalog
+    // would mask an outage as a healthy catalog. Reuse the last known-good
+    // source list when we have one; otherwise fall back to seeds — and flag the
+    // degraded state so callers don't mistake it for a clean load.
+    let sources;
+    if (sourcesRaw === null) {
+      _sourcesDegraded = true;
+      sources = _lastGoodSources ?? [];
+      console.warn(
+        `[Data:cctv] camera source load failed — using ${_lastGoodSources ? 'last known-good sources' : 'seed catalog'}`,
+      );
+    } else {
+      _sourcesDegraded = false;
+      _lastGoodSources = sourcesRaw;
+      sources = sourcesRaw;
+    }
     const catalogFromSources = buildCatalogFromSources(sources);
     const catalog = catalogFromSources.length ? catalogFromSources : seedCatalog();
 
@@ -5726,6 +5749,7 @@ const cctvLayer = {
       loading: _geoLoading,
       loadingLoaded: Math.min(_geoLoadDone, _geoLoadTotal),
       loadingTotal: _geoLoadTotal,
+      sourcesDegraded: _sourcesDegraded,
     };
   },
 

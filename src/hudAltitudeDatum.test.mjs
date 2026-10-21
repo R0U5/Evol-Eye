@@ -157,9 +157,14 @@ test('the sensor model keeps the ellipsoidal height it was tuned against', () =>
   // not readouts. Re-datuming them would silently move their thresholds, so
   // altM stays and altMslM is purely additive.
   assert.equal(
-    has(/const gsd = Math\.max\(0\.01, altM \* 0\.000375\);/),
+    has(/const fovy = Number\.isFinite\(frustum\?\.fovy\) \? frustum\.fovy : null;/),
     true,
-    'GSD must keep reading the raw camera height',
+    'GSD must be derived from the camera frustum field of view',
+  );
+  assert.equal(
+    has(/const gsd = fovy && canvasHeightPx > 0\s*\n\s*\? Math\.max\(0\.01, \(altM \* 2 \* Math\.tan\(fovy \/ 2\)\) \/ canvasHeightPx\)\s*\n\s*: Math\.max\(0\.01, altM \* 0\.000375\);/),
+    true,
+    'GSD must keep reading the raw camera height (altM), never the re-datumed MSL height',
   );
   assert.equal(
     has(/const band = this\._viewBand\(m\.altM\);/),
