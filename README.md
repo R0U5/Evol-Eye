@@ -1,4 +1,4 @@
-# EVOL Eye
+# Earth View Online Locator (EVOL) Eye
 
 EVOL Eye is an open‑source 3D globe that visualises live public data streams directly in the browser. It displays aircraft, ships, satellites, earthquakes, fires, radio transmissions, public cameras, and precipitation radar while keeping all processing local.
 
