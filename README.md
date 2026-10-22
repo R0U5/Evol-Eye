@@ -6,6 +6,7 @@ EVOL Eye is an open‑source 3D globe that visualises live public data streams d
 
 EVOL Eye is an independent fork of [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view) by Bilawal Sidhu. This fork rebrands the project, refines the interface, and adds new capabilities while preserving upstream credit. All upstream code retains its original MIT license; this fork's additions are MIT as well.
 
+![Original gif](https://github.com/bilawalsidhu/gods-eye-view/blob/main/docs/media/hero-open-source-reveal.gif)
 ## Capabilities
 
 | Capability | Status | Notes |
