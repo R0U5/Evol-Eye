@@ -123,7 +123,7 @@ export function altitudeRulerTicks(altitudeFt, count = 9) {
     const tickUnits = anchorUnits + index - half;
     const slot = tickUnits - altitudeUnits;
     return {
-      valueFt: Math.max(0, tickUnits * stepFt),
+      valueFt: tickUnits * stepFt,
       slot,
       depth: Math.abs(slot),
       major: tickUnits % 2 === 0,
@@ -170,7 +170,7 @@ export function speedRulerTicks(speedKt, count = 9) {
     const tickUnits = anchorUnits + index - half;
     const slot = tickUnits - speedUnits;
     return {
-      valueKt: Math.max(0, tickUnits * stepKt),
+      valueKt: tickUnits * stepKt,
       slot,
       depth: Math.abs(slot),
       major: tickUnits % 2 === 0,

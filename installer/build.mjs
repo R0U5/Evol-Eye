@@ -7,7 +7,13 @@
 //   npm run installer:exe                  # stage + selftest + windows exe
 //   npm run installer:exe -- --selftest-only
 //   npm run installer:exe -- --exe-only
+//   npm run installer:exe -- --require-selftest
 //   npm run installer:exe -- --go /path/to/go --zig /path/to/zig --out dist-installer
+//
+// The selftest stage needs the Go module under installer/selftest/. When that
+// directory holds no .go file the stage is skipped with a warning (the exe
+// build still runs); pass --require-selftest to make the absence a hard error
+// instead.
 //
 // Environment overrides: GO, GOOS, GOARCH, ZIG.
 //
@@ -49,11 +55,12 @@ function hostGoOS() {
 }
 
 function parseArgs(argv) {
-  const out = { selftestOnly: false, exeOnly: false, out: outDir };
+  const out = { selftestOnly: false, exeOnly: false, requireSelftest: false, out: outDir };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--selftest-only') out.selftestOnly = true;
     else if (a === '--exe-only') out.exeOnly = true;
+    else if (a === '--require-selftest') out.requireSelftest = true;
     else if (a === '--out') out.out = path.resolve(argv[++i]);
     else if (a === '--go') process.env.GO = argv[++i];
     else if (a === '--zig') process.env.ZIG = argv[++i];
@@ -96,6 +103,14 @@ function buildEnv() {
   const env = { ...process.env, GOOS, GOARCH, CGO_ENABLED: '1' };
   if (GOOS !== hostGoOS()) Object.assign(env, crossToolchainEnv());
   return env;
+}
+
+function hasSelftestModule() {
+  try {
+    return fs.readdirSync(path.join(here, 'selftest')).some((f) => f.endsWith('.go'));
+  } catch {
+    return false;
+  }
 }
 
 function stageAppBundle() {
@@ -170,12 +185,23 @@ async function writeSums(files) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   fs.mkdirSync(opts.out, { recursive: true });
-  const doSelftest = opts.selftestOnly || (!opts.exeOnly && !opts.selftestOnly);
+  let doSelftest = opts.selftestOnly || (!opts.exeOnly && !opts.selftestOnly);
   const doExe = opts.exeOnly || (!opts.exeOnly && !opts.selftestOnly);
 
   try {
     await verifyGo();
     console.log(`evol-eye installer: go ${GOOS}/${GOARCH}, out=${opts.out}`);
+
+    // The selftest stage compiles installer/selftest. When that Go module is
+    // absent, fail only if explicitly required; otherwise warn and keep going
+    // so the exe build (which does not need it) still succeeds.
+    if (doSelftest && !hasSelftestModule()) {
+      if (opts.requireSelftest) {
+        throw new Error('installer/selftest has no Go module — cannot run the selftest stage');
+      }
+      console.warn('evol-eye installer: WARNING — installer/selftest has no .go files; skipping the selftest stage.');
+      doSelftest = false;
+    }
 
     if (doSelftest) {
       console.log('evol-eye installer: staging web bundle (selftest)…');

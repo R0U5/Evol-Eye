@@ -343,7 +343,7 @@ export const CANCELLED_SEARCH = Object.freeze({ cancelled: true });
 
 // ── Address-qualified detection & normalization ──────────────────────────────
 // The camera-fence bug (2026-09-08): Nominatim's viewbox + bounded=1 HARD-restricts
-// results to the camera box, so a fully-qualified address ("[address redacted] Sacramento
+// results to the camera box, so a fully-qualified address ("1600 Example avenue, Sacramento, California Sacramento
 // California") returned "no address found" whenever the camera wasn't already over
 // the target. A fully-qualified address must NOT be geofenced to the camera. These
 // helpers detect address-qualified queries and normalize address variations so
@@ -373,7 +373,7 @@ const LOCATION_TOKEN_RE = /\b(sacramento|sac|california|cal)\b|\b(?:al|ak|az|ar|
 /**
  * True when a query is a fully-qualified street address (a street number AND a
  * city/state/postal token). Such queries must NOT be geofenced to the camera —
- * "[address redacted]" is unambiguous and must resolve wherever
+ * "1600 Example avenue, Sacramento, California" is unambiguous and must resolve wherever
  * the camera is. Place/street names ("Sixth Street", "Zilker Park") stay fenced.
  * @param {string} query
  * @returns {boolean}
@@ -502,7 +502,7 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
   // still turns the search bar into a working address finder.
   //
   // A fully-qualified address (street number + city/state) is NOT geofenced: the
-  // camera box would hard-restrict "[address redacted]" to zero
+  // camera box would hard-restrict "1600 Example avenue, Sacramento, California" to zero
   // results whenever the camera isn't already over Sacramento. Address-qualified
   // queries drop the bounds/viewbox bias entirely.
   let geocode = null;
@@ -528,7 +528,7 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
   }
 
   // Part C: validate the result against the ORIGINAL query's explicit city/state
-  // tokens. "[address redacted]" resolving to Chicago must surface as
+  // tokens. "1600 Example avenue, Sacramento, California" resolving to Chicago must surface as
   // "no address found", not fly the user to the wrong city.
   if (geocode && !resultMatchesQueryTokens(originalQuery, geocode.label)) {
     geocode = null;

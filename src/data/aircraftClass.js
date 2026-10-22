@@ -82,12 +82,15 @@ const OPENSKY_CATEGORY = {
   7: 'fastjet',    // High performance (>5g, >400 kt)
   8: 'helicopter', // Rotorcraft
   9: 'glider',
+  10: 'glider',    // Lighter-than-air (low-dynamic envelope, shared glyph)
+  14: 'uav',       // Unmanned aerial vehicle
 };
 
 /** ADS-B emitter-category string → class. */
 const EMITTER_CATEGORY = {
   A1: 'light', A2: 'light', A3: 'airliner', A4: 'airliner',
   A5: 'widebody', A6: 'fastjet', A7: 'helicopter', B1: 'glider',
+  B2: 'glider', B5: 'uav',
 };
 
 export function classifyAircraft({ typeCode, category } = {}) {

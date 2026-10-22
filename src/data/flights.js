@@ -297,8 +297,10 @@ const _focusEvidenceIds = new Set();
 let _positionHistory = new Map();
 /** @type {boolean} True once ensureGeoidReady() has resolved (awaited once at enable()) */
 let _geoidReady = false;
-/** @type {Map<string, number>} icao24 -> geoid undulation N (m), cached (negligible drift per-aircraft). */
+/** @type {Map<string, {n:number, lat:number, lon:number}>} icao24 -> cached geoid undulation N (m) plus the point it was computed for. */
 const _geoidNCache = new Map();
+/** @type {number} Degrees of drift before a cached geoid N is re-evaluated (N spans ~-106..+85 m). */
+const GEOID_N_CELL_DEG = 0.25;
 /** @type {number} Current number of visible aircraft */
 let _count = 0;
 /** @type {number|null} Epoch ms of last successful API update */
@@ -778,6 +780,9 @@ const COURSE_SLEW_DT_MAX_SEC = 0.25;
 const ENRICH_MAX_INFLIGHT = 4;
 /** Min ms between request dispatches — the drip that bounds the fan-out to ≤5/s. */
 const ENRICH_DISPATCH_GAP_MS = 200;
+// Hard ceiling on each adsbdb enrichment fetch so a hung socket can never pin
+// the ENRICH_MAX_INFLIGHT pool (and stall the ambient type sweep) forever.
+const ENRICH_FETCH_TIMEOUT_MS = 10000;
 let _enrichActive = 0;
 let _enrichLastDispatchMs = 0;
 /** @type {ReturnType<typeof setTimeout>|null} pending drip wake-up */
@@ -810,7 +815,7 @@ function _drainEnrich() {
     _enrichLastDispatchMs = Date.now();
     const job = _enrichQueue.shift();
     _enrichActive += 1;
-    fetch(job.url)
+    fetch(job.url, { signal: AbortSignal.timeout(ENRICH_FETCH_TIMEOUT_MS) })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => { if (data && data.found) job.onData(data); })
       .catch(() => { /* enrichment never surfaces errors */ })
@@ -4237,14 +4242,22 @@ const flightsLayer = {
         // never `alt` directly.
         const alt = stickyNumber(baro_alt, prevMeta?.altitude, onGround ? 0 : 10000);
 
-        // geoid undulation N: cached per-aircraft (negligible drift — see
-        // task brief) once the geoid grid has loaded; unavailable pre-load
-        // just means the baro fallback branch below adds N=0 for a beat.
-        let geoidN = _geoidNCache.get(icao24);
-        if (geoidN === undefined && _geoidReady) {
-          geoidN = geoidHeight(lat, lon);
-          _geoidNCache.set(icao24, geoidN);
+        // geoid undulation N: cached per-aircraft once the geoid grid has
+        // loaded, but RE-EVALUATED once the contact has drifted more than
+        // GEOID_N_CELL_DEG from the point N was computed for. N spans
+        // ~-106..+85 m, so a stale departure-airport value is tens of metres
+        // of vertical error for the baro→ellipsoidal fallback below. The
+        // cache stores {n, lat, lon}; the in-cell read path allocates nothing.
+        // Unavailable pre-load just means the baro fallback branch adds N=0
+        // for a beat.
+        let geoidEntry = _geoidNCache.get(icao24);
+        if (_geoidReady && (!geoidEntry
+            || Math.abs(lat - geoidEntry.lat) > GEOID_N_CELL_DEG
+            || Math.abs(lon - geoidEntry.lon) > GEOID_N_CELL_DEG)) {
+          geoidEntry = { n: geoidHeight(lat, lon), lat, lon };
+          _geoidNCache.set(icao24, geoidEntry);
         }
+        const geoidN = geoidEntry ? geoidEntry.n : undefined;
 
         // on_ground surface prior: ONLY synchronous warm-cache reads here —
         // never a per-aircraft network fetch inside the poll loop (see the

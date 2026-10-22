@@ -430,6 +430,12 @@ let _fadeTransFar = 10000;
 let _flowStatusPromise = null;
 /** @type {ReturnType<typeof setInterval>|null} Enable-time retry until the first load commits. */
 let _enableKickTimer = null;
+/** @type {number} Consecutive enable-kick attempts — bounds the retry so a persistent Overpass outage can't re-drive onCameraChanged forever. */
+let _enableKickAttempts = 0;
+/** Base delay (ms) for the enable kick; each retry doubles it (exponential backoff). */
+const ENABLE_KICK_BASE_DELAY_MS = 1500;
+/** Hard cap on enable-kick retries before giving up (logged once). */
+const ENABLE_KICK_MAX_ATTEMPTS = 6;
 /** @type {number} 0–100 int — matched roads / roads with any flow candidates */
 let _flowCoveragePct = 0;
 /** @type {Function|null} Development-only camera moveEnd timing disposer. */
@@ -2383,8 +2389,11 @@ async function loadRoadsForBounds(bounds, altitude, trace = null, prefetchRing =
       if (prefetchRing && loadSucceeded) {
         prefetchNeighborRing(clamped, altitude);
       }
+      // Only this generation owns the controller. A superseded load's finally
+      // must not null the NEWER load's AbortController (that would make it
+      // un-abortable) — the generation guard scopes the clear to our own load.
+      _activeFetchAbort = null;
     }
-    _activeFetchAbort = null;
   }
 }
 
@@ -2593,15 +2602,27 @@ const trafficLayer = {
     // that then parks never re-fires camera.changed. Retry cheaply until the
     // first load commits, then self-clear. Also acts as a safety kick if a
     // failed first fetch left the viewport unloaded while parked.
-    clearInterval(_enableKickTimer);
-    _enableKickTimer = setInterval(() => {
-      if (!_enabled || _lastUpdate) {
-        clearInterval(_enableKickTimer);
+    clearTimeout(_enableKickTimer);
+    _enableKickAttempts = 0;
+    const scheduleEnableKick = () => {
+      const attempt = ++_enableKickAttempts;
+      if (attempt > ENABLE_KICK_MAX_ATTEMPTS) {
+        console.warn(
+          `[Data:Traffic] enable kick gave up after ${ENABLE_KICK_MAX_ATTEMPTS} attempts`,
+        );
         _enableKickTimer = null;
         return;
       }
-      if (!_fetching) onCameraChanged();
-    }, 1500);
+      _enableKickTimer = setTimeout(() => {
+        if (!_enabled || _lastUpdate) {
+          _enableKickTimer = null;
+          return;
+        }
+        if (!_fetching) onCameraChanged();
+        scheduleEnableKick();
+      }, ENABLE_KICK_BASE_DELAY_MS * 2 ** (attempt - 1));
+    };
+    scheduleEnableKick();
   },
 
   /**
@@ -2614,8 +2635,9 @@ const trafficLayer = {
     _enabled = false;
     syncTrafficRenderHold(); // _enabled=false → always releases
     clearTimeout(_fetchTimeout);
-    clearInterval(_enableKickTimer);
+    clearTimeout(_enableKickTimer);
     _enableKickTimer = null;
+    _enableKickAttempts = 0;
     cancelActiveFetch();
     // Cancel any in-flight neighbor prefetches (P0.3).
     for (const controller of _prefetchControllers) controller.abort();

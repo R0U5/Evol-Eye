@@ -378,7 +378,7 @@ const aisLiveVesselsLayer = {
     // the registry resolver reduces it to the record's mmsi (a string key).
     registerPickOwner('ais-live-vessels', (pickedId) => state.vesselMap.has(pickedId));
     restoreSpriteOrderOnEnable('ais', activeViewer);
-    return loadLivePositions(activeViewer);
+    return loadLivePositions(activeViewer).then(() => true);
   },
 
   disable() {
@@ -399,9 +399,9 @@ const aisLiveVesselsLayer = {
     state.loadingLabel = '';
   },
 
-  update(viewer) {
+  update(viewer, { signal = null } = {}) {
     if (!state.enabled) return Promise.resolve();
-    return loadLivePositions(viewer || state.viewer);
+    return loadLivePositions(viewer || state.viewer, { signal });
   },
 
   destroy(viewer) {
@@ -835,8 +835,8 @@ function markAisUnavailable(reason) {
   state.stale = state.count > 0;
 }
 
-async function loadLivePositions(viewer) {
-  if (!viewer || state.loading) return;
+async function loadLivePositions(viewer, { signal: externalSignal = null } = {}) {
+  if (!viewer || state.loading) return false;
   state.loading = true;
   state.loadingLabel = state.loaded ? 'refreshing...' : 'loading...';
   const requestController = new AbortController();
@@ -847,9 +847,14 @@ async function loadLivePositions(viewer) {
     const url = liveApiUrl();
     // Combine the layer's teardown-abort with a hard timeout so a hung upstream
     // can't wedge the poll indefinitely (parity with the track fetch + flights).
+    // The manager's lifecycle signal is folded in when supplied so a superseded
+    // refresh is cancellable too.
+    const timeoutSignal = AbortSignal.timeout(10000);
+    const abortSignals = [requestController.signal, timeoutSignal];
+    if (externalSignal) abortSignals.push(externalSignal);
     const signal = typeof AbortSignal.any === 'function'
-      ? AbortSignal.any([requestController.signal, AbortSignal.timeout(10000)])
-      : requestController.signal;
+      ? AbortSignal.any(abortSignals)
+      : (externalSignal || requestController.signal);
     const response = await fetch(url, {
       signal,
       cache: 'no-store',
@@ -885,6 +890,7 @@ async function loadLivePositions(viewer) {
       state.abort = null;
     }
   }
+  return true;
 }
 
 /** True while a request still owns this enabled layer lifecycle. */

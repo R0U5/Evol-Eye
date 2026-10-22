@@ -2377,16 +2377,22 @@ function extractFunctionCalls(event) {
 }
 
 // True when an error payload is the benign result of deleting a viewport
-// screenshot the server had already truncated (M14). Non-fatal if EITHER the
-// error code is item_not_found OR it echoes the event_id of a delete we issued.
-// The event_id match narrows the code-only whitelist so an unrelated
-// item_not_found (should one ever arise) still surfaces normally.
+// screenshot the server had already truncated (M14). Non-fatal if EITHER it
+// echoes the event_id of a delete we issued, OR it is a bare item_not_found
+// with no event_id to correlate.
+//
+// The echoed-id match narrows the code-only whitelist: an item_not_found that
+// carries an event_id we never issued is NOT ours and must surface normally
+// rather than being swallowed by the code check alone.
 export function isBenignViewportDeleteError(payload, pendingDeleteIds = null) {
   if (!payload || payload.type !== 'error') return false;
   const echoedId = payload.event_id;
   if (echoedId && pendingDeleteIds && pendingDeleteIds.has(echoedId)) return true;
   const code = payload.error?.code;
-  return code === 'item_not_found';
+  if (code !== 'item_not_found') return false;
+  // An unrelated item_not_found that echoes a foreign event_id stays fatal.
+  if (echoedId) return false;
+  return true;
 }
 
 function callDedupeKeys(call) {

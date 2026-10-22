@@ -48,6 +48,17 @@ export function defaultDeps() {
   };
 }
 
+/**
+ * Lightweight sanity check on a resolved install path. sanitizeInstallDir()
+ * only path.resolve()s, so reject structurally implausible values (empty,
+ * control characters, or absurdly long) before they are ever used.
+ */
+function assertSaneInstallDir(installDir) {
+  if (!installDir || installDir.length > 240 || /[\u0000-\u001f]/.test(installDir)) {
+    throw new InstallError('Install directory path is not usable', 'BAD_INSTALL_DIR');
+  }
+}
+
 function throwIfAborted(signal) {
   if (signal && signal.aborted) {
     throw new InstallError('Installation cancelled', 'CANCELLED');
@@ -244,15 +255,27 @@ async function createDesktopShortcut(installDir, deps, emit) {
   const desktop = path.join(deps.env.USERPROFILE, 'Desktop');
   const linkPath = path.join(desktop, "EVOL Eye.lnk");
   const cmdPath = path.join(installDir, 'EVOL Eye.cmd');
+  // SECURITY: never interpolate user-controlled paths into the PowerShell
+  // -Command string — JSON.stringify() is not PowerShell quoting, so a path
+  // containing a quote could break out of the string literal and execute.
+  // Pass every value through the process environment instead and read it back
+  // as $env:… (data, not code) inside the script.
   const script = [
-    'New-Item -ItemType Directory -Force -Path ' + JSON.stringify(desktop) + ' | Out-Null;',
-    '$s=(New-Object -ComObject WScript.Shell).CreateShortcut(' + JSON.stringify(linkPath) + ');',
-    '$s.TargetPath=' + JSON.stringify(cmdPath) + ';',
-    '$s.WorkingDirectory=' + JSON.stringify(installDir) + ';',
+    'New-Item -ItemType Directory -Force -Path $env:EVOL_EYE_DESKTOP | Out-Null;',
+    '$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:EVOL_EYE_LINK);',
+    '$s.TargetPath=$env:EVOL_EYE_TARGET;',
+    '$s.WorkingDirectory=$env:EVOL_EYE_WORKDIR;',
     '$s.Save();',
   ].join(' ');
+  const shortcutEnv = {
+    ...deps.env,
+    EVOL_EYE_DESKTOP: desktop,
+    EVOL_EYE_LINK: linkPath,
+    EVOL_EYE_TARGET: cmdPath,
+    EVOL_EYE_WORKDIR: installDir,
+  };
   try {
-    await execSpooled('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { cwd: installDir, env: deps.env }, emit, undefined);
+    await execSpooled('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], { cwd: installDir, env: shortcutEnv }, emit, undefined);
     emit({ type: 'log', level: 'info', text: `Desktop shortcut created: ${linkPath}` });
   } catch (err) {
     emit({ type: 'log', level: 'warn', text: `Could not create a desktop shortcut: ${err.message}` });
@@ -276,6 +299,7 @@ export async function runInstall(options) {
     overrides.installDir || defaultInstallDir(deps.platform, deps.env),
   );
   if (!installDir) throw new InstallError('A valid install directory is required', 'BAD_INSTALL_DIR');
+  assertSaneInstallDir(installDir);
 
   const appPort = resolveAppPort(manifest, overrides);
   const mode = overrides.mode === 'development' ? 'development' : 'production';

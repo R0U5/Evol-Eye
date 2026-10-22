@@ -246,7 +246,7 @@ export function createFirmsHeatmapLayer({
       removeLodWatcher();
     },
 
-    async update({ signal = null } = {}) {
+    async update(viewer, { signal = null } = {}) {
       if (_destroyed || !_enabled || _loading) return;
       // Scheduled 10-minute poll (and the manager's immediate first update):
       // refetch live fires through the proxy and re-render. Viewport-driven
