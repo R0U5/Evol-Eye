@@ -24,7 +24,7 @@ EVOL Eye is an independent fork of [God's Eye View](https://github.com/bilawalsi
 
 ## What Is Different in This Fork
 
-- **Rebranded interface.** "God's Eye View" becomes EVOL Eye, with a red theme (upstream's cyan) and updated branding, logo, and loader.
+- **Rebranded interface.** Added red theme (upstream's cyan) and updated branding, logo, and loader.
 - **Dark map stack.** Upstream's `tile.openstreetmap.org` (which 403s for non-compliant browsers) is replaced with CartoDB Dark Matter — keyless and policy-friendly.
 - **Precipitation radar overlay.** RainViewer radar imagery, toggleable from Display Settings. No API key; personal/educational use per RainViewer's terms. Unavailable honestly when the current map stack cannot render it.
 - **Public CCTV layer.** Sweep controls, click-to-focus camera flights, and a health-aware projection runtime: cameras serving live MJPG streams auto-upgrade to live feeds; unreachable cameras show a clear "no signal" state instead of failing silently.
