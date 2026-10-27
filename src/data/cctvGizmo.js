@@ -119,8 +119,9 @@ const RING_RADIUS_FACTOR = 0.12;
 const RING_RADIUS_MIN_M = 6;
 const RING_RADIUS_MAX_M = 40;
 const ARROW_LENGTH_FACTOR = 1.6;
-const DRAG_THROTTLE_MS = 16;
-const HOVER_THROTTLE_MS = 120;
+// Adaptive throttle: 0ms for drag (use rAF instead), 100ms for hover (10fps)
+const DRAG_THROTTLE_MS = 0; // Use rAF instead of throttle for drag
+const HOVER_THROTTLE_MS = 100;
 
 const COLOR_RING_HEADING = Cesium.Color.fromCssColorString('#35d8ff');
 const COLOR_RING_PITCH = Cesium.Color.fromCssColorString('#ff5fd0');

@@ -47,13 +47,14 @@ export const CCTV_CARD_THUMB_H = 65;
 export const CCTV_FRAME_CANVAS_W = 230;
 export const CCTV_FRAME_CANVAS_H = 130;
 /**
- * Min screen separation between accepted card anchors (greedy declutter).
- * Owner field test 2026-07-30: 130 read too sparse once the HUD safe-zone
- * filter started dropping cards as well. 134 still exceeds the card box width
- * (123 px = 115 thumb + 2*4 padding) so accepted boxes cannot overlap. This is
- * THE density knob.
- */
-export const CCTV_CARD_MIN_SEP_PX = 134;
+ /** Min screen separation between accepted card anchors (greedy declutter).
+   * Owner field test 2026-07-30: 130 read too sparse once the HUD safe-zone
+   * filter started dropping cards as well. 134 still exceeds the card box width
+   * (123 px = 115 thumb + 2*4 padding) so accepted boxes cannot overlap. Reduced
+   * from 134 to 90 to allow more cards on screen while preventing overlap.
+   * This is THE density knob.
+   */
+ export const CCTV_CARD_MIN_SEP_PX = 90;
 /** Ambient cards yield the top HUD band to mission text and controls. */
 export const CCTV_CARD_SAFE_TOP_RATIO = 0.18;
 export const CCTV_CARD_SAFE_TOP_MAX_PX = 150;
