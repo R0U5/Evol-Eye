@@ -247,9 +247,16 @@ export function distributeCctvCards(candidates, {
  * @param {number} [options.viewW] - Viewport width (CSS px) — enables the
  *   screen-distribution pass.
  * @param {number} [options.viewH] - Viewport height (CSS px).
+ * @param {string} [options.activeCameraId] - Camera ID to exclude from cards.
  * @returns {{cardIds:string[],budgets:{cardLimit:number}}}
  */
-export function selectCctvLod(candidates, { cameraHeightM, incumbentIds, viewW, viewH } = {}) {
+export function selectCctvLod(candidates, { cameraHeightM, incumbentIds, viewW, viewH, activeCameraId } = {}) {
+  // Exclude active camera from ambient cards - it has the monitor plane
+  const activeId = activeCameraId;
+  const filteredCandidates = activeId
+    ? (Array.isArray(candidates) ? candidates : []).filter(c => c && c.id !== activeId)
+    : (Array.isArray(candidates) ? candidates : []);
+
   const budgets = cctvLodBudgets(cameraHeightM);
   const incumbents = incumbentIds instanceof Set ? incumbentIds : new Set(incumbentIds || []);
   const screened = hasFiniteCctvViewport(viewW, viewH);
@@ -257,7 +264,7 @@ export function selectCctvLod(candidates, { cameraHeightM, incumbentIds, viewW, 
     // Preserve the pre-refinement nearest-first path byte-for-behavior,
     // including its acceptance of any non-empty string ID. The stricter
     // valid-viewport rules below must not leak into this compatibility branch.
-    const inView = (Array.isArray(candidates) ? candidates : [])
+    const inView = (Array.isArray(filteredCandidates) ? filteredCandidates : [])
       .filter((candidate) => candidate && typeof candidate.id === 'string' && candidate.id)
       .map((candidate) => ({
         id: candidate.id,

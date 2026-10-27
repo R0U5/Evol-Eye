@@ -3,7 +3,7 @@ import { installationFeedback } from './data/installationFeedback.js';
 export const LOADING_REVEAL_DELAY_MS = 160;
 export const LOADING_TERMINAL_DWELL_MS = 2200;
 export const LOADING_FAILURE_DWELL_MS = 5000;
-export const LOADING_LONG_THRESHOLD_MS = 30000;
+export const LOADING_LONG_THRESHOLD_MS = 5000;
 export const TRAFFIC_SYNC_CONFIRM_MS = 1500;
 
 function finiteCount(value) {
@@ -204,7 +204,7 @@ export function reduceTrafficSyncFeedback(previous, {
     // "LIVE · TomTom flow · 0% cov  100%". Coverage is the honest number, so
     // it is the only one left standing; the progress slot belongs to work in
     // flight.
-    progressText: '',
+    progressText: visible ? '100%' : '',
   };
 }
 
@@ -302,6 +302,10 @@ export function presentLoadingFeedback(state, summary, nowMs) {
     const message = installationFeedback(site.installationRetry);
     const [label, detail] = message.split(' — ');
     return { state: 'retry', label: label.toUpperCase(), detail: detail || '' };
+  }
+  // If retry is active but there are other failures, show the failure instead
+  if (site && otherFailure) {
+    return { state: 'error', label: 'LOAD FAILED', detail: 'Installation retrying with other layer failures' };
   }
   if (!state?.visible) return null;
   if (state.phase === 'terminal') {

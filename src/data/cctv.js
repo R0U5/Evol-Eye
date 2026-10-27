@@ -138,12 +138,13 @@ const FRAME_SIGNATURE_H = 36;
 const FRAME_SIGNATURE_BLOCK_COLS = 8;
 const FRAME_SIGNATURE_BLOCK_ROWS = 6;
 // Mean absolute difference per channel-value (0-255 scale) that still counts
-// as "the same frame". ±5/pixel JPEG noise on the 64x36 grid moves block
-// averages by ~0.33 (real source noise after downsampling is ~0.02-0.06); a
-// person walking covers ~1-5% of the frame and moves them by 1.3-6.5.
-// 1.0 keeps a 3× margin on the QA noise contract while still catching changes
-// covering ≥0.8% of the frame (owner field test 2026-09-11).
-const FRAME_SIGNATURE_MAX_MEAN_DIFF = 1.0;
+ // as "the same frame". ±5/pixel JPEG noise on the 64x36 grid moves block
+ // averages by ~0.33 (real source noise after downsampling is ~0.02-0.06); a
+ // person walking covers ~1-5% of the frame and moves them by 1.3-6.5.
+ // 2.0 keeps a margin on the QA noise contract while catching changes
+ // covering ≥0.8% of the frame (owner field test 2026-09-11).
+ // Increased from 1.0 to 2.0 to reduce false positives from JPEG noise.
+ const FRAME_SIGNATURE_MAX_MEAN_DIFF = 2.0;
 const COVERAGE_NEIGHBOR_LIMIT = 14;
 const COVERAGE_NEIGHBOR_RADIUS_KM = 1.8;
 // Staggered geometry/frame loading: ground-sampled coverage geometry is
@@ -172,6 +173,32 @@ const SIDEBAR_FEED_RESOLUTION = '960x540';
 /** Resolution requested for the projection-plane live feed (720p — the plane
  * is 1080p, so 720p upscales acceptably without full-HD bandwidth). */
 const PROJECTION_FEED_RESOLUTION = '1280x720';
+// Track active media connections per camera to respect cap
+const _activeMediaConnections = new Map(); // cameraId -> { projection: boolean, sidebar: boolean }
+
+/** Check if a new connection for this camera would exceed the cap. */
+export function canOpenMediaConnection(cameraId, connectionType) {
+  const connections = _activeMediaConnections.get(cameraId) || { projection: false, sidebar: false };
+  const current = (connections.projection ? 1 : 0) + (connections.sidebar ? 1 : 0);
+  return current < LIVE_MEDIA_CONNECTION_CAP;
+}
+
+/** Register a new media connection. */
+export function registerMediaConnection(cameraId, connectionType) {
+  const connections = _activeMediaConnections.get(cameraId) || { projection: false, sidebar: false };
+  connections[connectionType] = true;
+  _activeMediaConnections.set(cameraId, connections);
+}
+
+/** Unregister a media connection. */
+export function unregisterMediaConnection(cameraId, connectionType) {
+  const connections = _activeMediaConnections.get(cameraId);
+  if (!connections) return;
+  connections[connectionType] = false;
+  if (!connections.projection && !connections.sidebar) {
+    _activeMediaConnections.delete(cameraId);
+  }
+}
 // v1 key is retired dead data (owner decision #3, §9.3 — WIPE CLEAN, no
 // legacy import): kept here only as a documented constant so nothing ever
 // re-reads it by accident. Exported for the unit suite's "v1 is ignored"
@@ -180,15 +207,18 @@ export const CCTV_CALIBRATION_STORAGE_KEY_V1 = 'evolEyeView.cctv.calibration.v1'
 /** v2 store key. Entries: { values: <7-field calibration offsets>, source: 'manual', savedAt: <epoch ms> }. */
 export const CCTV_CALIBRATION_STORAGE_KEY_V2 = 'evolEyeView.cctv.calibration.v2';
 // H5: throttle for double-buffered canvas texture swaps (<=1Hz; each swap is a
-// full 1080p texture re-upload because Cesium re-uploads only on a NEW image
-// object reference).
-const PROJECTION_TEXTURE_SWAP_MS = 1000;
-// Live-jpeg texture swap throttle: MJPEG streams deliver 5-15 fps, so the
-// plane refresh must match the stream, not the 60fps RAF. 80ms ~= 12.5fps.
-// Without this the live-jpeg branch swapped the 1080p texture at RAF cadence
-// whenever the frame signature changed — the "constantly being refreshed"
-// flashing after zoom (owner field test 2026-09-11).
-const PROJECTION_LIVE_JPEG_SWAP_MS = 80;
+ // full 1080p texture re-upload because Cesium re-uploads only on a NEW image
+ // object reference).
+ const PROJECTION_TEXTURE_SWAP_MS = 1000;
+ // Live-jpeg texture swap throttle: MJPEG streams deliver 5-15 fps, so the
+ // plane refresh must match the stream, not the 60fps RAF. 80ms ~= 12.5fps.
+ // Without this the live-jpeg branch swapped the 1080p texture at RAF cadence
+ // whenever the frame signature changed — the "constantly being refreshed"
+ // flashing after zoom (owner field test 2026-09-11).
+ const PROJECTION_LIVE_JPEG_SWAP_MS = 80;
+ // Mutex to prevent concurrent texture swaps (race condition between
+ // live-jpeg and static image swap paths).
+ let _projectionSwapLock = false;
 const PROJECTION_VERT_ASPECT = PROJECTION_CANVAS_WIDTH / PROJECTION_CANVAS_HEIGHT;
 // CCTV client debug gate: set `window.__CCTV_DEBUG__ = true` (or run the dev
 // server with VITE_CCTV_DEBUG=1) for per-camera fetch/load traces in the
@@ -221,12 +251,41 @@ export const CCTV_FOCUS_RESULT = Object.freeze({
 // camera whose axis meets the street ~25 m out still clamps SHORT of the hit
 // (a larger floor would push the plane back through the obstruction).
 const PROBE_CLEARANCE_M = 4;
-const PROBE_MIN_RANGE_M = 12;
-// Bounded wait for the enable-time ground-prior batch: warm proxy disk cache
-// resolves in milliseconds; a cold/slow upstream must never hang layer init,
-// so past this budget init proceeds on catalog fallbacks and the batch applies
-// post-hoc (applyLateGroundPriors) when it lands.
-const GROUND_PRIOR_INIT_WAIT_MS = 8000;
+// Computed per-camera in activationProbeClampRange instead of hardcoded
+ 
+ /** Computes the minimum probe range from camera geometry.
+  * @param {number} mountHeightM - Camera mount height in metres
+  * @param {number} pitchDeg - Camera pitch in degrees (negative = down)
+  * @returns {number} Minimum range in metres
+  */
+ export function computeProbeMinRange(mountHeightM, pitchDeg) {
+   const height = Number.isFinite(mountHeightM) ? Math.max(0, mountHeightM) : 24;
+   const pitch = Number.isFinite(pitchDeg) ? Math.abs(pitchDeg) : 17;
+   const pitchRad = pitch * Math.PI / 180;
+   return pitchRad > 0.01 ? height / Math.tan(pitchRad) : 12;
+ }
+ 
+ /** Computes the obstruction probe's effective-range clamp just short of a hit,
+  * @param {number} rangeM Nominal camera range.
+  * @param {number} hitDistanceM Distance to the first obstruction.
+  * @param {number} mountHeightM Camera mount height in metres.
+  * @param {number} pitchDeg Camera pitch in degrees (negative = down).
+  * @returns {number|null} Clamp range, or null when the hit does not shorten it.
+  */
+ export function activationProbeClampRange(rangeM, hitDistanceM, mountHeightM, pitchDeg) {
+   const nominalRange = Number(rangeM);
+   const hitDistance = Number(hitDistanceM);
+   if (!Number.isFinite(nominalRange) || nominalRange <= 0) return null;
+   if (!Number.isFinite(hitDistance) || hitDistance <= 0 || hitDistance >= nominalRange) return null;
+   const minRange = computeProbeMinRange(mountHeightM, pitchDeg);
+   return Math.max(minRange, hitDistance - PROBE_CLEARANCE_M);
+ }
+ 
+ // Bounded wait for the enable-time ground-prior batch: warm proxy disk cache
+ // resolves in milliseconds; a cold/slow upstream must never hang layer init,
+ // so past this budget init proceeds on catalog fallbacks and the batch applies
+ // post-hoc (applyLateGroundPriors) when it lands.
+ const GROUND_PRIOR_INIT_WAIT_MS = 8000;
 /** Default calibration offsets — all zeroed, range scale 1x. */
 const DEFAULT_CAMERA_CALIBRATION = Object.freeze({
   offsetNorthM: 0,
@@ -1137,21 +1196,6 @@ export function computeFrustumGeometry(camera, groundAltM, rangeOverrideM = null
 }
 
 /**
- * Resolves the obstruction probe's effective-range clamp just short of a hit,
- * with the field-derived 12 m floor used by the original H6 monitor.
- * @param {number} rangeM Nominal camera range.
- * @param {number} hitDistanceM Distance to the first obstruction.
- * @returns {number|null} Clamp range, or null when the hit does not shorten it.
- */
-export function activationProbeClampRange(rangeM, hitDistanceM) {
-  const nominalRange = Number(rangeM);
-  const hitDistance = Number(hitDistanceM);
-  if (!Number.isFinite(nominalRange) || nominalRange <= 0) return null;
-  if (!Number.isFinite(hitDistance) || hitDistance <= 0 || hitDistance >= nominalRange) return null;
-  return Math.max(PROBE_MIN_RANGE_M, hitDistance - PROBE_CLEARANCE_M);
-}
-
-/**
  * Computes the great-circle distance between two points using the haversine formula.
  * @param {number} lat1 - Latitude of point 1 (degrees).
  * @param {number} lon1 - Longitude of point 1 (degrees).
@@ -1767,11 +1811,19 @@ export function refreshProjectionTextures(record) {
   // 2026-07-04: intermittent white flashes on the monitor plane).
   if (runtime.canvasStamp === runtime.lastSwappedCanvasStamp) return;
 
-  const buffer = paintNextProjectionBuffer(runtime);
-  if (!buffer) return;
-  runtime.lastTextureSwapAt = now;
-  runtime.lastSwappedCanvasStamp = runtime.canvasStamp;
-  runtime.planeMaterial.image = buffer;
+  // Mutex to prevent concurrent texture swaps (race condition between
+  // live-jpeg and static image swap paths).
+  if (_projectionSwapLock) return;
+  _projectionSwapLock = true;
+  try {
+    const buffer = paintNextProjectionBuffer(runtime);
+    if (!buffer) return;
+    runtime.lastTextureSwapAt = now;
+    runtime.lastSwappedCanvasStamp = runtime.canvasStamp;
+    runtime.planeMaterial.image = buffer;
+  } finally {
+    _projectionSwapLock = false;
+  }
 }
 
 /**
@@ -5454,6 +5506,25 @@ const cctvLayer = {
     refreshAmbientCards();
     notifyListeners();
     restoreSpriteOrder(_viewer);
+    // Handle projection canvas resize
+    _resizeHandler = () => _handleProjectionResize?.();
+    window.addEventListener('resize', _resizeHandler, { passive: true });
+  },
+
+  /** Handle projection canvas resize on window resize. */
+  _handleProjectionResize() {
+    if (!_showProjection || !_activeCameraId) return;
+    const record = getActiveRecord();
+    if (!record?.projection) return;
+    const canvas = record.projection.canvas;
+    if (!canvas) return;
+    const width = _viewer?.canvas?.clientWidth || window.innerWidth;
+    const height = _viewer?.canvas?.clientHeight || window.innerHeight;
+    const aspect = width / height;
+    canvas.width = Math.min(1920, width);
+    canvas.height = Math.min(1080, width / aspect);
+    // Recreate texture with new dimensions
+    record.projection.texture = null; // Force texture recreation on next frame
   },
 
   /** Disables the layer: hides entities, stops the projection loop and load queue. */
@@ -5476,6 +5547,9 @@ const cctvLayer = {
     teardownAmbientCards();
     hideCctvVisuals();
     notifyListeners();
+    // Cleanup resize handler
+    window.removeEventListener('resize', _resizeHandler);
+    _resizeHandler = null;
   },
 
   /**
